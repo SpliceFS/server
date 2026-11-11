@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/BlueRival/splicefs/internal/wire"
+	"github.com/SpliceFS/server/internal/wire"
 )
 
 func TestTokenRequired(t *testing.T) {

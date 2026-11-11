@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/BlueRival/splicefs/internal/wire"
-	"github.com/BlueRival/splicefs/server/auth"
-	"github.com/BlueRival/splicefs/server/share"
+	"github.com/SpliceFS/server/auth"
+	"github.com/SpliceFS/server/internal/wire"
+	"github.com/SpliceFS/server/share"
 )
 
 // maxLoginBody is the largest login request accepted. A user name and a password are

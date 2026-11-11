@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/BlueRival/splicefs/internal/wire"
+	"github.com/SpliceFS/server/internal/wire"
 )
 
 type wireSpace = wire.Space

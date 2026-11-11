@@ -13,10 +13,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/BlueRival/splicefs/server/api"
-	"github.com/BlueRival/splicefs/server/auth"
-	"github.com/BlueRival/splicefs/server/cluster"
-	"github.com/BlueRival/splicefs/server/config"
+	"github.com/SpliceFS/server/api"
+	"github.com/SpliceFS/server/auth"
+	"github.com/SpliceFS/server/cluster"
+	"github.com/SpliceFS/server/config"
 )
 
 // loginSlots is how many password verifications may run at once. Each one needs 64 MiB.

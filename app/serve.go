@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/BlueRival/splicefs/server/config"
+	"github.com/SpliceFS/server/config"
 )
 
 // Limits of the HTTP server. There is no write timeout, because a download of a large

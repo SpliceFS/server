@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/BlueRival/splicefs/internal/wire"
+	"github.com/SpliceFS/server/internal/wire"
 )
 
 // File is a regular file opened for reading. It implements io.ReadSeeker and

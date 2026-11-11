@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BlueRival/splicefs/internal/wire"
-	"github.com/BlueRival/splicefs/server/config"
-	"github.com/BlueRival/splicefs/server/share"
+	"github.com/SpliceFS/server/config"
+	"github.com/SpliceFS/server/internal/wire"
+	"github.com/SpliceFS/server/share"
 )
 
 // call sends a request and returns the response with its whole body read.

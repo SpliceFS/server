@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/BlueRival/splicefs/server/auth"
+	"github.com/SpliceFS/server/auth"
 )
 
 // bearerPrefix starts the value of an Authorization header that carries a token.

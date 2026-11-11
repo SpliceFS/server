@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/BlueRival/splicefs/server/api"
-	"github.com/BlueRival/splicefs/server/config"
-	"github.com/BlueRival/splicefs/server/share"
+	"github.com/SpliceFS/server/api"
+	"github.com/SpliceFS/server/config"
+	"github.com/SpliceFS/server/share"
 )
 
 // shareAdapter makes a *share.Share an api.Share. Its OpenFile returns a concrete

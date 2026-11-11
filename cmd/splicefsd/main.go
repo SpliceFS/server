@@ -18,10 +18,10 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/BlueRival/splicefs/internal/version"
-	"github.com/BlueRival/splicefs/server/app"
-	"github.com/BlueRival/splicefs/server/auth"
-	"github.com/BlueRival/splicefs/server/config"
+	"github.com/SpliceFS/server/app"
+	"github.com/SpliceFS/server/auth"
+	"github.com/SpliceFS/server/config"
+	"github.com/SpliceFS/server/internal/version"
 )
 
 // Exit statuses.

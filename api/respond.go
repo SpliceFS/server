@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/BlueRival/splicefs/internal/wire"
+	"github.com/SpliceFS/server/internal/wire"
 )
 
 const (

@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/BlueRival/splicefs/internal/wire"
-	"github.com/BlueRival/splicefs/server/share"
+	"github.com/SpliceFS/server/internal/wire"
+	"github.com/SpliceFS/server/share"
 )
 
 // defaultContentType is used for a file whose extension is not known.

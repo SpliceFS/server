@@ -14,9 +14,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/BlueRival/splicefs/internal/wire"
-	"github.com/BlueRival/splicefs/server/auth"
-	"github.com/BlueRival/splicefs/server/share"
+	"github.com/SpliceFS/server/auth"
+	"github.com/SpliceFS/server/internal/wire"
+	"github.com/SpliceFS/server/share"
 )
 
 // Share is read-only access to one shared directory. Errors that mean "no such name"

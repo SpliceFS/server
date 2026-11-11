@@ -1,6 +1,6 @@
 [Unit]
 Description=SpliceFS server
-Documentation=https://github.com/BlueRival/splicefs
+Documentation=https://github.com/SpliceFS/server
 After=network-online.target
 Wants=network-online.target
 

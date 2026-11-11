@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/BlueRival/splicefs/internal/units"
-	"github.com/BlueRival/splicefs/server/config"
-	"github.com/BlueRival/splicefs/server/share"
+	"github.com/SpliceFS/server/config"
+	"github.com/SpliceFS/server/internal/units"
+	"github.com/SpliceFS/server/share"
 )
 
 func TestShareAdapterOpen(t *testing.T) {

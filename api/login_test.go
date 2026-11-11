@@ -8,8 +8,8 @@ import (
 	"testing/iotest"
 	"time"
 
-	"github.com/BlueRival/splicefs/internal/wire"
-	"github.com/BlueRival/splicefs/server/auth"
+	"github.com/SpliceFS/server/auth"
+	"github.com/SpliceFS/server/internal/wire"
 )
 
 func login(e *env, body string) response {

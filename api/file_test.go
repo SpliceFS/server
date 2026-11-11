@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/BlueRival/splicefs/internal/wire"
-	"github.com/BlueRival/splicefs/server/share"
+	"github.com/SpliceFS/server/internal/wire"
+	"github.com/SpliceFS/server/share"
 )
 
 var blobETag = share.ETag(10, testTime)

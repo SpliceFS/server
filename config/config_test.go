@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BlueRival/splicefs/internal/units"
+	"github.com/SpliceFS/server/internal/units"
 )
 
 const validYAML = `listen:

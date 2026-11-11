@@ -11,8 +11,8 @@ import (
 	"testing"
 	"testing/iotest"
 
-	"github.com/BlueRival/splicefs/internal/wire"
-	"github.com/BlueRival/splicefs/server/share"
+	"github.com/SpliceFS/server/internal/wire"
+	"github.com/SpliceFS/server/share"
 )
 
 func gunzip(t *testing.T, resp response) string {
