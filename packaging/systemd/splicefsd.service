@@ -1,0 +1,31 @@
+[Unit]
+Description=SpliceFS server
+Documentation=https://github.com/BlueRival/splicefs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/splicefsd --config /etc/splicefs/server
+Restart=on-failure
+RestartSec=5
+# Create this user first (useradd --system splicefs) and give it read access to the
+# shares, the users directory, the keys file and the node list.
+User=splicefs
+Group=splicefs
+
+# The server only reads. These settings make the whole filesystem read-only for it and
+# take away everything else it has no use for, so a bug in it cannot become a write.
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
