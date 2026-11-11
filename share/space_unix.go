@@ -21,7 +21,7 @@ func statSpace(path string) (wire.Space, error) {
 	if err := syscall.Statfs(path, &st); err != nil {
 		return wire.Space{}, err
 	}
-	block := uint64(st.Bsize)
+	block := uint64(st.Bsize)  //nolint:gosec // a block size reported by the kernel is never negative
 	total := uint64(st.Blocks) //nolint:unconvert // the field type differs between unix systems
 	free := uint64(st.Bavail)  //nolint:unconvert // the field type differs between unix systems
 	return wire.Space{Total: total * block, Free: free * block}, nil
