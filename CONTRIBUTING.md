@@ -17,7 +17,7 @@ You need Go 1.26 or newer and `make`. Linting uses
 [golangci-lint](https://golangci-lint.run) version 2.
 
 ```
-make build        # build both programs into ./bin
+make build        # build splicefsd into ./bin
 make check        # format check, vet, tests with the race detector, coverage gate
 make lint         # golangci-lint, the same configuration CI uses
 make fmt          # rewrite files with gofmt
@@ -51,8 +51,10 @@ make fmt          # rewrite files with gofmt
   dead code, no commented-out code.
 - Dependencies are added sparingly. A new module in `go.mod` needs a sentence of
   justification in the pull request.
-- The server and the client live in `server/` and `client/`. Code used by both lives in
-  `internal/`. Neither program imports the other.
+- The client lives in its [own repository](https://github.com/SpliceFS/client). Neither program
+  imports the other. `internal/wire` (the JSON types of the HTTP API), `internal/units` and
+  `internal/version` exist in both repositories and must stay identical, so a change to one of
+  them is made in both.
 
 ### Tests
 
