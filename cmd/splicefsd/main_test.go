@@ -1,13 +1,27 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
+	"testing/iotest"
 
-	"github.com/BlueRival/splicefs/internal/cli"
+	"github.com/BlueRival/splicefs/internal/version"
+	"github.com/BlueRival/splicefs/server/auth"
+	"github.com/BlueRival/splicefs/server/config"
 )
 
-func TestMainPrintsVersion(t *testing.T) {
+func TestMainRunsTheProgram(t *testing.T) {
 	oldExit, oldArgs := exit, os.Args
 	t.Cleanup(func() { exit, os.Args = oldExit, oldArgs })
 
@@ -17,7 +31,356 @@ func TestMainPrintsVersion(t *testing.T) {
 
 	main()
 
-	if status != cli.ExitOK {
-		t.Errorf("exit status = %d, want %d", status, cli.ExitOK)
+	if status != exitOK {
+		t.Errorf("exit status = %d, want %d", status, exitOK)
 	}
+}
+
+// execute runs the program with no input and returns its status and output.
+func execute(t *testing.T, args ...string) (status int, stdout, stderr string) {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	status = run(context.Background(), args, strings.NewReader(""), &out, &errOut)
+	return status, out.String(), errOut.String()
+}
+
+func TestVersion(t *testing.T) {
+	t.Parallel()
+	status, stdout, stderr := execute(t, "--version")
+	if want := "splicefsd " + version.String() + "\n"; status != exitOK || stdout != want || stderr != "" {
+		t.Errorf("status %d stdout %q stderr %q, want 0 %q", status, stdout, stderr, want)
+	}
+}
+
+func TestHelp(t *testing.T) {
+	t.Parallel()
+	for _, arg := range []string{"-h", "--help"} {
+		status, stdout, stderr := execute(t, arg)
+		if status != exitOK || stdout != usage || stderr != "" {
+			t.Errorf("%s: status %d stdout %q stderr %q", arg, status, stdout, stderr)
+		}
+	}
+}
+
+func TestBadUsage(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"unknown flag", []string{"--bogus"}, "flag provided but not defined: -bogus"},
+		{"missing value", []string{"--config"}, "flag needs an argument"},
+		{"unexpected argument", []string{"serve"}, `unexpected argument "serve"`},
+		{"argument after flags", []string{"--config", "/x", "extra"}, `unexpected argument "extra"`},
+		{"subcommand arguments", []string{"hash-password", "secret"}, "hash-password takes no arguments"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			status, stdout, stderr := execute(t, tt.args...)
+			if status != exitUsage || stdout != "" {
+				t.Errorf("status %d stdout %q", status, stdout)
+			}
+			if !strings.HasPrefix(stderr, "splicefsd: ") || !strings.Contains(stderr, tt.want) || !strings.HasSuffix(stderr, usage) {
+				t.Errorf("stderr = %q", stderr)
+			}
+		})
+	}
+}
+
+func TestHashPassword(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"line", "correct horse\n", "correct horse"},
+		{"no line ending", "correct horse", "correct horse"},
+		{"windows line ending", "correct horse\r\n", "correct horse"},
+		{"only the first line", "first\nsecond\n", "first"},
+		{"spaces are kept", "  pad  \n", "  pad  "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var out, errOut bytes.Buffer
+			status := run(context.Background(), []string{"hash-password"}, strings.NewReader(tt.input), &out, &errOut)
+			if status != exitOK || errOut.Len() != 0 {
+				t.Fatalf("status %d stderr %q", status, errOut.String())
+			}
+			hash := out.String()
+			if !strings.HasSuffix(hash, "\n") || strings.Count(hash, "\n") != 1 || !strings.HasPrefix(hash, "$argon2id$v=19$m=65536,t=3,p=4$") {
+				t.Fatalf("output = %q", hash)
+			}
+			hash = strings.TrimSuffix(hash, "\n")
+			if ok, err := auth.VerifyPassword(hash, tt.want); err != nil || !ok {
+				t.Errorf("the hash does not verify %q: %v, %v", tt.want, ok, err)
+			}
+			if ok, _ := auth.VerifyPassword(hash, tt.want+"x"); ok {
+				t.Error("the hash verifies another password")
+			}
+		})
+	}
+}
+
+func TestHashPasswordErrors(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		in     io.Reader
+		out    io.Writer
+		random io.Reader
+		want   string
+	}{
+		{"empty input", strings.NewReader(""), io.Discard, strings.NewReader("0123456789abcdef"), "empty password"},
+		{"empty line", strings.NewReader("\n"), io.Discard, strings.NewReader("0123456789abcdef"), "empty password"},
+		{"unreadable input", iotest.ErrReader(errors.New("terminal gone")), io.Discard, strings.NewReader("0123456789abcdef"), "read password: terminal gone"},
+		{"no randomness", strings.NewReader("pw\n"), io.Discard, strings.NewReader("short"), "read salt"},
+		{"unwritable output", strings.NewReader("pw\n"), errWriter{}, strings.NewReader("0123456789abcdef"), "write hash: disk full"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := hashPassword(tt.in, tt.out, tt.random)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("err = %v, want one containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+type errWriter struct{}
+
+func (errWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
+func TestHashPasswordCommandFailure(t *testing.T) {
+	t.Parallel()
+	var out, errOut bytes.Buffer
+	status := run(context.Background(), []string{"hash-password"}, strings.NewReader("\n"), &out, &errOut)
+	if status != exitError || out.Len() != 0 || errOut.String() != "splicefsd: hash password: empty password\n" {
+		t.Errorf("status %d stdout %q stderr %q", status, out.String(), errOut.String())
+	}
+}
+
+func TestNewLogger(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		cfg       config.Log
+		debugSeen bool
+		infoSeen  bool
+		json      bool
+	}{
+		{"debug text", config.Log{Level: "debug", Format: "text"}, true, true, false},
+		{"info json", config.Log{Level: "info", Format: "json"}, false, true, true},
+		{"warn text", config.Log{Level: "warn", Format: "text"}, false, false, false},
+		{"error json", config.Log{Level: "error", Format: "json"}, false, false, true},
+		{"unknown names mean info and text", config.Log{Level: "loud", Format: "xml"}, false, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			logger := newLogger(tt.cfg, &buf)
+			logger.Debug("debug-line")
+			logger.Info("info-line")
+			logger.Error("error-line")
+			out := buf.String()
+			if got := strings.Contains(out, "debug-line"); got != tt.debugSeen {
+				t.Errorf("debug line logged = %v, want %v\n%s", got, tt.debugSeen, out)
+			}
+			if got := strings.Contains(out, "info-line"); got != tt.infoSeen {
+				t.Errorf("info line logged = %v, want %v\n%s", got, tt.infoSeen, out)
+			}
+			if !strings.Contains(out, "error-line") {
+				t.Errorf("error line missing\n%s", out)
+			}
+			if got := strings.Contains(out, `"msg":"error-line"`); got != tt.json {
+				t.Errorf("JSON output = %v, want %v\n%s", got, tt.json, out)
+			}
+		})
+	}
+}
+
+func TestLogListening(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logListening(slog.New(slog.NewTextHandler(&buf, nil)),
+		[]net.Addr{&net.TCPAddr{IP: net.IPv4(192, 0, 2, 10), Port: 8480}, &net.TCPAddr{IP: net.IPv4(192, 0, 2, 11), Port: 8481}})
+	out := buf.String()
+	if strings.Count(out, "listening") != 2 || !strings.Contains(out, "192.0.2.10:8480") || !strings.Contains(out, "192.0.2.11:8481") {
+		t.Errorf("log = %q", out)
+	}
+}
+
+// serverDir writes a complete configuration directory and returns it with the port the
+// configuration listens on.
+func serverDir(t *testing.T) (dir string, port int) {
+	t.Helper()
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port = ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dir = t.TempDir()
+	files := map[string]string{
+		"config.yaml": "listen:\n  - address: 127.0.0.1\n    port: " + strconv.Itoa(port) + "\n" +
+			"shares:\n  media:\n    path: media\n" +
+			"cluster:\n  name: example\n  node: east\n  nodes_file: nodes.yaml\n" +
+			"auth:\n  users_dir: users\n  keys_file: keys.yaml\n" +
+			"log:\n  level: info\n  format: json\n",
+		"media/hello.txt": "hello",
+		"users/.keep":     "",
+		"keys.yaml":       "keys:\n  - id: k\n    secret: \"" + strings.Repeat("QUJD", 11) + "\"\n",
+		"nodes.yaml":      "cluster: example\nnodes:\n  - name: east\n    url: https://east.example.com/api\n",
+	}
+	for name, content := range files {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir, port
+}
+
+// watchedLog collects what the server logs, and tells when it has started listening.
+type watchedLog struct {
+	mu    sync.Mutex
+	buf   bytes.Buffer
+	ready chan struct{}
+	once  sync.Once
+}
+
+func newWatchedLog() *watchedLog { return &watchedLog{ready: make(chan struct{})} }
+
+func (w *watchedLog) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.buf.Write(p)
+	if strings.Contains(w.buf.String(), `"msg":"listening"`) {
+		w.once.Do(func() { close(w.ready) })
+	}
+	return len(p), nil
+}
+
+func (w *watchedLog) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+// startServer runs the server in the background and waits until it listens.
+func startServer(ctx context.Context, t *testing.T, dir string) (*watchedLog, <-chan int) {
+	t.Helper()
+	logs := newWatchedLog()
+	status := make(chan int, 1)
+	go func() {
+		status <- run(ctx, []string{"--config", dir}, strings.NewReader(""), io.Discard, logs)
+	}()
+	select {
+	case <-logs.ready:
+	case code := <-status:
+		t.Fatalf("the server exited with status %d: %s", code, logs)
+	}
+	return logs, status
+}
+
+func TestServerRunsUntilCancelled(t *testing.T) {
+	t.Parallel()
+	dir, port := serverDir(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logs, status := startServer(ctx, t, dir)
+
+	body := fetch(t, "http://127.0.0.1:"+strconv.Itoa(port)+"/api/v1/health")
+	if want := `"version":"` + version.String() + `"`; !strings.Contains(body, want) || !strings.Contains(body, `"node":"east"`) {
+		t.Errorf("health = %s", body)
+	}
+	cancel()
+	if code := <-status; code != exitOK {
+		t.Errorf("exit status = %d, want 0\n%s", code, logs)
+	}
+	if !strings.Contains(logs.String(), `"msg":"request"`) {
+		t.Errorf("no access log:\n%s", logs)
+	}
+}
+
+func TestServerFailures(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		mutate func(t *testing.T, dir string)
+		want   string
+	}{
+		{"no configuration", func(t *testing.T, dir string) {
+			if err := os.Remove(filepath.Join(dir, "config.yaml")); err != nil {
+				t.Fatal(err)
+			}
+		}, "read server config"},
+		{"invalid configuration", func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("listen: []\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, "invalid server config"},
+		{"share directory is missing", func(t *testing.T, dir string) {
+			if err := os.RemoveAll(filepath.Join(dir, "media")); err != nil {
+				t.Fatal(err)
+			}
+		}, `share "media"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir, _ := serverDir(t)
+			tt.mutate(t, dir)
+			var out, errOut bytes.Buffer
+			status := run(context.Background(), []string{"--config", dir}, strings.NewReader(""), &out, &errOut)
+			if status != exitError || out.Len() != 0 {
+				t.Errorf("status %d stdout %q", status, out.String())
+			}
+			if got := errOut.String(); !strings.HasPrefix(got, "splicefsd: ") || !strings.Contains(got, tt.want) || !strings.HasSuffix(got, "\n") {
+				t.Errorf("stderr = %q", got)
+			}
+		})
+	}
+}
+
+func TestDefaultConfigDirectory(t *testing.T) {
+	t.Parallel()
+	opts, err := parseArgs(nil)
+	if err != nil || opts.configDir != config.DefaultDir || opts.showVersion {
+		t.Errorf("parseArgs(nil) = %+v, %v", opts, err)
+	}
+	opts, err = parseArgs([]string{"-config", "/x", "--version"})
+	if err != nil || opts.configDir != "/x" || !opts.showVersion {
+		t.Errorf("parseArgs = %+v, %v", opts, err)
+	}
+}
+
+// fetch returns the body of a GET request.
+func fetch(t *testing.T, url string) string {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), "GET", url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

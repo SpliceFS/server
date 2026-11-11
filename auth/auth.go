@@ -3,6 +3,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -26,21 +27,38 @@ type Authenticator struct {
 	tokens  *Tokens
 	limiter *Limiter
 	verify  func(encoded, password string) (bool, error)
+	// slots is a counting semaphore: each password verification holds one slot.
+	slots chan struct{}
 }
 
-// New returns an Authenticator built from its parts.
-func New(users *Users, tokens *Tokens, limiter *Limiter) *Authenticator {
-	return &Authenticator{users: users, tokens: tokens, limiter: limiter, verify: VerifyPassword}
+// New returns an Authenticator built from its parts. Each password verification uses
+// 64 MiB, so slots bounds how many logins may be verified at once; a value below 1 is
+// treated as 1.
+func New(users *Users, tokens *Tokens, limiter *Limiter, slots int) *Authenticator {
+	return &Authenticator{
+		users:   users,
+		tokens:  tokens,
+		limiter: limiter,
+		verify:  VerifyPassword,
+		slots:   make(chan struct{}, max(slots, 1)),
+	}
 }
 
 // Login checks the password of user and issues a token. It returns ErrRateLimited when
 // clientAddr has used up its attempts, and ErrBadCredentials for an unknown user, a
 // disabled user or a wrong password. Any other failure, such as an unreadable user file or
 // keys file, is returned wrapped and is not ErrBadCredentials.
-func (a *Authenticator) Login(clientAddr, user, password string) (token string, expires time.Time, err error) {
+//
+// After the rate limit check, Login waits for a free verification slot. If ctx ends first
+// it returns ctx.Err() wrapped, so a client that gave up does not queue for memory.
+func (a *Authenticator) Login(ctx context.Context, clientAddr, user, password string) (token string, expires time.Time, err error) {
 	if !a.limiter.Allow(clientAddr) {
 		return "", time.Time{}, ErrRateLimited
 	}
+	if err := a.acquire(ctx); err != nil {
+		return "", time.Time{}, fmt.Errorf("login: %w", err)
+	}
+	defer a.release()
 	u, err := a.users.Lookup(user)
 	if errors.Is(err, ErrNoUser) {
 		return "", time.Time{}, a.reject(password)
@@ -63,6 +81,21 @@ func (a *Authenticator) Login(clientAddr, user, password string) (token string, 
 		return "", time.Time{}, fmt.Errorf("login: user %q: %w", u.Name, err)
 	}
 	return token, expires, nil
+}
+
+// acquire takes a verification slot, or returns the error of ctx if it ends first.
+func (a *Authenticator) acquire(ctx context.Context) error {
+	select {
+	case a.slots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// release returns a slot taken by acquire.
+func (a *Authenticator) release() {
+	<-a.slots
 }
 
 // reject spends the time of one password verification against dummyHash and returns
