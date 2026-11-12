@@ -23,3 +23,11 @@ All notable changes to this project are recorded here. The format follows
 - Signed apt, rpm and Alpine repositories built from the packages (`make repo`), with a test
   that installs from each on every supported system with signature checks on
   (`make repo-test`).
+- Fuzz tests for the configuration, user file, key file, token and password hash parsing, the
+  mapping of request names to files in a share, and the HTTP request parsing, with `make fuzz`
+  to run them.
+
+### Fixed
+
+- A request for a name longer than the file system allows is answered with 404 instead of
+  500. Found by the new fuzz tests.
