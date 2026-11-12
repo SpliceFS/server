@@ -105,9 +105,34 @@ func applyDirDefaults(s *Config, hostname func() (string, error)) []error {
 	if err != nil {
 		return []error{fmt.Errorf("cluster.node: host name unavailable, set it in a file: %w", err)}
 	}
-	// Node names are lower case, but host names often are not.
-	s.Cluster.Node = strings.ToLower(host)
+	s.Cluster.Node = nodeNameOf(host)
 	return nil
+}
+
+// maxNameLength is the longest name namePattern accepts.
+const maxNameLength = 64
+
+// nodeNameOf turns a host name into a valid node name. A server with nothing configured
+// must start on any machine, and host names are often upper case, longer than a node name
+// may be, or hold characters a node name may not. An empty result is left for validation
+// to report.
+func nodeNameOf(host string) string {
+	name := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		default:
+			return '-'
+		}
+	}, host)
+	// A name starts with a letter or a digit.
+	name = strings.TrimLeft(name, "._-")
+	if len(name) > maxNameLength {
+		name = name[:maxNameLength]
+	}
+	return name
 }
 
 // normalizeSettings puts base_path and cluster.url into their canonical form.

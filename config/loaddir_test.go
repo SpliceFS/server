@@ -347,6 +347,31 @@ func TestLoadDirHostName(t *testing.T) {
 	}
 }
 
+func TestNodeNameOf(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("a", 70)
+	tests := []struct{ host, want string }{
+		{"east", "east"},
+		{"East.Example.COM", "east.example.com"},
+		{"build host_1", "build-host_1"},
+		{"h\u00f6st", "h-st"},
+		{"-.lead", "lead"},
+		{long + ".local", long[:64]},
+		{"", ""},
+		{"...", ""},
+	}
+	for _, tt := range tests {
+		got := nodeNameOf(tt.host)
+		if got != tt.want {
+			t.Errorf("nodeNameOf(%q) = %q, want %q", tt.host, got, tt.want)
+		}
+		// Whatever the host is called, the name is valid or empty; empty is reported.
+		if got != "" && !namePattern.MatchString(got) {
+			t.Errorf("nodeNameOf(%q) = %q is not a valid name", tt.host, got)
+		}
+	}
+}
+
 func TestLoadDirUnreadable(t *testing.T) {
 	t.Parallel()
 	// A link to nothing is listed like a file and cannot be read. Taking away read

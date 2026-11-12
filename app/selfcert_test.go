@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -176,12 +178,6 @@ func TestLocalCertificateErrors(t *testing.T) {
 			absent: []string{keyFileName, certFileName},
 		},
 		{
-			name:   "host name that cannot be in a certificate",
-			mutate: func(src *certSource) { src.hostname = hostnameOf("h\u00f6st", nil) },
-			want:   "IA5String",
-			absent: []string{keyFileName, certFileName},
-		},
-		{
 			name: "folder cannot be created",
 			setup: func(t *testing.T, dir string) {
 				// A link to nothing where the folder belongs: its files read as missing, and
@@ -260,5 +256,39 @@ func TestLocalCertificateKeepsFilesTheOperatorPlaced(t *testing.T) {
 	}
 	if data, err := os.ReadFile(key); err != nil || string(data) != "operator key" {
 		t.Errorf("the key was overwritten: %q, %v", data, err)
+	}
+}
+
+// A host name that cannot be a name in a certificate must not stop the server: the
+// certificate is made without it.
+func TestCertificateWithoutUsableHostName(t *testing.T) {
+	t.Parallel()
+	for _, host := range []string{"h\u00f6st", "two words", ""} {
+		_, dir := certDir(t)
+		src := fixedSource()
+		src.hostname = hostnameOf(host, nil)
+		cert, err := loadOrCreateCert(dir, src)
+		if err != nil {
+			t.Fatalf("host %q: %v", host, err)
+		}
+		leaf, err := x509.ParseCertificate(cert.Certificate[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(leaf.DNSNames) != 1 || leaf.DNSNames[0] != "localhost" {
+			t.Errorf("host %q: names = %v, want only localhost", host, leaf.DNSNames)
+		}
+	}
+}
+
+func TestEncodeCertRefusesABadTemplate(t *testing.T) {
+	t.Parallel()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := certTemplate("h\u00f6st", big.NewInt(1), time.Now())
+	if _, _, err := encodeCert(rand.Reader, template, key); err == nil {
+		t.Error("a name that cannot be encoded was accepted")
 	}
 }

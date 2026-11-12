@@ -58,7 +58,7 @@ trusted_proxies: []         # reverse proxies whose X-Forwarded-For header is be
 
 cluster:
   name: default
-  # node: east              # default: the host name in lower case
+  # node: east              # default: from the host name
   url: ""                   # empty: this server is not announced to clients
 
 auth:
@@ -82,7 +82,7 @@ log:
 | `base_path`         | URL prefix of the API                    | `/api`            | must start with `/`; a trailing `/` is dropped; `/` serves at the root |
 | `trusted_proxies`   | Proxies whose `X-Forwarded-For` is believed | empty          | addresses or CIDR ranges |
 | `cluster.name`      | Name of the cluster this server is in    | `default`         | none                    |
-| `cluster.node`      | Name of this server in the node list     | host name, lower case | lower-case letters, digits, `.`, `_`, `-`; starts with a letter or digit; at most 64 characters |
+| `cluster.node`      | Name of this server in the node list     | the host name in lower case, other characters replaced by `-`, cut to 64 | lower-case letters, digits, `.`, `_`, `-`; starts with a letter or digit; at most 64 characters |
 | `cluster.url`       | Address clients use to reach this server | empty             | absolute `http` or `https` URL with a host, no `?` or `#`; a trailing `/` is dropped |
 | `auth.token_ttl`    | How long a login token is valid          | `30m`             | at least `1m`, not `unlimited` |
 | `auth.login_rate`   | Login attempts allowed per client address | `10/m`           | `<count>/<s\|m\|h>`, count at least 1 |

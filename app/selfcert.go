@@ -110,8 +110,14 @@ func generateCert(src certSource) (certPEM, keyPEM []byte, err error) {
 	if err := errors.Join(keyErr, serialErr); err != nil {
 		return nil, nil, err
 	}
-	template := certTemplate(host, serial, src.now())
-	certDER, certErr := x509.CreateCertificate(src.random, template, template, &key.PublicKey, key)
+	return encodeCert(src.random, certTemplate(certHost(host), serial, src.now()), key)
+}
+
+// encodeCert signs template with key and returns the certificate and the key as PEM.
+func encodeCert(
+	random io.Reader, template *x509.Certificate, key *ecdsa.PrivateKey,
+) (certPEM, keyPEM []byte, err error) {
+	certDER, certErr := x509.CreateCertificate(random, template, template, &key.PublicKey, key)
 	keyDER, keyDERErr := x509.MarshalECPrivateKey(key)
 	if err := errors.Join(certErr, keyDERErr); err != nil {
 		return nil, nil, err
@@ -120,16 +126,32 @@ func generateCert(src certSource) (certPEM, keyPEM []byte, err error) {
 		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), nil
 }
 
+// certHost returns host if it can be a name in a certificate, which holds only printable
+// ASCII, and "" otherwise. A server with nothing configured must start on any machine, so
+// a host name that does not fit is left out and the certificate names only the loopback.
+func certHost(host string) string {
+	for _, r := range host {
+		if r <= ' ' || r > '~' {
+			return ""
+		}
+	}
+	return host
+}
+
 // certTemplate describes a server certificate valid for certYears from now.
 func certTemplate(host string, serial *big.Int, now time.Time) *x509.Certificate {
+	names := []string{"localhost"}
+	if host != "" {
+		names = []string{host, "localhost"}
+	}
 	return &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: host},
+		Subject:      pkix.Name{CommonName: names[0]},
 		NotBefore:    now,
 		NotAfter:     now.AddDate(certYears, 0, 0),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     []string{host, "localhost"},
+		DNSNames:     names,
 		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
 	}
 }
