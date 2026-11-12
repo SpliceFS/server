@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/SpliceFS/server/internal/wire"
+	"github.com/SpliceFS/common/wire"
 )
 
 type wireSpace = wire.Space

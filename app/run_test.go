@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SpliceFS/common/wire"
 	"github.com/SpliceFS/server/config"
-	"github.com/SpliceFS/server/internal/wire"
 	"github.com/SpliceFS/server/share"
 )
 

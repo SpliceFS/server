@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/SpliceFS/common/wire"
 	"github.com/SpliceFS/server/auth"
-	"github.com/SpliceFS/server/internal/wire"
 	"github.com/SpliceFS/server/share"
 )
 

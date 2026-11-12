@@ -11,7 +11,7 @@ import (
 	"testing"
 	"testing/iotest"
 
-	"github.com/SpliceFS/server/internal/wire"
+	"github.com/SpliceFS/common/wire"
 	"github.com/SpliceFS/server/share"
 )
 

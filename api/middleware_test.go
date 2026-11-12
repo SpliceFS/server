@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SpliceFS/server/internal/wire"
+	"github.com/SpliceFS/common/wire"
 )
 
 func trusted(prefixes ...string) []netip.Prefix {

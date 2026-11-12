@@ -127,12 +127,15 @@ api/            the HTTP API, version 1
 auth/           password hashes, user files, signed tokens, login rate limiter
 share/          safe read-only access to one shared directory
 cluster/        the node list file
-internal/       units, version and the JSON types of the HTTP API (wire), which also exist in
-                the client repository
+internal/       the version number set at build time
 docs/           design and configuration reference
 packaging/      systemd unit
 scripts/        development helpers used by make and CI
 ```
+
+The JSON types of the HTTP API (`wire`) and the size and duration types of the configuration
+(`units`) come from the [common](https://github.com/SpliceFS/common) module, which the client
+uses too.
 
 ## Versioning
 

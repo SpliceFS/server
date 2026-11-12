@@ -17,7 +17,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/SpliceFS/server/internal/wire"
+	"github.com/SpliceFS/common/wire"
 )
 
 // namePattern is the form of a node name.

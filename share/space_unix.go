@@ -6,7 +6,7 @@ import (
 	"os"
 	"syscall"
 
-	"github.com/SpliceFS/server/internal/wire"
+	"github.com/SpliceFS/common/wire"
 )
 
 // openFlags opens read-only without blocking, so that a file replaced by a named

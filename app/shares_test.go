@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SpliceFS/common/units"
 	"github.com/SpliceFS/server/config"
-	"github.com/SpliceFS/server/internal/units"
 	"github.com/SpliceFS/server/share"
 )
 

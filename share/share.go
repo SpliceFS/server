@@ -17,7 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/SpliceFS/server/internal/wire"
+	"github.com/SpliceFS/common/wire"
 )
 
 // defaultDigestCacheSize is the head digest cache size used when Options leaves it 0.

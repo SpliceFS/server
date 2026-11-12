@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SpliceFS/server/internal/units"
+	"github.com/SpliceFS/common/units"
 )
 
 const validYAML = `listen:

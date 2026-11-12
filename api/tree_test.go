@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SpliceFS/server/internal/wire"
+	"github.com/SpliceFS/common/wire"
 	"github.com/SpliceFS/server/share"
 )
 

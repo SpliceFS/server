@@ -26,8 +26,8 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
+	"github.com/SpliceFS/common/units"
 	"github.com/SpliceFS/server/config"
-	"github.com/SpliceFS/server/internal/units"
 )
 
 // fixture is a complete server configuration over temporary files.

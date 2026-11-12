@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SpliceFS/server/internal/wire"
+	"github.com/SpliceFS/common/wire"
 )
 
 const validList = `cluster: example
