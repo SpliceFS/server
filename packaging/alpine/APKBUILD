@@ -15,7 +15,8 @@ install="$pkgname.pre-install $pkgname.post-install $pkgname.post-upgrade $pkgna
 package() {
 	install -D -m 755 "$STAGE/splicefsd" "$pkgdir/usr/bin/splicefsd"
 	install -D -m 755 "$SRC/packaging/openrc/splicefsd.initd" "$pkgdir/etc/init.d/splicefsd"
-	install -d "$pkgdir/etc/splicefs/server"
+	# Empty on purpose: the administrator's files go here and no package file ever does.
+	install -d "$pkgdir/etc/splicefs/server/conf.d" "$pkgdir/etc/splicefs/server/shares.d"
 	install -D -m 644 "$SRC/LICENSE" "$pkgdir/usr/share/doc/$pkgname/LICENSE"
 	install -m 644 "$SRC/README.md" "$SRC/CHANGELOG.md" "$SRC/docs/configuration.md" \
 		"$pkgdir/usr/share/doc/$pkgname/"

@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -19,6 +21,7 @@ import (
 	"github.com/SpliceFS/server/auth"
 	"github.com/SpliceFS/server/config"
 	"github.com/SpliceFS/server/internal/version"
+	"golang.org/x/crypto/argon2"
 )
 
 func TestMainRunsTheProgram(t *testing.T) {
@@ -74,6 +77,9 @@ func TestBadUsage(t *testing.T) {
 		{"unexpected argument", []string{"serve"}, `unexpected argument "serve"`},
 		{"argument after flags", []string{"--config", "/x", "extra"}, `unexpected argument "extra"`},
 		{"subcommand arguments", []string{"hash-password", "secret"}, "hash-password takes no arguments"},
+		{"config without a command", []string{"config"}, "config needs one of: check, show"},
+		{"unknown config command", []string{"config", "edit"}, "config needs one of: check, show"},
+		{"extra config argument", []string{"config", "check", "x"}, "config needs one of"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -183,7 +189,9 @@ func TestNewLogger(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var buf bytes.Buffer
-			logger := newLogger(tt.cfg, &buf)
+			var level slog.LevelVar
+			level.Set(levelOf(tt.cfg))
+			logger := newLogger(tt.cfg.Format, &level, &buf)
 			logger.Debug("debug-line")
 			logger.Info("info-line")
 			logger.Error("error-line")
@@ -204,6 +212,24 @@ func TestNewLogger(t *testing.T) {
 	}
 }
 
+func TestFollowLevel(t *testing.T) {
+	t.Parallel()
+	var level slog.LevelVar
+	level.Set(levelOf(config.Log{Level: "info"}))
+	apply := followLevel(&level)
+	for _, tt := range []struct {
+		name string
+		want slog.Level
+	}{
+		{"debug", slog.LevelDebug}, {"error", slog.LevelError}, {"info", slog.LevelInfo},
+	} {
+		apply(&config.Config{Log: config.Log{Level: tt.name}})
+		if got := level.Level(); got != tt.want {
+			t.Errorf("after a reload to %s the level is %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestLogListening(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
@@ -215,31 +241,24 @@ func TestLogListening(t *testing.T) {
 	}
 }
 
-// serverDir writes a complete configuration directory and returns it with the port the
-// configuration listens on.
-func serverDir(t *testing.T) (dir string, port int) {
+// freePort returns a loopback port that nothing listens on.
+func freePort(t *testing.T) int {
 	t.Helper()
 	var lc net.ListenConfig
 	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	port = ln.Addr().(*net.TCPAddr).Port
+	port := ln.Addr().(*net.TCPAddr).Port
 	if err := ln.Close(); err != nil {
 		t.Fatal(err)
 	}
-	dir = t.TempDir()
-	files := map[string]string{
-		"config.yaml": "listen:\n  - address: 127.0.0.1\n    port: " + strconv.Itoa(port) + "\n" +
-			"shares:\n  media:\n    path: media\n" +
-			"cluster:\n  name: example\n  node: east\n  nodes_file: nodes.yaml\n" +
-			"auth:\n  users_dir: users\n  keys_file: keys.yaml\n" +
-			"log:\n  level: info\n  format: json\n",
-		"media/hello.txt": "hello",
-		"users/.keep":     "",
-		"keys.yaml":       "keys:\n  - id: k\n    secret: \"" + strings.Repeat("QUJD", 11) + "\"\n",
-		"nodes.yaml":      "cluster: example\nnodes:\n  - name: east\n    url: https://east.example.com/api\n",
-	}
+	return port
+}
+
+// writeFiles creates the files, given by their path below dir, with their content.
+func writeFiles(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
 	for name, content := range files {
 		p := filepath.Join(dir, name)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -249,7 +268,38 @@ func serverDir(t *testing.T) (dir string, port int) {
 			t.Fatal(err)
 		}
 	}
-	return dir, port
+}
+
+// lowCostHash builds a valid argon2id hash with cheap parameters, so that no test needs the
+// 64 MiB of the real ones.
+func lowCostHash(password string) string {
+	salt := []byte("0123456789abcdef")
+	key := argon2.IDKey([]byte(password), salt, 1, 8, 1, 32)
+	enc := base64.RawStdEncoding
+	return fmt.Sprintf("$argon2id$v=19$m=8,t=1,p=1$%s$%s",
+		enc.EncodeToString(salt), enc.EncodeToString(key))
+}
+
+// serverDirs writes a configuration directory for a server on a free loopback port, and a
+// state directory that holds only what an administrator makes (a user). The server makes
+// everything else on its first start, so the tests that need other files write them.
+func serverDirs(t *testing.T) (configDir, stateDir string, port int) {
+	t.Helper()
+	port = freePort(t)
+	root := t.TempDir()
+	configDir, stateDir = filepath.Join(root, "config"), filepath.Join(root, "state")
+	writeFiles(t, configDir, map[string]string{
+		"conf.d/10-server.yaml": "listen:\n  - address: 127.0.0.1\n    port: " + strconv.Itoa(port) + "\n" +
+			"    plain: true\n" +
+			"cluster:\n  name: example\n  node: east\nlog:\n  level: info\n  format: json\n",
+		"shares.d/media.yaml": "path: " + filepath.Join(root, "media") + "\n",
+	})
+	writeFiles(t, filepath.Join(root, "media"), map[string]string{"hello.txt": "hello"})
+	writeFiles(t, stateDir, map[string]string{
+		"shared/users/alice.yaml": "password_hash: \"" + lowCostHash("secret") + "\"\n" +
+			"shares: [media]\n",
+	})
+	return configDir, stateDir, port
 }
 
 // watchedLog collects what the server logs, and tells when it has started listening.
@@ -279,12 +329,15 @@ func (w *watchedLog) String() string {
 }
 
 // startServer runs the server in the background and waits until it listens.
-func startServer(ctx context.Context, t *testing.T, dir string) (*watchedLog, <-chan int) {
+func startServer(
+	ctx context.Context, t *testing.T, configDir, stateDir string,
+) (*watchedLog, <-chan int) {
 	t.Helper()
 	logs := newWatchedLog()
 	status := make(chan int, 1)
 	go func() {
-		status <- run(ctx, []string{"--config", dir}, strings.NewReader(""), io.Discard, logs)
+		args := []string{"--config", configDir, "--state", stateDir}
+		status <- run(ctx, args, strings.NewReader(""), io.Discard, logs)
 	}()
 	select {
 	case <-logs.ready:
@@ -296,10 +349,10 @@ func startServer(ctx context.Context, t *testing.T, dir string) (*watchedLog, <-
 
 func TestServerRunsUntilCancelled(t *testing.T) {
 	t.Parallel()
-	dir, port := serverDir(t)
+	configDir, stateDir, port := serverDirs(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	logs, status := startServer(ctx, t, dir)
+	logs, status := startServer(ctx, t, configDir, stateDir)
 
 	body := fetch(t, "http://127.0.0.1:"+strconv.Itoa(port)+"/api/v1/health")
 	if want := `"version":"` + version.String() + `"`; !strings.Contains(body, want) || !strings.Contains(body, `"node":"east"`) {
@@ -318,32 +371,41 @@ func TestServerFailures(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name   string
-		mutate func(t *testing.T, dir string)
+		mutate func(t *testing.T, configDir, stateDir string)
 		want   string
 	}{
-		{"no configuration", func(t *testing.T, dir string) {
-			if err := os.Remove(filepath.Join(dir, "config.yaml")); err != nil {
-				t.Fatal(err)
-			}
-		}, "read server config"},
-		{"invalid configuration", func(t *testing.T, dir string) {
-			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("listen: []\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
+		{"invalid configuration", func(t *testing.T, configDir, _ string) {
+			writeFiles(t, configDir, map[string]string{"conf.d/20-bad.yaml": "listen: []\n"})
 		}, "invalid server config"},
-		{"share directory is missing", func(t *testing.T, dir string) {
-			if err := os.RemoveAll(filepath.Join(dir, "media")); err != nil {
-				t.Fatal(err)
-			}
+		{"unreadable configuration", func(t *testing.T, configDir, _ string) {
+			writeFiles(t, configDir, map[string]string{"conf.d/20-bad.yaml": "unknown: 1\n"})
+		}, "read server config"},
+		{"share directory is missing", func(t *testing.T, configDir, _ string) {
+			missing := map[string]string{"shares.d/media.yaml": "path: /nonexistent/media\n"}
+			writeFiles(t, configDir, missing)
 		}, `share "media"`},
+		// A server never replaces a node id or a key it cannot read: other nodes know them.
+		{"node id file is malformed", func(t *testing.T, _, stateDir string) {
+			writeFiles(t, stateDir, map[string]string{"local/node-id": "not an id\n"})
+		}, "node id file"},
+		{"signing key file is invalid", func(t *testing.T, _, stateDir string) {
+			writeFiles(t, stateDir, map[string]string{
+				"local/node-id":                     "0123456789abcdef\n",
+				"shared/keys/0123456789abcdef.yaml": "keys: []\n",
+			})
+		}, "signing key file"},
+		{"data folder is a file", func(t *testing.T, _, stateDir string) {
+			writeFiles(t, stateDir, map[string]string{"shared/keys": "a file where a folder belongs"})
+		}, "is not a folder"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			dir, _ := serverDir(t)
-			tt.mutate(t, dir)
+			configDir, stateDir, _ := serverDirs(t)
+			tt.mutate(t, configDir, stateDir)
 			var out, errOut bytes.Buffer
-			status := run(context.Background(), []string{"--config", dir}, strings.NewReader(""), &out, &errOut)
+			args := []string{"--config", configDir, "--state", stateDir}
+			status := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
 			if status != exitError || out.Len() != 0 {
 				t.Errorf("status %d stdout %q", status, out.String())
 			}
@@ -354,15 +416,166 @@ func TestServerFailures(t *testing.T) {
 	}
 }
 
-func TestDefaultConfigDirectory(t *testing.T) {
+func TestParseArgs(t *testing.T) {
 	t.Parallel()
-	opts, err := parseArgs(nil)
-	if err != nil || opts.configDir != config.DefaultDir || opts.showVersion {
-		t.Errorf("parseArgs(nil) = %+v, %v", opts, err)
+	tests := []struct {
+		args []string
+		want options
+	}{
+		{nil, options{}},
+		{
+			[]string{"-config", "/c", "--state", "/s", "--version"},
+			options{configDir: "/c", stateDir: "/s", showVersion: true},
+		},
+		{
+			[]string{"--config", "/c", "config", "check"},
+			options{configDir: "/c", command: commandCheck},
+		},
+		{[]string{"config", "show"}, options{command: commandShow}},
 	}
-	opts, err = parseArgs([]string{"-config", "/x", "--version"})
-	if err != nil || opts.configDir != "/x" || !opts.showVersion {
-		t.Errorf("parseArgs = %+v, %v", opts, err)
+	for _, tt := range tests {
+		got, err := parseArgs(tt.args)
+		if err != nil || got != tt.want {
+			t.Errorf("parseArgs(%q) = %+v, %v, want %+v", tt.args, got, err, tt.want)
+		}
+	}
+}
+
+func TestDirectory(t *testing.T) {
+	t.Parallel()
+	lookup := func() (string, error) { return "/default", nil }
+	if got, err := directory("/given", lookup); err != nil || got != "/given" {
+		t.Errorf("directory = %q, %v", got, err)
+	}
+	if got, err := directory("", lookup); err != nil || got != "/default" {
+		t.Errorf("directory = %q, %v", got, err)
+	}
+}
+
+func TestDefaultsThatCannotBeFound(t *testing.T) {
+	t.Parallel()
+	failing := func() (string, error) { return "", errors.New("no home directory") }
+	found := func() (string, error) { return t.TempDir(), nil }
+	tests := []struct {
+		name     string
+		defaults defaultDirs
+		opts     options
+	}{
+		{"config command", defaultDirs{config: failing}, options{command: commandCheck}},
+		{"server configuration", defaultDirs{config: failing}, options{}},
+		{"server state", defaultDirs{config: found, state: failing}, options{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var out, errOut bytes.Buffer
+			var status int
+			if tt.opts.command != "" {
+				status = runConfig(tt.opts, tt.defaults, &out, &errOut)
+			} else {
+				status = runServer(context.Background(), tt.opts, tt.defaults, &errOut)
+			}
+			const want = "splicefsd: no home directory\n"
+			if status != exitError || out.Len() != 0 || errOut.String() != want {
+				t.Errorf("status %d stdout %q stderr %q", status, out.String(), errOut.String())
+			}
+		})
+	}
+}
+
+func TestConfigCheck(t *testing.T) {
+	t.Parallel()
+	configDir, _, _ := serverDirs(t)
+	for _, dir := range []string{configDir, filepath.Join(t.TempDir(), "empty")} {
+		status, stdout, stderr := execute(t, "--config", dir, "config", "check")
+		if status != exitOK || stdout != "configuration ok\n" || stderr != "" {
+			t.Errorf("%s: status %d stdout %q stderr %q", dir, status, stdout, stderr)
+		}
+	}
+}
+
+func TestConfigCheckPrintsEveryProblem(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"conf.d/a.yaml":     "log:\n  level: loud\nbase_path: api\n",
+		"shares.d/m.yaml":   "path: relative\n",
+		"shares.d/Bad.yaml": "path: /srv\n",
+	})
+	status, stdout, stderr := execute(t, "--config", dir, "config", "check")
+	if status != exitError || stdout != "" {
+		t.Errorf("status %d stdout %q", status, stdout)
+	}
+	wanted := []string{"log.level", "base_path", "shares.m.path", "shares.Bad", "a.yaml", "m.yaml"}
+	for _, want := range wanted {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr does not mention %q:\n%s", want, stderr)
+		}
+	}
+}
+
+func TestConfigShow(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"conf.d/10-base.yaml": "listen:\n  - address: 127.0.0.1\n    port: 9000\n" +
+			"    plain: true\ncluster:\n  node: east\ntrusted_proxies: [192.0.2.1]\n",
+		"conf.d/20-more.yaml": "auth:\n  token_ttl: 2h\n",
+		"shares.d/media.yaml": "path: /srv/media\nmin_age: 5m\nexclude: []\n" +
+			"follow_symlinks: true\n",
+		"shares.d/plain.yaml": "path: /srv/plain\n",
+	})
+	status, stdout, stderr := execute(t, "--config", dir, "config", "show")
+	if status != exitOK || stderr != "" {
+		t.Fatalf("status %d stderr %q", status, stderr)
+	}
+	want := `listen: # 10-base.yaml
+  - address: 127.0.0.1
+    port: 9000
+    plain: true
+base_path: /api
+cluster:
+  name: default
+  node: east # 10-base.yaml
+  url: ""
+auth:
+  token_ttl: 2h # 20-more.yaml
+  login_rate: 10/m
+mtime_precision: 1s
+log:
+  level: info
+  format: text
+trusted_proxies: # 10-base.yaml
+  - 192.0.2.1/32
+shares:
+  media:
+    path: /srv/media # media.yaml
+    exclude: [] # media.yaml
+    min_age: 5m # media.yaml
+    follow_symlinks: true # media.yaml
+  plain:
+    path: /srv/plain # plain.yaml
+`
+	if stdout != want {
+		t.Errorf("output:\n%s\nwant:\n%s", stdout, want)
+	}
+}
+
+func TestConfigShowWithoutShares(t *testing.T) {
+	t.Parallel()
+	_, stdout, _ := execute(t, "--config", t.TempDir(), "config", "show")
+	if !strings.HasSuffix(stdout, "trusted_proxies: []\nshares: {}\n") {
+		t.Errorf("output:\n%s", stdout)
+	}
+}
+
+func TestConfigShowWriteFailure(t *testing.T) {
+	t.Parallel()
+	var errOut bytes.Buffer
+	opts := options{configDir: t.TempDir(), command: commandShow}
+	status := runConfig(opts, systemDirs, errWriter{}, &errOut)
+	if status != exitError || !strings.Contains(errOut.String(), "disk full") {
+		t.Errorf("status %d stderr %q", status, errOut.String())
 	}
 }
 

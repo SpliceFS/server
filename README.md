@@ -54,6 +54,12 @@ the [client repository](https://github.com/SpliceFS/client).
 ## Features
 
 - The server only reads: it never writes to a share
+- Nothing has to be configured: a fresh install runs with TLS on port 8480, using a certificate
+  it creates itself
+- Settings, shares and users are small files in folders that upgrades never touch
+- `splicefsd config check` validates the files; `splicefsd config show` prints the result and
+  the file each value came from
+- Applies a changed configuration on `SIGHUP` without a restart; requests in progress finish
 - No state about readers and no database
 - Logins with per-user files and signed, short-lived tokens that any node can issue and check
 - Works behind a reverse proxy or stands alone with its own TLS
@@ -61,41 +67,38 @@ the [client repository](https://github.com/SpliceFS/client).
 
 ## Quick start
 
-On every node, with the files already in place under `/srv/media`:
+Install the package for your system. The service starts at once and listens on every interface
+on port 8480 with TLS. Nothing is shared yet and nobody can log in.
+
+Add a share. The file name is the share name:
 
 ```
-# /etc/splicefs/server/config.yaml
-listen:
-  - {address: 0.0.0.0, port: 8480}
-shares:
-  media: {path: /srv/media}
-cluster: {name: example, node: east, nodes_file: /srv/shared/nodes.yaml}
-auth: {users_dir: /srv/shared/users, keys_file: /srv/shared/keys.yaml}
+# /etc/splicefs/server/shares.d/media.yaml
+path: /srv/media
 ```
 
-The node list, the users directory and the keys file are the same on every node; copy or
-replicate them however you like. Create them once:
+Add a user. Run `splicefsd hash-password`, type the password, and put the printed hash in one
+file:
 
 ```
-# /srv/shared/nodes.yaml
-cluster: example
-nodes:
-  - {name: east, url: "https://east.example.com/api"}
-  - {name: west, url: "https://west.example.com/api"}
-
-# /srv/shared/keys.yaml  (mode 600)
-keys:
-  - {id: "2026-11", secret: "<output of: head -c 48 /dev/urandom | base64>"}
-
-# /srv/shared/users/alice.yaml
+# /var/lib/splicefs/server/shared/users/alice.yaml
 password_hash: "<output of: splicefsd hash-password>"
 shares: [media]
 ```
 
-Start `splicefsd` on each node (a systemd unit is in `packaging/systemd`). To mount the files on
-a reader, set up the [client](https://github.com/SpliceFS/client).
+Apply the share without a restart:
 
-The [configuration reference](docs/configuration.md) lists every setting.
+```
+systemctl reload splicefsd        # on Alpine: rc-service splicefsd reload
+```
+
+A new or changed user file takes effect at the next login and needs no reload. On a macOS
+build the folders are `~/.splicefs/server` and `~/.splicefs/var/server`.
+
+To run several servers as one cluster, set `cluster.url` on each one and sync its `shared/`
+folder between them. The [configuration reference](docs/configuration.md) describes this and
+every other setting. To mount the files on a reader, set up the
+[client](https://github.com/SpliceFS/client).
 
 ## Documentation
 
@@ -138,16 +141,16 @@ machine, `make package-test PLATFORM=linux/amd64` tests the other CPU type by em
 ## Repository layout
 
 ```
-cmd/splicefsd/  the program: command line and the hash-password command
-app/            builds every part from the configuration and serves HTTP
-config/         loads and validates config.yaml
+cmd/splicefsd/  the program: command line, config check, config show and hash-password
+app/            builds every part from the configuration, serves HTTP and reloads on SIGHUP
+config/         loads and validates the files in conf.d and shares.d
 api/            the HTTP API, version 1
-auth/           password hashes, user files, signed tokens, login rate limiter
+auth/           password hashes, user files, token keys, signed tokens, login rate limiter
 share/          safe read-only access to one shared directory
-cluster/        the node list file
+cluster/        the node list, one file per server
 internal/       the version number set at build time
 docs/           design and configuration reference
-packaging/      systemd unit
+packaging/      systemd unit, OpenRC script, package files
 scripts/        development helpers used by make and CI
 ```
 
