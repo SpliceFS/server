@@ -15,6 +15,5 @@ All notable changes to this project are recorded here. The format follows
   tokens with key rotation; login rate limiting; optional TLS; `splicefsd hash-password`.
 - A systemd unit for `splicefsd`.
 - A Debian package, `splicefs-server`, for amd64 and arm64. It installs the program and the
-  systemd unit, creates the `splicefs` user and an empty
-  `/etc/splicefs/server`. The service is enabled and starts once a
-  configuration exists.
+  systemd unit, creates the `splicefs` user and an empty `/etc/splicefs/server`. The service
+  is enabled and starts once a configuration exists.

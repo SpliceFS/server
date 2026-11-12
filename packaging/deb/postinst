@@ -17,10 +17,12 @@ case "$1" in
             systemctl daemon-reload
             if [ -z "$2" ]; then
                 systemctl enable splicefsd.service
-                systemctl start splicefsd.service || echo "splicefsd did not start; see: journalctl -u splicefsd" >&2
+                systemctl start splicefsd.service ||
+                    echo "splicefsd did not start; see: journalctl -u splicefsd" >&2
             else
                 # A broken configuration must not turn an upgrade into a failed install.
-                systemctl try-restart splicefsd.service || echo "splicefsd did not restart; see: journalctl -u splicefsd" >&2
+                systemctl try-restart splicefsd.service ||
+                    echo "splicefsd did not restart; see: journalctl -u splicefsd" >&2
             fi
         fi
         ;;
