@@ -241,15 +241,23 @@ func decode(data []byte) (*rawConfig, error) {
 		}
 		return nil, err
 	}
+	if err := rejectSecondDocument(dec); err != nil {
+		return nil, err
+	}
+	return &raw, nil
+}
+
+// rejectSecondDocument fails when dec has another YAML document to read.
+func rejectSecondDocument(dec *yaml.Decoder) error {
 	var next yaml.Node
 	err := dec.Decode(&next)
 	switch {
 	case err == nil:
-		return nil, errors.New("more than one YAML document")
+		return errors.New("more than one YAML document")
 	case !errors.Is(err, io.EOF):
-		return nil, err
+		return err
 	}
-	return &raw, nil
+	return nil
 }
 
 // parseProxies converts trusted_proxies entries to prefixes. A single address
@@ -287,25 +295,41 @@ func applyDefaults(cfg *Config) {
 		cfg.BasePath = defaultBasePath
 	}
 	for name, share := range cfg.Shares {
-		if share.Exclude == nil {
-			share.Exclude = []string{defaultExclude}
-			cfg.Shares[name] = share
-		}
+		applyShareDefaults(&share)
+		cfg.Shares[name] = share
 	}
-	if cfg.Auth.TokenTTL == 0 {
-		cfg.Auth.TokenTTL = units.Duration(defaultTokenTTL)
+	applyLimitDefaults(&cfg.Auth.TokenTTL, &cfg.Auth.LoginRate, &cfg.MTimePrecision)
+	applyLogDefaults(&cfg.Log)
+}
+
+// applyShareDefaults fills in the share keys that are absent.
+func applyShareDefaults(share *Share) {
+	if share.Exclude == nil {
+		share.Exclude = []string{defaultExclude}
 	}
-	if cfg.Auth.LoginRate == (Rate{}) {
-		cfg.Auth.LoginRate = Rate{Count: 10, Per: time.Minute}
+}
+
+// applyLimitDefaults fills in the token lifetime, login rate and mtime precision,
+// which both loaders share.
+func applyLimitDefaults(ttl *units.Duration, rate *Rate, mtime *units.Duration) {
+	if *ttl == 0 {
+		*ttl = units.Duration(defaultTokenTTL)
 	}
-	if cfg.MTimePrecision == 0 {
-		cfg.MTimePrecision = units.Duration(defaultMTimePrecision)
+	if *rate == (Rate{}) {
+		*rate = Rate{Count: 10, Per: time.Minute}
 	}
-	if cfg.Log.Level == "" {
-		cfg.Log.Level = defaultLogLevel
+	if *mtime == 0 {
+		*mtime = units.Duration(defaultMTimePrecision)
 	}
-	if cfg.Log.Format == "" {
-		cfg.Log.Format = defaultLogFormat
+}
+
+// applyLogDefaults fills in the log keys that are absent.
+func applyLogDefaults(l *Log) {
+	if l.Level == "" {
+		l.Level = defaultLogLevel
+	}
+	if l.Format == "" {
+		l.Format = defaultLogFormat
 	}
 }
 
@@ -322,10 +346,7 @@ func normalizeBasePath(p string) (string, error) {
 // and cleans it. Empty paths stay empty.
 func resolvePaths(cfg *Config, dir string) {
 	for i := range cfg.Listen {
-		if tls := cfg.Listen[i].TLS; tls != nil {
-			tls.CertFile = resolve(dir, tls.CertFile)
-			tls.KeyFile = resolve(dir, tls.KeyFile)
-		}
+		resolveTLS(&cfg.Listen[i], dir)
 	}
 	for name, share := range cfg.Shares {
 		share.Path = resolve(dir, share.Path)
@@ -334,6 +355,14 @@ func resolvePaths(cfg *Config, dir string) {
 	cfg.Cluster.NodesFile = resolve(dir, cfg.Cluster.NodesFile)
 	cfg.Auth.UsersDir = resolve(dir, cfg.Auth.UsersDir)
 	cfg.Auth.KeysFile = resolve(dir, cfg.Auth.KeysFile)
+}
+
+// resolveTLS makes the certificate and key paths of l relative to dir.
+func resolveTLS(l *Listener, dir string) {
+	if l.TLS != nil {
+		l.TLS.CertFile = resolve(dir, l.TLS.CertFile)
+		l.TLS.KeyFile = resolve(dir, l.TLS.KeyFile)
+	}
 }
 
 func resolve(dir, p string) string {
@@ -356,11 +385,15 @@ func validate(cfg *Config) []error {
 	problems = append(problems, required("cluster.nodes_file", cfg.Cluster.NodesFile)...)
 	problems = append(problems, required("auth.users_dir", cfg.Auth.UsersDir)...)
 	problems = append(problems, required("auth.keys_file", cfg.Auth.KeysFile)...)
-	problems = append(problems, validateAuth(cfg.Auth)...)
-	problems = append(problems, validateAtLeast("mtime_precision", cfg.MTimePrecision, minMTimePrecision)...)
-	problems = append(problems, oneOf("log.level", cfg.Log.Level, "debug", "info", "warn", "error")...)
-	problems = append(problems, oneOf("log.format", cfg.Log.Format, "text", "json")...)
+	problems = append(problems, validateLimits(cfg.Auth.TokenTTL, cfg.Auth.LoginRate, cfg.MTimePrecision)...)
+	problems = append(problems, validateLog(cfg.Log)...)
 	return problems
+}
+
+// validateLog checks the log keys, which both loaders share.
+func validateLog(l Log) []error {
+	problems := oneOf("log.level", l.Level, "debug", "info", "warn", "error")
+	return append(problems, oneOf("log.format", l.Format, "text", "json")...)
 }
 
 // required reports an empty value.
@@ -460,10 +493,12 @@ func validateExclude(pattern string) error {
 	return nil
 }
 
-func validateAuth(auth Auth) []error {
-	problems := validateAtLeast("auth.token_ttl", auth.TokenTTL, minTokenTTL)
-	if auth.LoginRate.Count < 1 {
-		problems = append(problems, fmt.Errorf("auth.login_rate: count %d is not at least 1", auth.LoginRate.Count))
+// validateLimits checks the token lifetime, login rate and mtime precision, which both
+// loaders share.
+func validateLimits(ttl units.Duration, rate Rate, mtime units.Duration) []error {
+	problems := validateAtLeast("auth.token_ttl", ttl, minTokenTTL)
+	if rate.Count < 1 {
+		problems = append(problems, fmt.Errorf("auth.login_rate: count %d is not at least 1", rate.Count))
 	}
-	return problems
+	return append(problems, validateAtLeast("mtime_precision", mtime, minMTimePrecision)...)
 }
