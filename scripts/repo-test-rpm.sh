@@ -14,10 +14,10 @@ install -m 644 /keys/splicefs.asc "$key"
 
 if command -v dnf >/dev/null 2>&1; then
     repofile=/etc/yum.repos.d/splicefs.repo
-    cat > "$repofile" <<'REPO'
-[splicefs-server]
-name=SpliceFS server
-baseurl=file:///repo/rpm/$basearch
+    cat > "$repofile" <<REPO
+[$name]
+name=SpliceFS ${name#splicefs-}
+baseurl=file:///repo/rpm/\$basearch
 enabled=1
 gpgcheck=1
 repo_gpgcheck=1
@@ -30,16 +30,16 @@ else
     repofile=/etc/zypp/repos.d/splicefs.repo
     rpm --import "$key"
     install -d -m 755 /etc/zypp/repos.d
-    cat > "$repofile" <<'REPO'
-[splicefs-server]
-name=SpliceFS server
-baseurl=file:///repo/rpm/$basearch
+    cat > "$repofile" <<REPO
+[$name]
+name=SpliceFS ${name#splicefs-}
+baseurl=file:///repo/rpm/\$basearch
 enabled=1
 autorefresh=1
 gpgcheck=1
 gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-splicefs
 REPO
-    zypper --non-interactive refresh splicefs-server >/tmp/refresh.log 2>&1 || {
+    zypper --non-interactive refresh "$name" >/tmp/refresh.log 2>&1 || {
         cat /tmp/refresh.log
         fail "zypper refresh failed on the good repository"
     }
