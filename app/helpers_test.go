@@ -25,7 +25,8 @@ import (
 )
 
 // fixture is a complete server: a configuration directory loaded the way the program
-// loads it, and a state directory holding the data the server reads.
+// loads it, and a state directory holding only what an administrator makes (the users).
+// The server makes the rest on its first start.
 type fixture struct {
 	cfg      *config.Config
 	state    string
@@ -52,13 +53,6 @@ func write(t *testing.T, dir, name, content string) string {
 		t.Fatal(err)
 	}
 	return p
-}
-
-func remove(t *testing.T, path string) {
-	t.Helper()
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
 }
 
 // setMTime gives a file a fixed modification time, so its tag is known to the test.
@@ -101,9 +95,10 @@ func endpoint(tlsFiles *config.TLS, plain bool) config.Endpoint {
 	}
 }
 
-// testSettings names the cluster and allows many logins, so that tests do not wait for the
-// rate limit.
-const testSettings = "cluster:\n  name: example\n  node: east\nauth:\n  login_rate: 100/m\n"
+// testSettings names the cluster, gives this node its public URL and allows many logins, so
+// that tests do not wait for the rate limit.
+const testSettings = "cluster:\n  name: example\n  node: east\n  url: https://east.example.com/api\n" +
+	"auth:\n  login_rate: 100/m\n"
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
@@ -118,11 +113,6 @@ func newFixture(t *testing.T) *fixture {
 
 	alice := "password_hash: \"" + lowCostHash("right-password") + "\"\nshares: [media]\n"
 	write(t, f.data.usersDir, "alice.yaml", alice)
-	secret := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
-	write(t, filepath.Dir(f.data.keysFile), filepath.Base(f.data.keysFile),
-		"keys:\n  - id: test\n    secret: \""+secret+"\"\n")
-	write(t, filepath.Dir(f.data.nodesFile), filepath.Base(f.data.nodesFile),
-		"cluster: ignored\nnodes:\n  - name: east\n    url: https://east.example.com/api\n")
 
 	f.cfg = loadConfig(t,
 		map[string]string{"10-test.yaml": testSettings},

@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -19,6 +21,7 @@ import (
 	"github.com/SpliceFS/server/auth"
 	"github.com/SpliceFS/server/config"
 	"github.com/SpliceFS/server/internal/version"
+	"golang.org/x/crypto/argon2"
 )
 
 func TestMainRunsTheProgram(t *testing.T) {
@@ -247,8 +250,19 @@ func writeFiles(t *testing.T, dir string, files map[string]string) {
 	}
 }
 
-// serverDirs writes a configuration directory and a state directory for a server on a free
-// loopback port, and returns them with the port.
+// lowCostHash builds a valid argon2id hash with cheap parameters, so that no test needs the
+// 64 MiB of the real ones.
+func lowCostHash(password string) string {
+	salt := []byte("0123456789abcdef")
+	key := argon2.IDKey([]byte(password), salt, 1, 8, 1, 32)
+	enc := base64.RawStdEncoding
+	return fmt.Sprintf("$argon2id$v=19$m=8,t=1,p=1$%s$%s",
+		enc.EncodeToString(salt), enc.EncodeToString(key))
+}
+
+// serverDirs writes a configuration directory for a server on a free loopback port, and a
+// state directory that holds only what an administrator makes (a user). The server makes
+// everything else on its first start, so the tests that need other files write them.
 func serverDirs(t *testing.T) (configDir, stateDir string, port int) {
 	t.Helper()
 	port = freePort(t)
@@ -262,10 +276,8 @@ func serverDirs(t *testing.T) (configDir, stateDir string, port int) {
 	})
 	writeFiles(t, filepath.Join(root, "media"), map[string]string{"hello.txt": "hello"})
 	writeFiles(t, stateDir, map[string]string{
-		"shared/keys.yaml": "keys:\n  - id: k\n    secret: \"" +
-			strings.Repeat("QUJD", 11) + "\"\n",
-		"shared/nodes.yaml": "cluster: example\nnodes:\n  - name: east\n" +
-			"    url: https://east.example.com/api\n",
+		"shared/users/alice.yaml": "password_hash: \"" + lowCostHash("secret") + "\"\n" +
+			"shares: [media]\n",
 	})
 	return configDir, stateDir, port
 }
@@ -352,11 +364,19 @@ func TestServerFailures(t *testing.T) {
 			missing := map[string]string{"shares.d/media.yaml": "path: /nonexistent/media\n"}
 			writeFiles(t, configDir, missing)
 		}, `share "media"`},
-		{"no keys", func(t *testing.T, _, stateDir string) {
-			if err := os.Remove(filepath.Join(stateDir, "shared", "keys.yaml")); err != nil {
-				t.Fatal(err)
-			}
-		}, "check keys file"},
+		// A server never replaces a node id or a key it cannot read: other nodes know them.
+		{"node id file is malformed", func(t *testing.T, _, stateDir string) {
+			writeFiles(t, stateDir, map[string]string{"local/node-id": "not an id\n"})
+		}, "node id file"},
+		{"signing key file is invalid", func(t *testing.T, _, stateDir string) {
+			writeFiles(t, stateDir, map[string]string{
+				"local/node-id":                     "0123456789abcdef\n",
+				"shared/keys/0123456789abcdef.yaml": "keys: []\n",
+			})
+		}, "signing key file"},
+		{"data folder is a file", func(t *testing.T, _, stateDir string) {
+			writeFiles(t, stateDir, map[string]string{"shared/keys": "a file where a folder belongs"})
+		}, "is not a folder"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

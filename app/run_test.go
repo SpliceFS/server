@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/SpliceFS/common/wire"
 	"github.com/SpliceFS/server/config"
+	"github.com/SpliceFS/server/internal/datadir"
 	"github.com/SpliceFS/server/share"
 )
 
@@ -297,23 +299,33 @@ func TestRunFailsAtStart(t *testing.T) {
 		{"share path does not exist", func(f *fixture) {
 			f.cfg.Shares["zzz"] = config.Share{Path: missing}
 		}, `share "zzz"`},
-		{"keys file is missing", func(f *fixture) {
-			remove(t, f.data.keysFile)
-		}, "check keys file"},
-		{"keys file is invalid", func(f *fixture) {
-			write(t, f.state, "shared/keys.yaml", "keys: []\n")
-		}, "check keys file"},
-		{"node list is missing", func(f *fixture) {
-			remove(t, f.data.nodesFile)
-		}, "check node list"},
-		{"node list is invalid", func(f *fixture) {
-			write(t, f.state, "shared/nodes.yaml", "cluster: x\nnodes: []\n")
-		}, "check node list"},
+		{"node id file is malformed", func(f *fixture) {
+			write(t, f.state, "local/node-id", "not an id\n")
+		}, "node id file"},
+		{"signing key file is invalid", func(f *fixture) {
+			write(t, f.state, "local/node-id", "0123456789abcdef\n")
+			write(t, f.state, "shared/keys/0123456789abcdef.yaml", "keys: []\n")
+		}, "signing key file"},
+		{"node file cannot be written", func(f *fixture) {
+			// A folder where this node's file belongs cannot be replaced by the file.
+			write(t, f.state, "local/node-id", "0123456789abcdef\n")
+			node := filepath.Join(f.state, "shared/nodes", datadir.NodeFile("0123456789abcdef"))
+			if err := os.MkdirAll(node, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, "write node file"},
+		{"state folder is a file", func(f *fixture) {
+			write(t, f.state, "shared/keys", "a file where a folder belongs")
+		}, "is not a folder"},
+		{"state folders cannot be made", func(f *fixture) {
+			parent := write(t, t.TempDir(), "file", "a file where a folder belongs")
+			f.state = filepath.Join(parent, "state")
+		}, "create folder"},
 		{"certificate is missing", func(f *fixture) {
 			f.cfg.Listen[0] = endpoint(&config.TLS{CertFile: missing, KeyFile: missing}, false)
 		}, "load certificate"},
 		{"own certificate cannot be made", func(f *fixture) {
-			write(t, f.state, "local", "a file where a folder belongs")
+			write(t, f.state, "local/tls", "a file where a folder belongs")
 			f.cfg.Listen[0] = endpoint(nil, false)
 		}, "self-signed certificate"},
 	}
