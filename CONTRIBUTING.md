@@ -77,6 +77,9 @@ must pass before a merge.
   Code that cannot be reached by a test is a design problem; restructure it so it can.
 - Tests are table-driven where there are several cases, use only the standard `testing`
   package, and run with the race detector.
+- Code that parses input from a user or a remote system gets a fuzz test (`FuzzXxx`) that checks
+  properties such as no panic, a path that stays under its root and a token that was not issued
+  never verifying. Run them with `make fuzz`, or longer with `FUZZTIME=1m make fuzz`.
 - Tests do not sleep to wait for something and do not depend on wall-clock time. Use an
   injected clock.
 - A bug fix comes with a test that fails without the fix.
