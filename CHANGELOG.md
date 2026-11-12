@@ -18,3 +18,5 @@ All notable changes to this project are recorded here. The format follows
   family) and apk (Alpine). Each installs the program and the service for its system
   (systemd, or OpenRC on Alpine), creates the `splicefs` user and an empty
   `/etc/splicefs/server`. The service is enabled and starts once a configuration exists.
+- `make package-test` install-tests the packages on every supported Debian, Ubuntu, Rocky
+  Linux, Amazon Linux, openSUSE and Alpine version, listed in `packaging/test-systems`.

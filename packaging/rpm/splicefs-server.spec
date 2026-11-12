@@ -6,7 +6,10 @@ Release:        1
 Summary:        Server of the SpliceFS read-only multi-source filesystem
 License:        MIT
 URL:            https://github.com/SpliceFS/server
-Requires(pre):  shadow-utils
+# Files, not a package name: the tools come from shadow-utils on Red Hat and from shadow
+# on SUSE.
+Requires(pre):  /usr/sbin/useradd
+Requires(pre):  /usr/sbin/groupadd
 
 # The binary is static and already stripped, and it may be for another CPU type than the
 # one building the package, so the usual post-processing has nothing it could do right.
