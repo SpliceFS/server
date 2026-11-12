@@ -27,6 +27,13 @@ All notable changes to this project are recorded here. The format follows
   mapping of request names to files in a share, and the HTTP request parsing, with `make fuzz`
   to run them.
 
+- Release and publish: a `vX.Y.Z` tag builds, signs, tests and publishes the package
+  repositories to `packages.splicefs.org/server` (`make publish-fetch`, `make publish`,
+  `make publish-check`) and creates a GitHub release with the packages, `SHA256SUMS` and its
+  signature (`make release-assets`). Pre-release tags such as `v1.2.0-rc.1` give versions that
+  sort before the release in deb, rpm and apk; `make publish-test` checks the publishing
+  without a server.
+
 ### Fixed
 
 - A request for a name longer than the file system allows is answered with 404 instead of
