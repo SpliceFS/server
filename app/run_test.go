@@ -221,9 +221,9 @@ func TestListenerKinds(t *testing.T) {
 	f := newFixture(t)
 	certFile, keyFile, pool := selfSigned(t)
 	f.cfg.Listen = []config.Endpoint{
-		endpoint(nil, true),
-		endpoint(&config.TLS{CertFile: certFile, KeyFile: keyFile}, false),
-		endpoint(nil, false),
+		configEndpoint(nil, true),
+		configEndpoint(&config.TLS{CertFile: certFile, KeyFile: keyFile}, false),
+		configEndpoint(nil, false),
 	}
 	srv := start(t, f)
 	if len(srv.addrs) != 3 {
@@ -322,11 +322,11 @@ func TestRunFailsAtStart(t *testing.T) {
 			f.state = filepath.Join(parent, "state")
 		}, "create folder"},
 		{"certificate is missing", func(f *fixture) {
-			f.cfg.Listen[0] = endpoint(&config.TLS{CertFile: missing, KeyFile: missing}, false)
+			f.cfg.Listen[0] = configEndpoint(&config.TLS{CertFile: missing, KeyFile: missing}, false)
 		}, "load certificate"},
 		{"own certificate cannot be made", func(f *fixture) {
 			write(t, f.state, "local/tls", "a file where a folder belongs")
-			f.cfg.Listen[0] = endpoint(nil, false)
+			f.cfg.Listen[0] = configEndpoint(nil, false)
 		}, "self-signed certificate"},
 	}
 	for _, tt := range tests {

@@ -83,12 +83,12 @@ func loadConfig(t *testing.T, conf, shares map[string]string) *config.Config {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Listen = []config.Endpoint{endpoint(nil, true)}
+	cfg.Listen = []config.Endpoint{configEndpoint(nil, true)}
 	return cfg
 }
 
-// endpoint is a listener on a free loopback port.
-func endpoint(tlsFiles *config.TLS, plain bool) config.Endpoint {
+// configEndpoint is a listener entry on a free loopback port.
+func configEndpoint(tlsFiles *config.TLS, plain bool) config.Endpoint {
 	return config.Endpoint{
 		Listener: config.Listener{Address: netip.MustParseAddr("127.0.0.1"), TLS: tlsFiles},
 		Plain:    plain,

@@ -41,8 +41,8 @@ type certificateSource func() (tls.Certificate, error)
 // closed.
 func listen(
 	ctx context.Context, entries []config.Endpoint, own certificateSource,
-) ([]net.Listener, error) {
-	var listeners []net.Listener
+) ([]*endpoint, error) {
+	var listeners []*endpoint
 	for _, entry := range entries {
 		ln, err := listenOne(ctx, entry, own)
 		if err != nil {
@@ -58,21 +58,17 @@ func listen(
 // port open.
 func listenOne(
 	ctx context.Context, entry config.Endpoint, own certificateSource,
-) (net.Listener, error) {
+) (*endpoint, error) {
 	address := net.JoinHostPort(entry.Address.String(), strconv.Itoa(entry.Port))
 	tlsConfig, err := tlsConfigFor(entry, own)
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", address, err)
 	}
-	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "tcp", address)
+	ep, err := openEndpoint(ctx, address, tlsConfig)
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", address, err)
 	}
-	if tlsConfig != nil {
-		ln = tls.NewListener(ln, tlsConfig)
-	}
-	return ln, nil
+	return ep, nil
 }
 
 // tlsConfigFor returns nil for a plain listener, the configured certificate when the entry
@@ -95,7 +91,7 @@ func tlsConfigFor(entry config.Endpoint, own certificateSource) (*tls.Config, er
 }
 
 // closeAll closes every listener and reports all failures.
-func closeAll(listeners []net.Listener) error {
+func closeAll(listeners []*endpoint) error {
 	var errs []error
 	for _, ln := range listeners {
 		if err := ln.Close(); err != nil {
@@ -109,7 +105,10 @@ func closeAll(listeners []net.Listener) error {
 // ready first. After cancellation it waits up to grace for requests in progress and then
 // closes their connections; that is a clean shutdown and returns nil. After a failure it
 // closes everything at once and returns the failure. It always waits for its goroutines.
-func serve(ctx context.Context, srv *http.Server, listeners []net.Listener, grace time.Duration, ready func([]net.Addr)) error {
+func serve(
+	ctx context.Context, srv *http.Server, listeners []*endpoint, grace time.Duration,
+	ready func([]net.Addr),
+) error {
 	if ready != nil {
 		ready(addresses(listeners))
 	}
@@ -117,7 +116,8 @@ func serve(ctx context.Context, srv *http.Server, listeners []net.Listener, grac
 	var wg sync.WaitGroup
 	for _, ln := range listeners {
 		wg.Go(func() {
-			if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+			// A retired endpoint was closed on purpose, which is not a failure.
+			if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) && !ln.isRetired() {
 				failures <- fmt.Errorf("serve on %s: %w", ln.Addr(), err)
 			}
 		})
@@ -145,7 +145,7 @@ func shutdown(ctx context.Context, srv *http.Server, grace time.Duration) error 
 }
 
 // addresses returns the bound address of every listener.
-func addresses(listeners []net.Listener) []net.Addr {
+func addresses(listeners []*endpoint) []net.Addr {
 	addrs := make([]net.Addr, 0, len(listeners))
 	for _, ln := range listeners {
 		addrs = append(addrs, ln.Addr())
