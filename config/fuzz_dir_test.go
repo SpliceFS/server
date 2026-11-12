@@ -56,7 +56,7 @@ func FuzzLoadDir(f *testing.F) {
 }
 
 // checkSettingsInvariants holds what the rest of the server relies on after a successful load.
-func checkSettingsInvariants(t *testing.T, s *Settings) {
+func checkSettingsInvariants(t *testing.T, s *Config) {
 	t.Helper()
 	if len(s.Listen) == 0 {
 		t.Fatal("accepted without a listener")

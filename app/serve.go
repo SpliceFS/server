@@ -34,12 +34,17 @@ func newServer(handler http.Handler, logger *slog.Logger) *http.Server {
 	}
 }
 
+// certificateSource returns the certificate a listener without TLS files uses.
+type certificateSource func() (tls.Certificate, error)
+
 // listen opens a listener for every entry. If one fails, the ones opened before it are
 // closed.
-func listen(ctx context.Context, entries []config.Listener) ([]net.Listener, error) {
+func listen(
+	ctx context.Context, entries []config.Endpoint, own certificateSource,
+) ([]net.Listener, error) {
 	var listeners []net.Listener
 	for _, entry := range entries {
-		ln, err := listenOne(ctx, entry)
+		ln, err := listenOne(ctx, entry, own)
 		if err != nil {
 			return nil, errors.Join(err, closeAll(listeners))
 		}
@@ -48,17 +53,16 @@ func listen(ctx context.Context, entries []config.Listener) ([]net.Listener, err
 	return listeners, nil
 }
 
-// listenOne opens the listener of one entry, with TLS if it asks for it. The certificate
-// is loaded before the port is bound, so a bad certificate does not leave a port open.
-func listenOne(ctx context.Context, entry config.Listener) (net.Listener, error) {
+// listenOne opens the listener of one entry, with TLS unless it asks for plain HTTP. The
+// certificate is loaded before the port is bound, so a bad certificate does not leave a
+// port open.
+func listenOne(
+	ctx context.Context, entry config.Endpoint, own certificateSource,
+) (net.Listener, error) {
 	address := net.JoinHostPort(entry.Address.String(), strconv.Itoa(entry.Port))
-	var tlsConfig *tls.Config
-	if entry.TLS != nil {
-		cert, err := tls.LoadX509KeyPair(entry.TLS.CertFile, entry.TLS.KeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("listen on %s: load certificate: %w", address, err)
-		}
-		tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	tlsConfig, err := tlsConfigFor(entry, own)
+	if err != nil {
+		return nil, fmt.Errorf("listen on %s: %w", address, err)
 	}
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", address)
@@ -69,6 +73,25 @@ func listenOne(ctx context.Context, entry config.Listener) (net.Listener, error)
 		ln = tls.NewListener(ln, tlsConfig)
 	}
 	return ln, nil
+}
+
+// tlsConfigFor returns nil for a plain listener, the configured certificate when the entry
+// names files, and the server's own certificate otherwise.
+func tlsConfigFor(entry config.Endpoint, own certificateSource) (*tls.Config, error) {
+	if entry.Plain {
+		return nil, nil
+	}
+	var cert tls.Certificate
+	var err error
+	if entry.TLS != nil {
+		cert, err = tls.LoadX509KeyPair(entry.TLS.CertFile, entry.TLS.KeyFile)
+	} else {
+		cert, err = own()
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load certificate: %w", err)
+	}
+	return &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}, nil
 }
 
 // closeAll closes every listener and reports all failures.

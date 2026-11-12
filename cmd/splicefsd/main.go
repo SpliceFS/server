@@ -1,6 +1,6 @@
-// Command splicefsd is the SpliceFS server. It serves the directories named in its
-// configuration over HTTP. The hash-password subcommand makes a password hash for a user
-// file.
+// Command splicefsd is the SpliceFS server. It serves the shares of its configuration
+// directory over HTTP. The config subcommands check and show that configuration, and
+// hash-password makes a password hash for a user file.
 package main
 
 import (
@@ -33,7 +33,12 @@ const (
 
 const (
 	program = "splicefsd"
-	usage   = "usage: splicefsd [--config DIR] [--version]\n       splicefsd hash-password\n"
+	usage   = `usage: splicefsd [--config DIR] [--state DIR]
+       splicefsd [--config DIR] config check
+       splicefsd [--config DIR] config show
+       splicefsd hash-password
+       splicefsd --version
+`
 )
 
 // exit is replaced in tests.
@@ -61,13 +66,25 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		_, _ = fmt.Fprintf(stdout, "%s %s\n", program, version.String())
 		return exitOK
 	}
-	return runServer(ctx, opts.configDir, stderr)
+	if opts.command != "" {
+		return runConfig(opts, systemDirs, stdout, stderr)
+	}
+	return runServer(ctx, opts, systemDirs, stderr)
 }
 
-// options are the settings of the command line.
+// The subcommands after "config".
+const (
+	commandCheck = "check"
+	commandShow  = "show"
+)
+
+// options are the settings of the command line. An empty directory means the default.
 type options struct {
 	configDir   string
+	stateDir    string
 	showVersion bool
+	// command is check or show for the config subcommands, empty to run the server.
+	command string
 }
 
 // parseArgs reads the command line of the server.
@@ -75,15 +92,63 @@ func parseArgs(args []string) (options, error) {
 	var opts options
 	fs := flag.NewFlagSet(program, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.StringVar(&opts.configDir, "config", config.DefaultDir, "")
+	fs.StringVar(&opts.configDir, "config", "", "")
+	fs.StringVar(&opts.stateDir, "state", "", "")
 	fs.BoolVar(&opts.showVersion, "version", false, "")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
-	if fs.NArg() > 0 {
-		return options{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	rest := fs.Args()
+	switch {
+	case len(rest) == 0:
+	case rest[0] == "config" && len(rest) == 2 && isConfigCommand(rest[1]):
+		opts.command = rest[1]
+	case rest[0] == "config":
+		return options{}, errors.New("config needs one of: check, show")
+	default:
+		return options{}, fmt.Errorf("unexpected argument %q", rest[0])
 	}
 	return opts, nil
+}
+
+// defaultDirs finds the directories used when the command line names none. They are looked
+// up only when needed, because the home directory they may be under is not always known.
+type defaultDirs struct {
+	config, state func() (string, error)
+}
+
+// systemDirs are the defaults of this build.
+var systemDirs = defaultDirs{config: config.DefaultConfigDir, state: config.DefaultStateDir}
+
+func isConfigCommand(name string) bool { return name == commandCheck || name == commandShow }
+
+// directory returns given, or the default when none was given.
+func directory(given string, fallback func() (string, error)) (string, error) {
+	if given != "" {
+		return given, nil
+	}
+	return fallback()
+}
+
+// runConfig implements config check and config show.
+func runConfig(opts options, defaults defaultDirs, stdout, stderr io.Writer) int {
+	dir, err := directory(opts.configDir, defaults.config)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	cfg, err := config.LoadDir(dir)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if opts.command == commandCheck {
+		_, err = io.WriteString(stdout, "configuration ok\n")
+	} else {
+		err = showConfig(stdout, cfg)
+	}
+	if err != nil {
+		return fail(stderr, err)
+	}
+	return exitOK
 }
 
 // runHashPassword implements the hash-password subcommand.
@@ -116,17 +181,25 @@ func hashPassword(in io.Reader, out io.Writer, random io.Reader) error {
 	return nil
 }
 
-// runServer loads the configuration in dir and serves until ctx is cancelled or a
-// termination signal arrives.
-func runServer(ctx context.Context, dir string, stderr io.Writer) int {
-	cfg, err := config.Load(dir)
+// runServer loads the configuration and serves until ctx is cancelled or a termination
+// signal arrives. An invalid configuration is reported before anything is opened.
+func runServer(ctx context.Context, opts options, defaults defaultDirs, stderr io.Writer) int {
+	configDir, err := directory(opts.configDir, defaults.config)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	stateDir, err := directory(opts.stateDir, defaults.state)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	cfg, err := config.LoadDir(configDir)
 	if err != nil {
 		return fail(stderr, err)
 	}
 	logger := newLogger(cfg.Log, stderr)
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	err = app.Run(ctx, cfg, app.Options{
+	err = app.Run(ctx, cfg, stateDir, app.Options{
 		Version: version.String(),
 		Logger:  logger,
 		Ready:   func(addrs []net.Addr) { logListening(logger, addrs) },

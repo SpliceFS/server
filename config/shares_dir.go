@@ -2,8 +2,9 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -36,11 +37,7 @@ func readShares(dir string, sources map[string]string) (map[string]Share, []erro
 // validateShareFiles checks every share, in name order, and names the file of each
 // problem because the file is the share.
 func validateShareFiles(shares map[string]Share) []error {
-	names := make([]string, 0, len(shares))
-	for name := range shares {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := shareNames(shares)
 	var problems []error
 	for _, name := range names {
 		share := shares[name]
@@ -53,4 +50,9 @@ func validateShareFiles(shares map[string]Share) []error {
 		}
 	}
 	return problems
+}
+
+// shareNames returns the keys of shares in sorted order.
+func shareNames(shares map[string]Share) []string {
+	return slices.Sorted(maps.Keys(shares))
 }

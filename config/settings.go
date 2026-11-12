@@ -12,9 +12,9 @@ const (
 	defaultClusterName = "default"
 )
 
-// Settings is the server configuration read from a configuration directory: the merged
+// Config is the server configuration read from a configuration directory: the merged
 // conf.d files and the shares of shares.d.
-type Settings struct {
+type Config struct {
 	// Listen lists the addresses and ports to serve on.
 	Listen []Endpoint `yaml:"listen"`
 	// BasePath is the URL prefix of the API: "" for the root, otherwise a path
@@ -23,9 +23,9 @@ type Settings struct {
 	// TrustedProxies are the reverse proxies whose X-Forwarded-For header is believed.
 	TrustedProxies []netip.Prefix `yaml:"-"`
 	// Cluster identifies this node and its cluster.
-	Cluster ClusterSettings `yaml:"cluster"`
+	Cluster Cluster `yaml:"cluster"`
 	// Auth configures logins and tokens.
-	Auth AuthSettings `yaml:"auth"`
+	Auth Auth `yaml:"auth"`
 	// MTimePrecision is the precision at which modification times are compared.
 	MTimePrecision units.Duration `yaml:"mtime_precision"`
 	// Log configures logging.
@@ -38,6 +38,9 @@ type Settings struct {
 	Sources map[string]string `yaml:"-"`
 }
 
+// ShareNames returns the names of the shares in sorted order.
+func (c *Config) ShareNames() []string { return shareNames(c.Shares) }
+
 // Endpoint is one listener with its choice between TLS and plain HTTP.
 type Endpoint struct {
 	Listener `yaml:",inline"`
@@ -45,8 +48,8 @@ type Endpoint struct {
 	Plain bool `yaml:"plain"`
 }
 
-// ClusterSettings names the cluster and announces this node.
-type ClusterSettings struct {
+// Cluster names the cluster and announces this node.
+type Cluster struct {
 	// Name is the cluster name.
 	Name string `yaml:"name"`
 	// Node is the display name of this node.
@@ -55,16 +58,16 @@ type ClusterSettings struct {
 	URL string `yaml:"url"`
 }
 
-// AuthSettings configures logins and tokens.
-type AuthSettings struct {
+// Auth configures logins and tokens.
+type Auth struct {
 	// TokenTTL is how long a token is valid.
 	TokenTTL units.Duration `yaml:"token_ttl"`
 	// LoginRate limits login attempts per client address.
 	LoginRate Rate `yaml:"login_rate"`
 }
 
-// rawSettings reads trusted_proxies as text so that single addresses are accepted.
-type rawSettings struct {
-	Settings       `yaml:",inline"`
+// rawConfig reads trusted_proxies as text so that single addresses are accepted.
+type rawConfig struct {
+	Config         `yaml:",inline"`
 	TrustedProxies []string `yaml:"trusted_proxies"`
 }

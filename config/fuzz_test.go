@@ -3,8 +3,6 @@ package config
 import (
 	"math"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -98,68 +96,6 @@ func FuzzNormalizeBasePath(f *testing.F) {
 		// Normalizing twice must change nothing, or reloads could drift.
 		if again, err := normalizeBasePath(got); got != "" && (err != nil || again != got) {
 			t.Fatalf("normalizeBasePath(%q) = %q, then %q, %v", in, got, again, err)
-		}
-	})
-}
-
-func FuzzLoad(f *testing.F) {
-	dir := f.TempDir()
-	file := filepath.Join(dir, FileName)
-	seeds := []string{
-		validYAML,
-		strings.Replace(validYAML, "base_path: /api", "base_path: api", 1),
-		strings.Replace(validYAML, "port: 8480", "port: 0", 1),
-		strings.Replace(validYAML, "port: 8480", "port: 65536", 1),
-		strings.Replace(validYAML, "192.0.2.1]", "nope]", 1),
-		strings.Replace(validYAML, "path: /srv/media", "path: ../x\n    exclude: ['[']", 1),
-		validYAML + "log:\n  level: loud\n", validYAML + "auth:\n  login_rate: 5/d\n",
-		validYAML + "---\n" + validYAML, validYAML + "unknown: 1\n",
-		validYAML + "mtime_precision: 1ns\n", validYAML + "shares:\n  Bad Name:\n    path: x\n",
-		"", "{}", "---\n", "[", "a: &a [*a]\n", "\x00", "listen: 1\n",
-		"shares:\n  m:\n    path: x\n    min_age: unlimited\n",
-	}
-	for _, s := range seeds {
-		f.Add([]byte(s))
-	}
-	f.Fuzz(func(t *testing.T, content []byte) {
-		if err := os.WriteFile(file, content, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		cfg, err := Load(dir)
-		if err != nil {
-			// A refused file yields no configuration, so a caller cannot run half of one.
-			if cfg != nil {
-				t.Fatalf("Load failed with %v but returned a config", err)
-			}
-			return
-		}
-		// Everything the rest of the server relies on must hold after a successful load.
-		if len(cfg.Listen) == 0 || len(cfg.Shares) == 0 {
-			t.Fatalf("config accepted without a listener or a share: %q", content)
-		}
-		for _, l := range cfg.Listen {
-			if !l.Address.IsValid() || l.Port < 1 || l.Port > 65535 {
-				t.Fatalf("config accepted listener %+v: %q", l, content)
-			}
-		}
-		base := cfg.BasePath
-		if base != "" && (!strings.HasPrefix(base, "/") || strings.HasSuffix(base, "/")) {
-			t.Fatalf("config accepted base path %q", cfg.BasePath)
-		}
-		for name, s := range cfg.Shares {
-			if !namePattern.MatchString(name) || !filepath.IsAbs(s.Path) {
-				t.Fatalf("config accepted share %q at %q", name, s.Path)
-			}
-			if strings.ContainsAny(strings.Join(s.Exclude, ""), "/") {
-				t.Fatalf("config accepted exclude patterns %q", s.Exclude)
-			}
-		}
-		ttl := cfg.Auth.TokenTTL
-		if ttl.Unlimited() || ttl.Std() < minTokenTTL || cfg.Auth.LoginRate.Count < 1 {
-			t.Fatalf("config accepted auth settings %+v", cfg.Auth)
-		}
-		if !filepath.IsAbs(cfg.Auth.KeysFile) || !filepath.IsAbs(cfg.Auth.UsersDir) {
-			t.Fatalf("config left auth paths relative: %+v", cfg.Auth)
 		}
 	})
 }

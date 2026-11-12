@@ -14,8 +14,8 @@ import (
 func TestServerStopsOnSignal(t *testing.T) {
 	for name, sig := range map[string]syscall.Signal{"SIGTERM": syscall.SIGTERM, "SIGINT": syscall.SIGINT} {
 		t.Run(name, func(t *testing.T) {
-			dir, port := serverDir(t)
-			logs, status := startServer(context.Background(), t, dir)
+			configDir, stateDir, port := serverDirs(t)
+			logs, status := startServer(context.Background(), t, configDir, stateDir)
 			if body := fetch(t, "http://127.0.0.1:"+strconv.Itoa(port)+"/api/v1/health"); body == "" {
 				t.Error("empty health response")
 			}

@@ -41,17 +41,17 @@ func writeDir(t *testing.T, f files) string {
 func conf(content string) files  { return files{"conf.d/a.yaml": content} }
 func share(content string) files { return files{"shares.d/m.yaml": content} }
 
-func load(t *testing.T, f files) (*Settings, error) {
+func load(t *testing.T, f files) (*Config, error) {
 	t.Helper()
 	return loadDir(writeDir(t, f), testHost)
 }
 
-func defaultSettings() *Settings {
-	return &Settings{
+func defaultSettings() *Config {
+	return &Config{
 		Listen:   []Endpoint{{Listener: Listener{Address: netip.IPv6Unspecified(), Port: 8480}}},
 		BasePath: "/api",
-		Cluster:  ClusterSettings{Name: "default", Node: "test-host"},
-		Auth: AuthSettings{
+		Cluster:  Cluster{Name: "default", Node: "test-host"},
+		Auth: Auth{
 			TokenTTL:  units.Duration(30 * time.Minute),
 			LoginRate: Rate{Count: 10, Per: time.Minute},
 		},
@@ -117,8 +117,8 @@ func TestLoadDirMerge(t *testing.T) {
 	want.Listen = []Endpoint{
 		{Listener: Listener{Address: netip.MustParseAddr("192.0.2.2"), Port: 9000}},
 	}
-	want.Cluster = ClusterSettings{Name: "x", Node: "n1"}
-	want.Auth = AuthSettings{
+	want.Cluster = Cluster{Name: "x", Node: "n1"}
+	want.Auth = Auth{
 		TokenTTL:  units.Duration(time.Hour),
 		LoginRate: Rate{Count: 5, Per: time.Second},
 	}
@@ -402,5 +402,20 @@ func TestAttribute(t *testing.T) {
 		if got := attribute(errors.New(tt.msg), sources).Error(); got != tt.want {
 			t.Errorf("attribute(%q) = %q, want %q", tt.msg, got, tt.want)
 		}
+	}
+}
+
+func TestShareNamesAreSorted(t *testing.T) {
+	t.Parallel()
+	got, err := load(t, files{
+		"shares.d/b.yaml": "path: /srv/b\n",
+		"shares.d/a.yaml": "path: /srv/a\n",
+		"shares.d/c.yaml": "path: /srv/c\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := strings.Join(got.ShareNames(), ","); names != "a,b,c" {
+		t.Errorf("ShareNames = %s", names)
 	}
 }

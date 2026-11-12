@@ -8,14 +8,14 @@ import (
 )
 
 // validateSettings returns every problem in s, each naming its key.
-func validateSettings(s *Settings) []error {
+func validateSettings(s *Config) []error {
 	problems := validateEndpoints(s.Listen)
 	problems = append(problems, validateNode(s.Cluster.Node)...)
 	problems = append(problems, validateLimits(s.Auth.TokenTTL, s.Auth.LoginRate, s.MTimePrecision)...)
 	return append(problems, validateLog(s.Log)...)
 }
 
-// validateEndpoints applies the listener rules both loaders share, then the rule that
+// validateEndpoints applies the listener rules of Listener, then the rule that
 // plain HTTP and TLS exclude each other.
 func validateEndpoints(endpoints []Endpoint) []error {
 	listeners := make([]Listener, len(endpoints))

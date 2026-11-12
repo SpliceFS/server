@@ -19,13 +19,13 @@ const (
 // TLS paths against configDir and validates the result. Missing directories are empty
 // ones, so an empty configDir gives the defaults. When the configuration is invalid the
 // error lists every problem found and names the file a bad value came from.
-func LoadDir(configDir string) (*Settings, error) {
+func LoadDir(configDir string) (*Config, error) {
 	return loadDir(configDir, os.Hostname)
 }
 
 // loadDir is LoadDir with the host name lookup passed in, so tests need not depend on the
 // machine they run on.
-func loadDir(configDir string, hostname func() (string, error)) (*Settings, error) {
+func loadDir(configDir string, hostname func() (string, error)) (*Config, error) {
 	sources := make(map[string]string)
 	raw, problems := readSettings(filepath.Join(configDir, confDirName), sources)
 	shares, shareProblems := readShares(filepath.Join(configDir, sharesDirName), sources)
@@ -33,7 +33,7 @@ func loadDir(configDir string, hostname func() (string, error)) (*Settings, erro
 	if len(problems) > 0 {
 		return nil, fmt.Errorf("read server config %s: %w", configDir, errors.Join(problems...))
 	}
-	settings := &raw.Settings
+	settings := &raw.Config
 	settings.Shares = shares
 	settings.Sources = sources
 	problems = finishSettings(settings, raw.TrustedProxies, configDir, hostname)
@@ -46,8 +46,8 @@ func loadDir(configDir string, hostname func() (string, error)) (*Settings, erro
 
 // readSettings decodes the files of dir in order onto one value and records, for every
 // value a file sets, which file it was.
-func readSettings(dir string, sources map[string]string) (*rawSettings, []error) {
-	raw := &rawSettings{}
+func readSettings(dir string, sources map[string]string) (*rawConfig, []error) {
+	raw := &rawConfig{}
 	names, err := yamlFiles(dir)
 	if err != nil {
 		return raw, []error{fmt.Errorf("%s: %w", dir, err)}
@@ -69,7 +69,7 @@ func readSettings(dir string, sources map[string]string) (*rawSettings, []error)
 // finishSettings applies defaults, normalizes and validates the merged settings. A problem
 // names the file of its value when a file set it.
 func finishSettings(
-	s *Settings, proxies []string, configDir string, hostname func() (string, error),
+	s *Config, proxies []string, configDir string, hostname func() (string, error),
 ) []error {
 	var problems []error
 	s.TrustedProxies, problems = parseProxies(proxies)
@@ -86,7 +86,7 @@ func finishSettings(
 }
 
 // applyDirDefaults fills in the settings keys that no file set.
-func applyDirDefaults(s *Settings, hostname func() (string, error)) []error {
+func applyDirDefaults(s *Config, hostname func() (string, error)) []error {
 	if s.Listen == nil {
 		s.Listen = []Endpoint{{Listener: Listener{Address: netip.IPv6Unspecified(), Port: defaultPort}}}
 	}
@@ -111,7 +111,7 @@ func applyDirDefaults(s *Settings, hostname func() (string, error)) []error {
 }
 
 // normalizeSettings puts base_path and cluster.url into their canonical form.
-func normalizeSettings(s *Settings) []error {
+func normalizeSettings(s *Config) []error {
 	var problems []error
 	base, err := normalizeBasePath(s.BasePath)
 	if err != nil {

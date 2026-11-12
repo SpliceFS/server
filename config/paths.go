@@ -1,17 +1,51 @@
 package config
 
-import "strings"
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
 
-// prefix starts every default path. It is empty for Linux packages and is set at build
-// time (-ldflags -X github.com/SpliceFS/server/config.prefix=...) for systems whose
-// package manager keeps its files under another root.
-var prefix string
+// A build may set these (-ldflags -X github.com/SpliceFS/server/config.defaultConfigDir=...)
+// for a system whose packages keep their files elsewhere. Empty means the default of the
+// operating system, which is chosen at compile time in paths_default.go and paths_darwin.go.
+var (
+	defaultConfigDir string
+	defaultStateDir  string
+)
 
-// DefaultConfigDir returns the configuration directory used when none is given.
-func DefaultConfigDir() string { return underPrefix("/etc/splicefs/server") }
+// homePrefix marks a directory that is relative to the home directory of the user running
+// the program, which a build cannot know.
+const homePrefix = "~/"
 
-// DefaultStateDir returns the state directory used when none is given.
-func DefaultStateDir() string { return underPrefix("/var/lib/splicefs/server") }
+// DefaultConfigDir returns the configuration directory used when none is given. It fails
+// when the directory is under the home directory and that cannot be found.
+func DefaultConfigDir() (string, error) {
+	return resolveDir(defaultConfigDir, osConfigDir, os.UserHomeDir)
+}
 
-// underPrefix trims a trailing slash from the prefix so that it never yields "//".
-func underPrefix(p string) string { return strings.TrimRight(prefix, "/") + p }
+// DefaultStateDir returns the state directory used when none is given. It fails when the
+// directory is under the home directory and that cannot be found.
+func DefaultStateDir() (string, error) {
+	return resolveDir(defaultStateDir, osStateDir, os.UserHomeDir)
+}
+
+// resolveDir returns built, or fallback when the build set nothing, with a leading "~/"
+// replaced by the home directory. The operating system defaults are arguments so that a
+// test covers both variants on any system.
+func resolveDir(built, fallback string, home func() (string, error)) (string, error) {
+	dir := built
+	if dir == "" {
+		dir = fallback
+	}
+	rest, underHome := strings.CutPrefix(dir, homePrefix)
+	if !underHome {
+		return dir, nil
+	}
+	h, err := home()
+	if err != nil {
+		return "", fmt.Errorf("find the home directory for %s: %w", dir, err)
+	}
+	return filepath.Join(h, rest), nil
+}
