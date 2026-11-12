@@ -184,15 +184,17 @@ func TestLocalCertificateErrors(t *testing.T) {
 		{
 			name: "folder cannot be created",
 			setup: func(t *testing.T, dir string) {
-				// Nothing can be created inside a folder that is read-only.
+				// A link to nothing where the folder belongs: its files read as missing, and
+				// the folder cannot be made over it. This stops every user, root included,
+				// which a read-only folder does not.
 				if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Chmod(filepath.Dir(dir), 0o500); err != nil {
+				if err := os.Symlink(filepath.Join(filepath.Dir(dir), "nowhere"), dir); err != nil {
 					t.Fatal(err)
 				}
 			},
-			want: "permission denied",
+			want: "file exists",
 		},
 		{
 			name: "key exists without a certificate",

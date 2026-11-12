@@ -348,18 +348,19 @@ func TestLoadDirHostName(t *testing.T) {
 }
 
 func TestLoadDirUnreadable(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("permissions do not apply to root")
-	}
+	t.Parallel()
+	// A link to nothing is listed like a file and cannot be read. Taking away read
+	// permission would not stop root, which runs the tests on Linux.
 	tests := map[string]string{
 		"conf.d/a.yaml":   "settings file",
 		"shares.d/m.yaml": "share file",
 	}
 	for rel, name := range tests {
 		t.Run(name, func(t *testing.T) {
-			dir := writeDir(t, files{rel: "path: /a\n"})
+			t.Parallel()
+			dir := writeDir(t, files{filepath.Join(filepath.Dir(rel), "other.txt"): ""})
 			file := filepath.Join(dir, rel)
-			if err := os.Chmod(file, 0); err != nil {
+			if err := os.Symlink(filepath.Join(dir, "nowhere"), file); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := loadDir(dir, testHost); err == nil || !strings.Contains(err.Error(), file) {
@@ -367,13 +368,11 @@ func TestLoadDirUnreadable(t *testing.T) {
 			}
 		})
 	}
+	// A file where a folder belongs cannot be listed, by any user.
 	for _, sub := range []string{"conf.d", "shares.d"} {
 		t.Run("dir "+sub, func(t *testing.T) {
-			dir := writeDir(t, files{sub + "/a.yaml": "{}"})
-			if err := os.Chmod(filepath.Join(dir, sub), 0); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, sub), 0o700) })
+			t.Parallel()
+			dir := writeDir(t, files{sub: "a file where a folder belongs"})
 			if _, err := loadDir(dir, testHost); err == nil || !strings.Contains(err.Error(), sub) {
 				t.Errorf("error %v does not name %s", err, sub)
 			}

@@ -112,21 +112,14 @@ func TestNodeIDErrors(t *testing.T) {
 			want: "read node id file",
 		},
 		{
+			// The folder for the file does not exist: reading says the file is missing and
+			// writing fails. A read-only folder would not stop root, which runs the tests
+			// on Linux.
 			name: "node id cannot be written",
 			setup: func(t *testing.T, d dataPaths) {
-				if os.Geteuid() == 0 {
-					t.Skip("root can write to a read-only folder")
-				}
-				dir := filepath.Dir(d.nodeIDFile)
-				if err := os.MkdirAll(dir, 0o700); err != nil {
+				if err := os.RemoveAll(filepath.Dir(d.nodeIDFile)); err != nil {
 					t.Fatal(err)
 				}
-				// Nothing can be created inside a folder that is read-only. The folder is
-				// made writable again so that the test directory can be removed.
-				if err := os.Chmod(dir, 0o500); err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 			},
 			want: "write node id file",
 		},
