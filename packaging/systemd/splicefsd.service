@@ -3,22 +3,28 @@ Description=SpliceFS server
 Documentation=https://github.com/SpliceFS/server
 After=network-online.target
 Wants=network-online.target
-# The server cannot run without its configuration. With this condition a fresh install
-# stays stopped, without an error, until the file exists.
-ConditionPathExists=/etc/splicefs/server/config.yaml
 
 [Service]
-ExecStart=/usr/local/bin/splicefsd --config /etc/splicefs/server
+ExecStart=/usr/local/bin/splicefsd
+# The server applies its configuration again on SIGHUP: requests in progress finish, open
+# ports stay open, and a configuration with an error is refused and only logged.
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
 # The packages create this user. For a manual install, create it first (useradd --system
-# splicefs). Give it read access to the shares, the users directory, the keys file and
-# the node list.
+# splicefs). Give it read access to the folders it shares.
 User=splicefs
 Group=splicefs
+# The server keeps its data in /var/lib/splicefs/server: on first start it creates local/
+# (node id, generated TLS certificate) and shared/ (users, keys, nodes) there. systemd
+# creates the folder, owned by the service user, before every start. Nothing is configured
+# by default, so a fresh install starts without any files in /etc.
+StateDirectory=splicefs/server
+StateDirectoryMode=0750
 
-# The server only reads. These settings make the whole filesystem read-only for it and
-# take away everything else it has no use for, so a bug in it cannot become a write.
+# The server only writes to its data folder. These settings make the rest of the filesystem
+# read-only for it (ProtectSystem=strict keeps the state directory above writable) and take
+# away everything else it has no use for, so a bug in it cannot become a write elsewhere.
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=true
