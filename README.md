@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/SpliceFS/server/actions/workflows/ci.yml/badge.svg)](https://github.com/SpliceFS/server/actions/workflows/ci.yml)
 [![Security](https://github.com/SpliceFS/server/actions/workflows/security.yml/badge.svg)](https://github.com/SpliceFS/server/actions/workflows/security.yml)
+[![Coverage](https://codecov.io/gh/SpliceFS/server/graph/badge.svg)](https://codecov.io/gh/SpliceFS/server)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/SpliceFS/server/badge)](https://scorecard.dev/viewer/?uri=github.com/SpliceFS/server)
 [![Go Report Card](https://goreportcard.com/badge/github.com/SpliceFS/server)](https://goreportcard.com/report/github.com/SpliceFS/server)
 [![Go Reference](https://pkg.go.dev/badge/github.com/SpliceFS/server.svg)](https://pkg.go.dev/github.com/SpliceFS/server)
@@ -121,6 +122,8 @@ make check-linux  # the same on Linux, in a container (needs Docker)
 make lint         # golangci-lint
 make package      # deb, rpm and apk packages for amd64 and arm64 in ./dist (needs Docker)
 make package-test # installs and removes each package in a clean container of every system
+make repo         # signed apt, rpm and Alpine repositories in ./dist/repo from the packages in ./dist
+make repo-test    # installs from the repositories with signature checks on, in every system
 ```
 
 `make package-test` covers every system listed in `packaging/test-systems`. From an arm64
