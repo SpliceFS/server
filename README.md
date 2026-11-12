@@ -4,7 +4,6 @@
 [![Security](https://github.com/SpliceFS/server/actions/workflows/security.yml/badge.svg)](https://github.com/SpliceFS/server/actions/workflows/security.yml)
 [![Coverage](https://codecov.io/gh/SpliceFS/server/graph/badge.svg)](https://codecov.io/gh/SpliceFS/server)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/SpliceFS/server/badge)](https://scorecard.dev/viewer/?uri=github.com/SpliceFS/server)
-[![Go Report Card](https://goreportcard.com/badge/github.com/SpliceFS/server)](https://goreportcard.com/report/github.com/SpliceFS/server)
 [![Go Reference](https://pkg.go.dev/badge/github.com/SpliceFS/server.svg)](https://pkg.go.dev/github.com/SpliceFS/server)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16604/badge)](https://www.bestpractices.dev/projects/16604)
 [![Quality gate](https://sonarcloud.io/api/project_badges/measure?project=SpliceFS_server&metric=alert_status)](https://sonarcloud.io/summary/overall?id=SpliceFS_server)
