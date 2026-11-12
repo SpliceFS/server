@@ -657,10 +657,14 @@ func TestTokensDuplicateKeyID(t *testing.T) {
 	if _, err := tokens.Verify(forge(secretB, onlyHeader, payload)); err != nil {
 		t.Errorf("a unique key of the later file: %v", err)
 	}
-	for _, want := range []string{testNode + ".yaml", otherNode + ".yaml", "shared"} {
+	for _, want := range []string{testNode + ".yaml", otherNode + ".yaml"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("warning does not name %q:\n%s", want, buf)
 		}
+	}
+	// The id stays out of the log: a mistake in a file may put a secret there.
+	if strings.Contains(buf.String(), "shared") {
+		t.Errorf("warning repeats the key id:\n%s", buf)
 	}
 	if strings.Count(buf.String(), "duplicate key id") != 1 {
 		t.Errorf("the warning must be logged once per change:\n%s", buf)
