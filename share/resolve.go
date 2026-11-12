@@ -29,6 +29,11 @@ func (s *Share) lookup(name string) (string, os.FileInfo, error) {
 		}
 		var err error
 		if fi, err = s.statEntry(strings.Join(segments[:i+1], "/")); err != nil {
+			// A client chooses the name, and a name longer than the file system allows
+			// cannot exist, so it is a miss and not a server error.
+			if errors.Is(err, syscall.ENAMETOOLONG) {
+				err = ErrNotFound
+			}
 			return "", nil, err
 		}
 		if i < len(segments)-1 && !fi.IsDir() {
