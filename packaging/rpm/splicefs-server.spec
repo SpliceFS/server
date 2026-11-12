@@ -27,7 +27,7 @@ nodes. It only reads; it never writes to a shared directory.
 %install
 install -D -m 755 %{stage}/splicefsd %{buildroot}/usr/bin/splicefsd
 install -D -m 644 %{unit} %{buildroot}/usr/lib/systemd/system/splicefsd.service
-install -d %{buildroot}/etc/splicefs/server
+install -d %{buildroot}/etc/splicefs/server/conf.d %{buildroot}/etc/splicefs/server/shares.d
 install -D -m 644 %{src}/LICENSE %{buildroot}/usr/share/doc/splicefs-server/LICENSE
 install -m 644 %{src}/README.md %{src}/CHANGELOG.md %{src}/docs/configuration.md \
     %{buildroot}/usr/share/doc/splicefs-server/
@@ -37,6 +37,9 @@ install -m 644 %{src}/README.md %{src}/CHANGELOG.md %{src}/docs/configuration.md
 /usr/lib/systemd/system/splicefsd.service
 %dir /etc/splicefs
 %dir /etc/splicefs/server
+# Empty on purpose: the administrator's files go here and no package file ever does.
+%dir /etc/splicefs/server/conf.d
+%dir /etc/splicefs/server/shares.d
 /usr/share/doc/splicefs-server
 
 %pre

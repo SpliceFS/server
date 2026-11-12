@@ -162,13 +162,14 @@ func TestErrorKinds(t *testing.T) {
 		t.Errorf("HeadDigest(missing) = %v, want ErrNotFound", err)
 	}
 
-	// An over-long name fails with an error that is not "not found".
-	_, err := s.Stat(long)
-	if err == nil || errors.Is(err, ErrNotFound) {
-		t.Fatalf("Stat(long) = %v, want a wrapped error", err)
-	}
-	if !strings.Contains(err.Error(), `share "test"`) || !strings.Contains(err.Error(), long) {
-		t.Errorf("error %q lacks share name or path", err)
+	// A name longer than the file system allows cannot exist, whatever way it is asked for.
+	for _, name := range []string{long, "dir/" + long, strings.Repeat("a/", 5000) + "a"} {
+		if _, err := s.Stat(name); !errors.Is(err, ErrNotFound) {
+			t.Errorf("Stat(%d bytes) = %v, want ErrNotFound", len(name), err)
+		}
+		if _, err := s.OpenFile(name); !errors.Is(err, ErrNotFound) {
+			t.Errorf("OpenFile(%d bytes) = %v, want ErrNotFound", len(name), err)
+		}
 	}
 }
 
@@ -719,8 +720,13 @@ func TestCollect(t *testing.T) {
 		t.Errorf("collect = %v, %v", names(got), err)
 	}
 	// An entry that cannot be examined fails the listing.
-	if _, err := s.collect("d", fakeDir{names: []string{strings.Repeat("a", 300)}}); err == nil || errors.Is(err, ErrNotFound) {
-		t.Errorf("collect with an unreadable entry = %v", err)
+	long := strings.Repeat("a", 300)
+	_, err = s.collect("d", fakeDir{names: []string{long}})
+	if err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("collect with an unreadable entry = %v", err)
+	}
+	if !strings.Contains(err.Error(), `share "test"`) || !strings.Contains(err.Error(), long) {
+		t.Errorf("error %q lacks share name or path", err)
 	}
 }
 

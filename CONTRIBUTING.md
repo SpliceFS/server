@@ -77,6 +77,9 @@ must pass before a merge.
   Code that cannot be reached by a test is a design problem; restructure it so it can.
 - Tests are table-driven where there are several cases, use only the standard `testing`
   package, and run with the race detector.
+- Code that parses input from a user or a remote system gets a fuzz test (`FuzzXxx`) that checks
+  properties such as no panic, a path that stays under its root and a token that was not issued
+  never verifying. Run them with `make fuzz`, or longer with `FUZZTIME=1m make fuzz`.
 - Tests do not sleep to wait for something and do not depend on wall-clock time. Use an
   injected clock.
 - A bug fix comes with a test that fails without the fix.
@@ -131,6 +134,19 @@ A release is cut by a maintainer:
 4. Tag that merge commit `vX.Y.Z` and push the tag. The version printed by `--version` comes
    from the tag at build time, and the tag starts the publish job.
 5. Merge `main` back into `develop`.
+
+Pushing the tag starts the release workflow. It builds the deb, rpm and apk packages for both
+CPU types, signs the apt, rpm and Alpine repositories, installs every package and every
+repository in clean containers of each supported system, and only when all of that passes
+publishes the repositories to `packages.splicefs.org/server` (older versions stay in them).
+It then creates the GitHub release for the tag, with the packages, `SHA256SUMS` and its
+signature `SHA256SUMS.asc`, and the changelog entries of that version as the notes.
+
+A pre-release is tagged with a hyphen after the version, for example `v1.2.0-rc.1`,
+`v1.2.0-beta.2` or `v1.2.0-alpha`. The word must be `alpha`, `beta`, `pre` or `rc`, with an
+optional number; the workflow fails on any other tag. A pre-release is published the same way,
+is marked as a pre-release on GitHub, and sorts before its release in apt, dnf and apk. Its
+changelog heading is `## [1.2.0-rc.1]`.
 
 ## License
 

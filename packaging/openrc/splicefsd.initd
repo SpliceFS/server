@@ -6,10 +6,11 @@ description="SpliceFS server"
 # Restart=on-failure does in the systemd unit.
 supervisor=supervise-daemon
 command=/usr/bin/splicefsd
-command_args="--config /etc/splicefs/server"
 command_user="splicefs:splicefs"
 output_log=/var/log/splicefsd.log
 error_log=/var/log/splicefsd.log
+extra_started_commands="reload"
+description_reload="Apply the configuration without a restart"
 
 depend() {
     need net
@@ -17,11 +18,17 @@ depend() {
 }
 
 start_pre() {
-    # The server cannot run without its configuration. Saying so here is clearer than a
-    # service that starts and dies.
-    if [ ! -f /etc/splicefs/server/config.yaml ]; then
-        eerror "/etc/splicefs/server/config.yaml does not exist"
-        return 1
-    fi
+    # The server keeps its data here and creates local/ and shared/ inside on first start.
+    # It must be able to write to it.
+    checkpath --directory --owner root:root --mode 0755 /var/lib/splicefs
+    checkpath --directory --owner splicefs:splicefs --mode 0750 /var/lib/splicefs/server
     checkpath --file --owner splicefs:splicefs --mode 0640 /var/log/splicefsd.log
+}
+
+reload() {
+    # The server applies its configuration again on SIGHUP: requests in progress finish and
+    # a configuration with an error is refused and only logged.
+    ebegin "Reloading $RC_SVCNAME"
+    supervise-daemon "$RC_SVCNAME" --signal HUP
+    eend $?
 }
