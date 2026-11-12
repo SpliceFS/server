@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/SpliceFS/server/config"
@@ -37,38 +36,9 @@ func newServer(handler http.Handler, logger *slog.Logger) *http.Server {
 // certificateSource returns the certificate a listener without TLS files uses.
 type certificateSource func() (tls.Certificate, error)
 
-// listen opens a listener for every entry. If one fails, the ones opened before it are
-// closed.
-func listen(
-	ctx context.Context, entries []config.Endpoint, own certificateSource,
-) ([]*endpoint, error) {
-	var listeners []*endpoint
-	for _, entry := range entries {
-		ln, err := listenOne(ctx, entry, own)
-		if err != nil {
-			return nil, errors.Join(err, closeAll(listeners))
-		}
-		listeners = append(listeners, ln)
-	}
-	return listeners, nil
-}
-
-// listenOne opens the listener of one entry, with TLS unless it asks for plain HTTP. The
-// certificate is loaded before the port is bound, so a bad certificate does not leave a
-// port open.
-func listenOne(
-	ctx context.Context, entry config.Endpoint, own certificateSource,
-) (*endpoint, error) {
-	address := net.JoinHostPort(entry.Address.String(), strconv.Itoa(entry.Port))
-	tlsConfig, err := tlsConfigFor(entry, own)
-	if err != nil {
-		return nil, fmt.Errorf("listen on %s: %w", address, err)
-	}
-	ep, err := openEndpoint(ctx, address, tlsConfig)
-	if err != nil {
-		return nil, fmt.Errorf("listen on %s: %w", address, err)
-	}
-	return ep, nil
+// listenAddress is the address an entry listens on, and the name a reload knows it by.
+func listenAddress(entry config.Endpoint) string {
+	return net.JoinHostPort(entry.Address.String(), strconv.Itoa(entry.Port))
 }
 
 // tlsConfigFor returns nil for a plain listener, the configured certificate when the entry
@@ -99,37 +69,6 @@ func closeAll(listeners []*endpoint) error {
 		}
 	}
 	return errors.Join(errs...)
-}
-
-// serve runs srv on every listener until ctx is cancelled or a listener fails, calling
-// ready first. After cancellation it waits up to grace for requests in progress and then
-// closes their connections; that is a clean shutdown and returns nil. After a failure it
-// closes everything at once and returns the failure. It always waits for its goroutines.
-func serve(
-	ctx context.Context, srv *http.Server, listeners []*endpoint, grace time.Duration,
-	ready func([]net.Addr),
-) error {
-	if ready != nil {
-		ready(addresses(listeners))
-	}
-	failures := make(chan error, len(listeners))
-	var wg sync.WaitGroup
-	for _, ln := range listeners {
-		wg.Go(func() {
-			// A retired endpoint was closed on purpose, which is not a failure.
-			if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) && !ln.isRetired() {
-				failures <- fmt.Errorf("serve on %s: %w", ln.Addr(), err)
-			}
-		})
-	}
-	defer wg.Wait()
-
-	select {
-	case <-ctx.Done():
-		return shutdown(ctx, srv, grace)
-	case err := <-failures:
-		return errors.Join(err, srv.Close())
-	}
 }
 
 // shutdown stops srv gracefully, and closes the remaining connections if the requests in

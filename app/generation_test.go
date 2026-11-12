@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -81,7 +82,7 @@ func genNamed(name string, closer *genCloser) *generation {
 
 func genGet(l *live) string {
 	rec := httptest.NewRecorder()
-	l.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	l.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 	return rec.Body.String()
 }
 

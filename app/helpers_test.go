@@ -120,12 +120,58 @@ func newFixture(t *testing.T) *fixture {
 	return f
 }
 
+// syncBuffer is a log that the server writes while a test reads it.
+type syncBuffer struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	changed chan struct{} // closed and replaced by every write, so a reader can wait for one
+}
+
+func newSyncBuffer() *syncBuffer {
+	return &syncBuffer{changed: make(chan struct{})}
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	close(b.changed)
+	b.changed = make(chan struct{})
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// waitFor returns when the log holds text at least count times, and fails the test if that
+// takes longer than testTimeout.
+func (b *syncBuffer) waitFor(t *testing.T, text string, count int) {
+	t.Helper()
+	timeout := time.After(testTimeout)
+	for {
+		b.mu.Lock()
+		enough := strings.Count(b.buf.String(), text) >= count
+		changed := b.changed
+		b.mu.Unlock()
+		if enough {
+			return
+		}
+		select {
+		case <-changed:
+		case <-timeout:
+			t.Fatalf("log does not hold %d times %q in time:\n%s", count, text, b)
+		}
+	}
+}
+
 // running is a server started with Run.
 type running struct {
 	addrs  []net.Addr
 	cancel context.CancelFunc
 	done   chan error
-	logs   *bytes.Buffer
+	logs   *syncBuffer
 	once   sync.Once
 	err    error
 }
@@ -134,16 +180,24 @@ type running struct {
 // ends, if the test has not already stopped it.
 func start(t *testing.T, f *fixture) *running {
 	t.Helper()
+	return startWith(t, f, nil)
+}
+
+// startWith is start, with the chance to set more options of Run.
+func startWith(t *testing.T, f *fixture, adjust func(*Options)) *running {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &running{cancel: cancel, done: make(chan error, 1), logs: new(bytes.Buffer)}
+	r := &running{cancel: cancel, done: make(chan error, 1), logs: newSyncBuffer()}
 	ready := make(chan []net.Addr, 1)
-	go func() {
-		r.done <- Run(ctx, f.cfg, f.state, Options{
-			Version: "test",
-			Logger:  slog.New(slog.NewTextHandler(r.logs, nil)),
-			Ready:   func(addrs []net.Addr) { ready <- addrs },
-		})
-	}()
+	opts := Options{
+		Version: "test",
+		Logger:  slog.New(slog.NewTextHandler(r.logs, nil)),
+		Ready:   func(addrs []net.Addr) { ready <- addrs },
+	}
+	if adjust != nil {
+		adjust(&opts)
+	}
+	go func() { r.done <- Run(ctx, f.cfg, f.state, opts) }()
 	select {
 	case r.addrs = <-ready:
 	case err := <-r.done:

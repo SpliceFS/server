@@ -82,7 +82,7 @@ func roundTrip(t *testing.T, e *endpoint, pool *x509.CertPool) (*x509.Certificat
 		conn, err = d.DialContext(ctx, "tcp", e.Addr().String())
 	}
 	if err != nil {
-		<-served
+		<-served //nolint:errcheck // the dial error is the one to report
 		return nil, err
 	}
 	defer func() { _ = conn.Close() }()

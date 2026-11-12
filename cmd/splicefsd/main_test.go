@@ -189,7 +189,9 @@ func TestNewLogger(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var buf bytes.Buffer
-			logger := newLogger(tt.cfg, &buf)
+			var level slog.LevelVar
+			level.Set(levelOf(tt.cfg))
+			logger := newLogger(tt.cfg.Format, &level, &buf)
 			logger.Debug("debug-line")
 			logger.Info("info-line")
 			logger.Error("error-line")
@@ -207,6 +209,24 @@ func TestNewLogger(t *testing.T) {
 				t.Errorf("JSON output = %v, want %v\n%s", got, tt.json, out)
 			}
 		})
+	}
+}
+
+func TestFollowLevel(t *testing.T) {
+	t.Parallel()
+	var level slog.LevelVar
+	level.Set(levelOf(config.Log{Level: "info"}))
+	apply := followLevel(&level)
+	for _, tt := range []struct {
+		name string
+		want slog.Level
+	}{
+		{"debug", slog.LevelDebug}, {"error", slog.LevelError}, {"info", slog.LevelInfo},
+	} {
+		apply(&config.Config{Log: config.Log{Level: tt.name}})
+		if got := level.Level(); got != tt.want {
+			t.Errorf("after a reload to %s the level is %v, want %v", tt.name, got, tt.want)
+		}
 	}
 }
 

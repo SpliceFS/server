@@ -21,6 +21,19 @@ func listenLoopback(t *testing.T) *endpoint {
 	return ln
 }
 
+// newRunner is the serving loop of a run without what surrounds it: a server and its
+// listeners, no generations and no reload.
+func newRunner(handler http.Handler, opts Options) *runner {
+	logger := slog.New(slog.DiscardHandler)
+	return &runner{
+		srv:       newServer(handler, logger),
+		endpoints: make(map[string]*endpoint),
+		failures:  make(chan error, 1),
+		logger:    logger,
+		opts:      opts,
+	}
+}
+
 // brokenListener is a listener that cannot accept and cannot be closed cleanly.
 type brokenListener struct {
 	net.Listener
@@ -34,11 +47,11 @@ func TestServeStopsEverythingWhenAListenerFails(t *testing.T) {
 	t.Parallel()
 	good := listenLoopback(t)
 	var got []net.Addr
-	srv := newServer(http.NotFoundHandler(), slog.New(slog.DiscardHandler))
+	r := newRunner(http.NotFoundHandler(), Options{Ready: func(addrs []net.Addr) { got = addrs }})
 	broken := &endpoint{Listener: brokenListener{}}
-	err := serve(context.Background(), srv, []*endpoint{good, broken}, time.Second,
-		func(addrs []net.Addr) { got = addrs })
-	if err == nil || !strings.Contains(err.Error(), "accept failed") || !strings.Contains(err.Error(), "127.0.0.1:1") {
+	err := r.serve(context.Background(), []*endpoint{good, broken}, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "accept failed") ||
+		!strings.Contains(err.Error(), "127.0.0.1:1") {
 		t.Errorf("serve = %v", err)
 	}
 	if len(got) != 2 || got[0].String() != good.Addr().String() {
@@ -55,8 +68,8 @@ func TestServeTreatsAnEndpointClosedWithoutRetireAsAFailure(t *testing.T) {
 	if err := closed.Close(); err != nil {
 		t.Fatal(err)
 	}
-	srv := newServer(http.NotFoundHandler(), slog.New(slog.DiscardHandler))
-	err := serve(context.Background(), srv, []*endpoint{closed, other}, time.Second, nil)
+	r := newRunner(http.NotFoundHandler(), Options{})
+	err := r.serve(context.Background(), []*endpoint{closed, other}, time.Second)
 	if err == nil || !strings.Contains(err.Error(), "serve on "+closed.Addr().String()) {
 		t.Errorf("serve = %v", err)
 	}
@@ -75,10 +88,8 @@ func TestServeIgnoresARetiredEndpointAndKeepsTheOthers(t *testing.T) {
 	defer cancel()
 	ready := make(chan struct{})
 	served := make(chan error, 1)
-	go func() {
-		served <- serve(ctx, newServer(http.NotFoundHandler(), slog.New(slog.DiscardHandler)),
-			[]*endpoint{retired, kept}, time.Second, func([]net.Addr) { close(ready) })
-	}()
+	r := newRunner(http.NotFoundHandler(), Options{Ready: func([]net.Addr) { close(ready) }})
+	go func() { served <- r.serve(ctx, []*endpoint{retired, kept}, time.Second) }()
 	<-ready
 
 	if err := retired.retire(); err != nil {
@@ -136,9 +147,8 @@ func TestServeClosesConnectionsThatOutlastTheGrace(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	served := make(chan error, 1)
-	go func() {
-		served <- serve(ctx, newServer(handler, slog.New(slog.DiscardHandler)), []*endpoint{ln}, 0, nil)
-	}()
+	r := newRunner(handler, Options{})
+	go func() { served <- r.serve(ctx, []*endpoint{ln}, 0) }()
 
 	requestErr := make(chan error, 1)
 	go func() {
@@ -175,10 +185,8 @@ func TestServeWaitsForRequestsWithinTheGrace(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	served := make(chan error, 1)
-	go func() {
-		srv := newServer(handler, slog.New(slog.DiscardHandler))
-		served <- serve(ctx, srv, []*endpoint{ln}, time.Minute, nil)
-	}()
+	r := newRunner(handler, Options{})
+	go func() { served <- r.serve(ctx, []*endpoint{ln}, time.Minute) }()
 
 	type result struct {
 		body string

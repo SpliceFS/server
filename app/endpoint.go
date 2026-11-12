@@ -12,6 +12,7 @@ import (
 // TLS and plain HTTP without closing the port.
 type endpoint struct {
 	net.Listener                            // the TCP listener
+	address      string                     // as configured; what a reload compares
 	tlsConfig    atomic.Pointer[tls.Config] // nil serves plain HTTP
 	retired      atomic.Bool
 }
@@ -23,7 +24,7 @@ func openEndpoint(ctx context.Context, address string, tlsConfig *tls.Config) (*
 	if err != nil {
 		return nil, err
 	}
-	e := &endpoint{Listener: ln}
+	e := &endpoint{Listener: ln, address: address}
 	e.tlsConfig.Store(tlsConfig)
 	return e, nil
 }

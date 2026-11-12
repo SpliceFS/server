@@ -38,6 +38,8 @@ const (
        splicefsd [--config DIR] config show
        splicefsd hash-password
        splicefsd --version
+
+SIGHUP applies the configuration without a restart.
 `
 )
 
@@ -182,7 +184,8 @@ func hashPassword(in io.Reader, out io.Writer, random io.Reader) error {
 }
 
 // runServer loads the configuration and serves until ctx is cancelled or a termination
-// signal arrives. An invalid configuration is reported before anything is opened.
+// signal arrives. An invalid configuration is reported before anything is opened. SIGHUP
+// applies the configuration again.
 func runServer(ctx context.Context, opts options, defaults defaultDirs, stderr io.Writer) int {
 	configDir, err := directory(opts.configDir, defaults.config)
 	if err != nil {
@@ -196,13 +199,24 @@ func runServer(ctx context.Context, opts options, defaults defaultDirs, stderr i
 	if err != nil {
 		return fail(stderr, err)
 	}
-	logger := newLogger(cfg.Log, stderr)
+	var level slog.LevelVar
+	level.Set(levelOf(cfg.Log))
+	logger := newLogger(cfg.Log.Format, &level, stderr)
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// The signal package never blocks on a full channel, so the channel needs room for one
+	// signal. A second SIGHUP that arrives while one is waiting is dropped, which loses
+	// nothing: the reload that is waiting reads the files after both changes.
+	reload := make(chan os.Signal, 1)
+	signal.Notify(reload, syscall.SIGHUP)
+	defer signal.Stop(reload)
 	err = app.Run(ctx, cfg, stateDir, app.Options{
 		Version: version.String(),
 		Logger:  logger,
 		Ready:   func(addrs []net.Addr) { logListening(logger, addrs) },
+		Reload:  reload,
+		Load:    func() (*config.Config, error) { return config.LoadDir(configDir) },
+		Applied: followLevel(&level),
 	})
 	if err != nil {
 		return fail(stderr, err)
@@ -217,14 +231,27 @@ func logListening(logger *slog.Logger, addrs []net.Addr) {
 	}
 }
 
-// newLogger returns a logger for the settings in cfg that writes to w. The configuration
-// loader has already rejected unknown levels and formats.
-func newLogger(cfg config.Log, w io.Writer) *slog.Logger {
+// levelOf returns the log level the settings name. The configuration loader has already
+// rejected unknown names.
+func levelOf(cfg config.Log) slog.Level {
 	var level slog.Level
 	// An unknown name leaves the level at info, the default.
 	_ = level.UnmarshalText([]byte(cfg.Level))
+	return level
+}
+
+// followLevel returns the function that gives a reloaded configuration's log level to level.
+func followLevel(level *slog.LevelVar) func(*config.Config) {
+	return func(cfg *config.Config) { level.Set(levelOf(cfg.Log)) }
+}
+
+// newLogger returns a logger that writes to w in the given format, json or text, at the
+// level in level. The format is fixed here, because a handler is built once and a change of
+// format in the configuration needs a restart. The level is read for every record, so a
+// reload can change it. The configuration loader has already rejected unknown formats.
+func newLogger(format string, level *slog.LevelVar, w io.Writer) *slog.Logger {
 	opts := &slog.HandlerOptions{Level: level}
-	if cfg.Format == "json" {
+	if format == "json" {
 		return slog.New(slog.NewJSONHandler(w, opts))
 	}
 	return slog.New(slog.NewTextHandler(w, opts))
