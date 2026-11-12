@@ -283,8 +283,10 @@ func (t *Tokens) merge(entries []datadir.Entry[[]signingKey]) *keyring {
 	for _, e := range entries {
 		for _, key := range e.Value {
 			if first, dup := owner[key.id]; dup {
+				// The id is left out: a mistake in a file may put a secret where the
+				// id belongs, and this line is logged.
 				t.log.Warn("duplicate key id, keeping the first file's key",
-					"id", key.id, "kept", first, "ignored", e.Name)
+					"kept", first, "ignored", e.Name)
 				continue
 			}
 			owner[key.id] = e.Name
@@ -307,7 +309,8 @@ func parseKeysFile(name string, data []byte) ([]signingKey, error) {
 }
 
 // parseKeys validates the content of a keys file. Its errors never contain the content,
-// because they are logged and a mistake in the file may put a secret where a name belongs.
+// because they are logged and a mistake in the file may put a secret where a name belongs. They
+// name a key by its position for that reason, never by its id.
 func parseKeys(data []byte) ([]signingKey, error) {
 	var f keysFile
 	dec := yaml.NewDecoder(bytes.NewReader(data))
@@ -325,15 +328,15 @@ func parseKeys(data []byte) ([]signingKey, error) {
 			return nil, fmt.Errorf("key %d has no id", i+1)
 		}
 		if seen[entry.ID] {
-			return nil, fmt.Errorf("duplicate key id %q", entry.ID)
+			return nil, fmt.Errorf("key %d repeats the id of an earlier key", i+1)
 		}
 		seen[entry.ID] = true
 		secret, err := base64.StdEncoding.DecodeString(entry.Secret)
 		if err != nil {
-			return nil, fmt.Errorf("key %q: secret is not valid base64", entry.ID)
+			return nil, fmt.Errorf("key %d: secret is not valid base64", i+1)
 		}
 		if len(secret) < minSecretSize {
-			return nil, fmt.Errorf("key %q: secret is shorter than %d bytes", entry.ID, minSecretSize)
+			return nil, fmt.Errorf("key %d: secret is shorter than %d bytes", i+1, minSecretSize)
 		}
 		keys = append(keys, signingKey{id: entry.ID, secret: secret})
 	}
