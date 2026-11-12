@@ -11,15 +11,27 @@ import (
 	"time"
 )
 
-func listenLoopback(t *testing.T) net.Listener {
+func listenLoopback(t *testing.T) *endpoint {
 	t.Helper()
-	var lc net.ListenConfig
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	ln, err := openEndpoint(context.Background(), "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 	return ln
+}
+
+// newRunner is the serving loop of a run without what surrounds it: a server and its
+// listeners, no generations and no reload.
+func newRunner(handler http.Handler, opts Options) *runner {
+	logger := slog.New(slog.DiscardHandler)
+	return &runner{
+		srv:       newServer(handler, logger),
+		endpoints: make(map[string]*endpoint),
+		failures:  make(chan error, 1),
+		logger:    logger,
+		opts:      opts,
+	}
 }
 
 // brokenListener is a listener that cannot accept and cannot be closed cleanly.
@@ -35,10 +47,11 @@ func TestServeStopsEverythingWhenAListenerFails(t *testing.T) {
 	t.Parallel()
 	good := listenLoopback(t)
 	var got []net.Addr
-	srv := newServer(http.NotFoundHandler(), slog.New(slog.DiscardHandler))
-	err := serve(context.Background(), srv, []net.Listener{good, brokenListener{}}, time.Second,
-		func(addrs []net.Addr) { got = addrs })
-	if err == nil || !strings.Contains(err.Error(), "accept failed") || !strings.Contains(err.Error(), "127.0.0.1:1") {
+	r := newRunner(http.NotFoundHandler(), Options{Ready: func(addrs []net.Addr) { got = addrs }})
+	broken := &endpoint{Listener: brokenListener{}}
+	err := r.serve(context.Background(), []*endpoint{good, broken}, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "accept failed") ||
+		!strings.Contains(err.Error(), "127.0.0.1:1") {
 		t.Errorf("serve = %v", err)
 	}
 	if len(got) != 2 || got[0].String() != good.Addr().String() {
@@ -47,6 +60,80 @@ func TestServeStopsEverythingWhenAListenerFails(t *testing.T) {
 	if isOpen(good.Addr().String()) {
 		t.Error("the healthy listener is still open")
 	}
+}
+
+func TestServeTreatsAnEndpointClosedWithoutRetireAsAFailure(t *testing.T) {
+	t.Parallel()
+	closed, other := listenLoopback(t), listenLoopback(t)
+	if err := closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r := newRunner(http.NotFoundHandler(), Options{})
+	err := r.serve(context.Background(), []*endpoint{closed, other}, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "serve on "+closed.Addr().String()) {
+		t.Errorf("serve = %v", err)
+	}
+	if closed.isRetired() {
+		t.Error("the endpoint was never retired")
+	}
+	if isOpen(other.Addr().String()) {
+		t.Error("the other endpoint is still open")
+	}
+}
+
+func TestServeIgnoresARetiredEndpointAndKeepsTheOthers(t *testing.T) {
+	t.Parallel()
+	retired, kept := listenLoopback(t), listenLoopback(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ready := make(chan struct{})
+	served := make(chan error, 1)
+	r := newRunner(http.NotFoundHandler(), Options{Ready: func([]net.Addr) { close(ready) }})
+	go func() { served <- r.serve(ctx, []*endpoint{retired, kept}, time.Second) }()
+	<-ready
+
+	if err := retired.retire(); err != nil {
+		t.Fatal(err)
+	}
+	waitClosed(t, retired.Addr().String())
+	if status := statusOf(t, "http://"+kept.Addr().String()+"/"); status != http.StatusNotFound {
+		t.Errorf("the endpoint that stayed answers %d, want 404", status)
+	}
+	select {
+	case err := <-served:
+		t.Fatalf("serve returned %v after one endpoint was retired", err)
+	default:
+	}
+	cancel()
+	if err := <-served; err != nil {
+		t.Errorf("serve = %v, want nil on cancel", err)
+	}
+}
+
+// waitClosed fails the test if nothing stops accepting at addr within a few seconds.
+func waitClosed(t *testing.T, addr string) {
+	t.Helper()
+	for deadline := time.Now().Add(3 * time.Second); isOpen(addr); {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s still accepts connections", addr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// statusOf returns the status code of a GET of url.
+func statusOf(t *testing.T, url string) int {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client(nil).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode
 }
 
 func TestServeClosesConnectionsThatOutlastTheGrace(t *testing.T) {
@@ -60,9 +147,8 @@ func TestServeClosesConnectionsThatOutlastTheGrace(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	served := make(chan error, 1)
-	go func() {
-		served <- serve(ctx, newServer(handler, slog.New(slog.DiscardHandler)), []net.Listener{ln}, 0, nil)
-	}()
+	r := newRunner(handler, Options{})
+	go func() { served <- r.serve(ctx, []*endpoint{ln}, 0) }()
 
 	requestErr := make(chan error, 1)
 	go func() {
@@ -99,9 +185,8 @@ func TestServeWaitsForRequestsWithinTheGrace(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	served := make(chan error, 1)
-	go func() {
-		served <- serve(ctx, newServer(handler, slog.New(slog.DiscardHandler)), []net.Listener{ln}, time.Minute, nil)
-	}()
+	r := newRunner(handler, Options{})
+	go func() { served <- r.serve(ctx, []*endpoint{ln}, time.Minute) }()
 
 	type result struct {
 		body string
@@ -140,7 +225,7 @@ func TestServeWaitsForRequestsWithinTheGrace(t *testing.T) {
 func TestCloseAllReportsEveryFailure(t *testing.T) {
 	t.Parallel()
 	good := listenLoopback(t)
-	err := closeAll([]net.Listener{brokenListener{}, good, brokenListener{}})
+	err := closeAll([]*endpoint{{Listener: brokenListener{}}, good, {Listener: brokenListener{}}})
 	if err == nil || strings.Count(err.Error(), "close failed") != 2 {
 		t.Errorf("closeAll = %v", err)
 	}

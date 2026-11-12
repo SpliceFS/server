@@ -17,12 +17,12 @@ import (
 // that never moves, so every result depends on the input alone.
 func fuzzTokens(f *testing.F) *Tokens {
 	f.Helper()
-	path := filepath.Join(f.TempDir(), "keys.yaml")
+	dir := f.TempDir()
 	content := keysYAML([2]string{"new", b64(secretA)})
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, testNode+".yaml"), []byte(content), 0o600); err != nil {
 		f.Fatal(err)
 	}
-	return NewTokens(path, 30*time.Minute, newFakeClock().Now)
+	return NewTokens(dir, testNode, 30*time.Minute, newFakeClock().Now, discard)
 }
 
 func FuzzTokensVerify(f *testing.F) {
@@ -243,8 +243,7 @@ func FuzzUserFile(f *testing.F) {
 	})
 }
 
-func FuzzReadKeys(f *testing.F) {
-	path := filepath.Join(f.TempDir(), "keys.yaml")
+func FuzzParseKeys(f *testing.F) {
 	for _, s := range []string{
 		twoKeys(), keysYAML([2]string{"a", b64(secretA)}), keysYAML([2]string{"", b64(secretA)}),
 		keysYAML([2]string{"a", b64(secretA)}, [2]string{"a", b64(secretB)}),
@@ -255,13 +254,14 @@ func FuzzReadKeys(f *testing.F) {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, content []byte) {
-		if err := os.WriteFile(path, content, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		keys, err := readKeys(path)
+		keys, err := parseKeys(content)
 		if err != nil {
 			if keys != nil {
-				t.Fatalf("readKeys failed but returned %d keys", len(keys))
+				t.Fatalf("parseKeys failed but returned %d keys", len(keys))
+			}
+			// The error is logged, so it must never repeat a secret from the file.
+			if strings.Contains(err.Error(), b64(secretA)) {
+				t.Fatalf("error contains a secret: %v", err)
 			}
 			return
 		}

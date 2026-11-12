@@ -16,8 +16,9 @@ All notable changes to this project are recorded here. The format follows
 - A systemd unit for `splicefsd`.
 - Packages named `splicefs-server` for amd64 and arm64: deb (Debian, Ubuntu), rpm (Red Hat
   family) and apk (Alpine). Each installs the program and the service for its system
-  (systemd, or OpenRC on Alpine), creates the `splicefs` user and an empty
-  `/etc/splicefs/server`. The service is enabled and starts once a configuration exists.
+  (systemd, or OpenRC on Alpine), creates the `splicefs` user and the empty folders
+  `conf.d` and `shares.d` in `/etc/splicefs/server`. The service is enabled and started on
+  install, and an upgrade never touches the files an administrator put in those folders.
 - `make package-test` install-tests the packages on every supported Debian, Ubuntu, Rocky
   Linux, Amazon Linux, openSUSE and Alpine version, listed in `packaging/test-systems`.
 - Signed apt, rpm and Alpine repositories built from the packages (`make repo`), with a test
@@ -33,6 +34,36 @@ All notable changes to this project are recorded here. The format follows
   signature (`make release-assets`). Pre-release tags such as `v1.2.0-rc.1` give versions that
   sort before the release in deb, rpm and apk; `make publish-test` checks the publishing
   without a server.
+
+- The server runs with nothing configured: no shares, no users, listening on every interface
+  on port 8480 with TLS, using a certificate it creates itself (ECDSA P-256, valid for 10
+  years). A listener can use its own certificate with `tls`, or serve without TLS with
+  `plain: true` behind a reverse proxy.
+- `splicefsd config check` validates the configuration and prints every problem with the file
+  it came from. `splicefsd config show` prints the effective configuration with the file each
+  value came from. Both take `--config DIR`.
+- `SIGHUP` applies the configuration without a restart (`systemctl reload splicefsd`,
+  `rc-service splicefsd reload`). Requests in progress finish on the configuration they
+  started with, ports that stay configured are never closed, certificates are read again, and
+  a configuration with an error is refused and only logged. Only `log.format` needs a restart.
+- Default folders for a macOS build: `~/.splicefs/server` for the configuration and
+  `~/.splicefs/var/server` for the state. `--config DIR` and `--state DIR` override the
+  defaults on every system.
+
+### Changed
+
+- **Breaking:** the configuration is a set of files instead of one `config.yaml`. Settings go
+  in `conf.d/*.yaml`, read in name order and merged, and each share is one file in
+  `shares.d/` whose file name is the share name. The settings `shares`, `auth.users_dir`,
+  `auth.keys_file` and `cluster.nodes_file` are gone. A configuration written for an earlier
+  build must be rewritten.
+- **Breaking:** the server keeps its data in the state folder (`/var/lib/splicefs/server` in
+  Linux packages), split into `local/` for this machine only (node id, generated
+  certificate) and `shared/`, which may be synced between servers with any file sync tool.
+  `shared/` holds `users/`, written by the administrator, and `keys/` and `nodes/`, one file
+  per server that only that server writes. The server creates its own signing key and node
+  entry. The single keys file and node list file no longer exist.
+- Packages start the service on install even when nothing is configured.
 
 ### Fixed
 

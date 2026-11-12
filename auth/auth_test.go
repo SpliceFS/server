@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -28,15 +27,14 @@ type authFixture struct {
 func newAuthFixture(t *testing.T, limit int) *authFixture {
 	t.Helper()
 	f := &authFixture{usersDir: t.TempDir(), clock: newFakeClock(), result: true}
-	f.keysPath = filepath.Join(t.TempDir(), "keys.yaml")
-	if err := os.WriteFile(f.keysPath, []byte(twoKeys()), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	keysDir := t.TempDir()
+	f.keysPath = filepath.Join(keysDir, testNode+".yaml")
+	writeFile(t, keysDir, testNode+".yaml", twoKeys())
 	writeFile(t, f.usersDir, "alice.yaml", "password_hash: alice-hash\nshares: [media]\n")
 	writeFile(t, f.usersDir, "dave.yaml", "password_hash: dave-hash\nshares: [media]\ndisabled: true\n")
 	f.auth = New(
 		NewUsers(f.usersDir),
-		NewTokens(f.keysPath, 30*time.Minute, f.clock.Now),
+		NewTokens(keysDir, testNode, 30*time.Minute, f.clock.Now, discard),
 		NewLimiter(limit, time.Minute, f.clock.Now),
 		4,
 	)
@@ -169,7 +167,7 @@ func TestLoginOtherFailuresAreNotBadCredentials(t *testing.T) {
 	t.Run("broken keys file", func(t *testing.T) {
 		t.Parallel()
 		f := newAuthFixture(t, 10)
-		writeFile(t, filepath.Dir(f.keysPath), "keys.yaml", "keys: []\n")
+		writeFile(t, filepath.Dir(f.keysPath), testNode+".yaml", "keys: []\n")
 		_, _, err := f.auth.Login(context.Background(), "192.0.2.1", "alice", "pw")
 		if err == nil || errors.Is(err, ErrBadCredentials) {
 			t.Errorf("err = %v", err)
