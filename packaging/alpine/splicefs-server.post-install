@@ -2,9 +2,7 @@
 # A container has no running OpenRC; the files are installed and there is nothing to start.
 if [ -e /run/openrc/softlevel ]; then
     rc-update add splicefsd default
-    # Without its configuration the server cannot start, and that is not an error here.
-    if [ -f /etc/splicefs/server/config.yaml ]; then
-        rc-service splicefsd start || echo "splicefsd did not start; see /var/log/splicefsd.log" >&2
-    fi
+    # The server needs no configuration: installed means running.
+    rc-service splicefsd start || echo "splicefsd did not start; see /var/log/splicefsd.log" >&2
 fi
 exit 0

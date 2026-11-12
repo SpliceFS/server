@@ -1,132 +1,126 @@
-// Package cluster serves the node list file, the list of nodes that make up a
-// SpliceFS cluster (see "Node list" in docs/configuration.md).
+// Package cluster serves the list of nodes that make up a SpliceFS cluster. Every node
+// announces itself by writing one file into the shared nodes directory, and the list is the
+// union of the files, so no file has more than one writer.
 package cluster
 
 import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
+	"io/fs"
+	"log/slog"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"go.yaml.in/yaml/v3"
 
 	"github.com/SpliceFS/common/wire"
+	"github.com/SpliceFS/server/internal/datadir"
 )
 
 // namePattern is the form of a node name.
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
-// Loader reads a node list file and caches the result until the file changes.
-// It is safe for concurrent use.
+// announcementMode lets every user on the machine and every sync tool read the file: it holds
+// only what clients are told anyway.
+const announcementMode = 0o644
+
+// Announce writes the file of the node nodeID into the nodes directory dir: its name and its
+// public URL. The file is replaced only when its content differs, so that a restart does not
+// make a sync tool copy it again. A node with no URL is not announced, so its file is
+// removed. The directory must exist.
+func Announce(dir, nodeID string, self wire.Node) error {
+	path := filepath.Join(dir, datadir.NodeFile(nodeID))
+	if self.URL == "" {
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("remove node file: %w", err)
+		}
+		return nil
+	}
+	// A struct of two strings always encodes, so there is no error to handle.
+	data, _ := yaml.Marshal(self)
+	if current, err := os.ReadFile(path); err == nil && bytes.Equal(current, data) {
+		return nil
+	}
+	if err := datadir.WriteAtomic(path, data, announcementMode); err != nil {
+		return fmt.Errorf("write node file: %w", err)
+	}
+	return nil
+}
+
+// Loader serves the union of the node files of a directory. It is safe for concurrent use.
 type Loader struct {
-	path string
+	log *slog.Logger
 
 	mu     sync.Mutex
-	cached *snapshot
+	files  *datadir.Dir[wire.Node]
+	nodes  []wire.Node
+	merged bool
 }
 
-// snapshot is a successfully loaded node list and the state of the file it was
-// read from.
-type snapshot struct {
-	modTime time.Time
-	size    int64
-	nodes   wire.Nodes
+// NewLoader returns a Loader for the nodes directory dir. Problems with a file are logged
+// to log.
+func NewLoader(dir string, log *slog.Logger) *Loader {
+	return &Loader{log: log, files: datadir.NewDir(dir, parseNode, log)}
 }
 
-// NewLoader returns a Loader for the node list at path.
-func NewLoader(path string) *Loader {
-	return &Loader{path: path}
-}
-
-// Nodes returns the node list. The file is checked on every call and is read
-// and validated again only when its modification time or size has changed since
-// the last successful load. A failed load returns an error and leaves nothing
-// cached, so the next call tries again. The result does not share memory with
-// the cache.
+// Nodes returns the nodes of every valid file, sorted by node name; the list may be empty.
+// The cluster name is not known here, so the field is empty. A file that is invalid is
+// ignored with a warning; of two files with the same node name, the file that sorts first
+// by name is used. The result does not share memory with the cache.
 func (l *Loader) Nodes() (wire.Nodes, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-
-	info, err := os.Stat(l.path)
-	if err != nil {
-		l.cached = nil
-		return wire.Nodes{}, fmt.Errorf("stat node list: %w", err)
+	entries, changed := l.files.Refresh()
+	if changed || !l.merged {
+		l.nodes, l.merged = l.merge(entries), true
 	}
-	if c := l.cached; c != nil && c.size == info.Size() && c.modTime.Equal(info.ModTime()) {
-		return clone(c.nodes), nil
-	}
-	l.cached = nil
-	nodes, err := read(l.path)
-	if err != nil {
-		return wire.Nodes{}, err
-	}
-	l.cached = &snapshot{modTime: info.ModTime(), size: info.Size(), nodes: nodes}
-	return clone(nodes), nil
+	return wire.Nodes{Nodes: slices.Clone(l.nodes)}, nil
 }
 
-// clone returns a copy of nodes that shares no memory with it.
-func clone(nodes wire.Nodes) wire.Nodes {
-	nodes.Nodes = slices.Clone(nodes.Nodes)
+// merge builds the list from the files in name order.
+func (l *Loader) merge(entries []datadir.Entry[wire.Node]) []wire.Node {
+	nodes := make([]wire.Node, 0, len(entries))
+	owner := map[string]string{}
+	for _, e := range entries {
+		if first, dup := owner[e.Value.Name]; dup {
+			l.log.Warn("duplicate node name, keeping the first file's node",
+				"name", e.Value.Name, "kept", first, "ignored", e.Name)
+			continue
+		}
+		owner[e.Value.Name] = e.Name
+		nodes = append(nodes, e.Value)
+	}
+	slices.SortFunc(nodes, func(a, b wire.Node) int { return strings.Compare(a.Name, b.Name) })
 	return nodes
 }
 
-// read loads and validates the node list file at path.
-func read(path string) (wire.Nodes, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return wire.Nodes{}, fmt.Errorf("read node list: %w", err)
+// parseNode validates one node file. The name of the file must be a node id, so a stray
+// file never adds a node.
+func parseNode(name string, data []byte) (wire.Node, error) {
+	if _, ok := datadir.NodeOfFile(name); !ok {
+		return wire.Node{}, errors.New("the file name is not a node id and .yaml")
 	}
-	var nodes wire.Nodes
+	var node wire.Node
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
-	if err := dec.Decode(&nodes); err != nil {
-		if errors.Is(err, io.EOF) {
-			err = errors.New("file is empty")
-		}
-		return wire.Nodes{}, fmt.Errorf("parse node list %s: %w", path, err)
+	if err := dec.Decode(&node); err != nil {
+		return wire.Node{}, fmt.Errorf("parse node file: %w", err)
 	}
-	if err := normalize(&nodes); err != nil {
-		return wire.Nodes{}, fmt.Errorf("invalid node list %s: %w", path, err)
+	if !namePattern.MatchString(node.Name) {
+		return wire.Node{}, fmt.Errorf("name %q must match %s", node.Name, namePattern)
 	}
-	return nodes, nil
-}
-
-// normalize validates nodes, reporting every problem, and removes the trailing
-// slash from each URL.
-func normalize(nodes *wire.Nodes) error {
-	var problems []error
-	if nodes.Cluster == "" {
-		problems = append(problems, errors.New("cluster: must not be empty"))
+	cleaned, err := cleanURL(node.URL)
+	if err != nil {
+		return wire.Node{}, fmt.Errorf("url: %w", err)
 	}
-	if len(nodes.Nodes) == 0 {
-		problems = append(problems, errors.New("nodes: at least one node is required"))
-	}
-	seen := make(map[string]bool)
-	for i := range nodes.Nodes {
-		node := &nodes.Nodes[i]
-		key := fmt.Sprintf("nodes[%d]", i)
-		switch {
-		case !namePattern.MatchString(node.Name):
-			problems = append(problems, fmt.Errorf("%s.name: %q must match %s", key, node.Name, namePattern))
-		case seen[node.Name]:
-			problems = append(problems, fmt.Errorf("%s.name: %q is used more than once", key, node.Name))
-		}
-		seen[node.Name] = true
-		cleaned, err := cleanURL(node.URL)
-		if err != nil {
-			problems = append(problems, fmt.Errorf("%s.url: %w", key, err))
-			continue
-		}
-		node.URL = cleaned
-	}
-	return errors.Join(problems...)
+	node.URL = cleaned
+	return node, nil
 }
 
 // cleanURL checks that raw is an absolute http or https URL with a host and no

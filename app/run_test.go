@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/SpliceFS/common/wire"
 	"github.com/SpliceFS/server/config"
+	"github.com/SpliceFS/server/internal/datadir"
 	"github.com/SpliceFS/server/share"
 )
 
@@ -57,9 +59,9 @@ func decode(t *testing.T, data []byte, v any) {
 func TestEndToEnd(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	srv := start(t, f.cfg)
+	srv := start(t, f)
 	c := client(nil)
-	api := func(path string) string { return srv.url("http", "/api"+path) }
+	api := func(path string) string { return srv.url("/api" + path) }
 
 	t.Run("health", func(t *testing.T) {
 		resp, data := call(t, c, "GET", api("/v1/health"), "", nil, "")
@@ -191,7 +193,7 @@ func TestEndToEnd(t *testing.T) {
 	})
 
 	t.Run("outside the base path", func(t *testing.T) {
-		resp, _ := call(t, c, "GET", srv.url("http", "/v1/health"), "", nil, "")
+		resp, _ := call(t, c, "GET", srv.url("/v1/health"), "", nil, "")
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("status = %d", resp.StatusCode)
 		}
@@ -214,29 +216,38 @@ func TestEndToEnd(t *testing.T) {
 	}
 }
 
-func TestTLSListener(t *testing.T) {
+func TestListenerKinds(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	certFile, keyFile, pool := selfSigned(t)
-	loopback := netip.MustParseAddr("127.0.0.1")
-	f.cfg.Listen = []config.Listener{
-		{Address: loopback, Port: 0},
-		{Address: loopback, Port: 0, TLS: &config.TLS{CertFile: certFile, KeyFile: keyFile}},
+	f.cfg.Listen = []config.Endpoint{
+		configEndpoint(nil, true),
+		configEndpoint(&config.TLS{CertFile: certFile, KeyFile: keyFile}, false),
+		configEndpoint(nil, false),
 	}
-	srv := start(t, f.cfg)
-	if len(srv.addrs) != 2 {
-		t.Fatalf("Ready got %d addresses, want 2", len(srv.addrs))
+	srv := start(t, f)
+	if len(srv.addrs) != 3 {
+		t.Fatalf("Ready got %d addresses, want 3", len(srv.addrs))
+	}
+	health := func(scheme string, i int) string {
+		return scheme + "://" + srv.addrs[i].String() + "/api/v1/health"
 	}
 
-	resp, _ := call(t, client(pool), "GET", "https://"+srv.addrs[1].String()+"/api/v1/health", "", nil, "")
+	resp, _ := call(t, client(nil), "GET", health("http", 0), "", nil, "")
+	if resp.StatusCode != 200 || resp.TLS != nil {
+		t.Errorf("plain listener: status %d, TLS %+v", resp.StatusCode, resp.TLS)
+	}
+	resp, _ = call(t, client(pool), "GET", health("https", 1), "", nil, "")
 	if resp.StatusCode != 200 || resp.TLS == nil || resp.TLS.Version < 0x0303 {
-		t.Errorf("TLS listener: status %d, TLS %+v", resp.StatusCode, resp.TLS)
+		t.Errorf("configured certificate: status %d, TLS %+v", resp.StatusCode, resp.TLS)
 	}
-	resp, _ = call(t, client(nil), "GET", "http://"+srv.addrs[0].String()+"/api/v1/health", "", nil, "")
-	if resp.StatusCode != 200 {
-		t.Errorf("plain listener: status %d", resp.StatusCode)
+	ownCert := filepath.Join(f.state, localDirName, tlsDirName, certFileName)
+	resp, _ = call(t, client(trusting(t, ownCert)), "GET", health("https", 2), "", nil, "")
+	if resp.StatusCode != 200 || resp.TLS == nil {
+		t.Errorf("own certificate: status %d, TLS %+v", resp.StatusCode, resp.TLS)
 	}
-	untrusted, err := http.NewRequestWithContext(context.Background(), "GET", "https://"+srv.addrs[1].String()+"/api/v1/health", nil)
+	untrusted, err := http.NewRequestWithContext(
+		context.Background(), "GET", health("https", 1), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,12 +260,30 @@ func TestTLSListener(t *testing.T) {
 	}
 }
 
+func TestRunWithoutShares(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.cfg.Shares = map[string]config.Share{}
+	srv := start(t, f)
+	c := client(nil)
+	login := `{"user":"alice","password":"right-password"}`
+	_, data := call(t, c, "POST", srv.url("/api/v1/login"), "", nil, login)
+	var token wire.LoginResponse
+	decode(t, data, &token)
+	resp, data := call(t, c, "GET", srv.url("/api/v1/tree/"), token.Token, nil, "")
+	var shares wire.Listing
+	decode(t, data, &shares)
+	if resp.StatusCode != 200 || len(shares.Entries) != 0 {
+		t.Errorf("status %d, shares %+v", resp.StatusCode, shares)
+	}
+}
+
 func TestRunWithoutLoggerOrReadyCallback(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := Run(ctx, f.cfg, Options{}); err != nil {
+	if err := Run(ctx, f.cfg, f.state, Options{}); err != nil {
 		t.Errorf("Run = %v", err)
 	}
 }
@@ -270,13 +299,35 @@ func TestRunFailsAtStart(t *testing.T) {
 		{"share path does not exist", func(f *fixture) {
 			f.cfg.Shares["zzz"] = config.Share{Path: missing}
 		}, `share "zzz"`},
-		{"keys file is missing", func(f *fixture) { f.cfg.Auth.KeysFile = missing }, "check keys file"},
-		{"keys file is invalid", func(f *fixture) { write(t, filepath.Dir(f.keysFile), "keys.yaml", "keys: []\n") }, "check keys file"},
-		{"node list is missing", func(f *fixture) { f.cfg.Cluster.NodesFile = missing }, "check node list"},
-		{"node list is invalid", func(f *fixture) { write(t, filepath.Dir(f.nodes), "nodes.yaml", "cluster: x\nnodes: []\n") }, "check node list"},
+		{"node id file is malformed", func(f *fixture) {
+			write(t, f.state, "local/node-id", "not an id\n")
+		}, "node id file"},
+		{"signing key file is invalid", func(f *fixture) {
+			write(t, f.state, "local/node-id", "0123456789abcdef\n")
+			write(t, f.state, "shared/keys/0123456789abcdef.yaml", "keys: []\n")
+		}, "signing key file"},
+		{"node file cannot be written", func(f *fixture) {
+			// A folder where this node's file belongs cannot be replaced by the file.
+			write(t, f.state, "local/node-id", "0123456789abcdef\n")
+			node := filepath.Join(f.state, "shared/nodes", datadir.NodeFile("0123456789abcdef"))
+			if err := os.MkdirAll(node, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, "write node file"},
+		{"state folder is a file", func(f *fixture) {
+			write(t, f.state, "shared/keys", "a file where a folder belongs")
+		}, "is not a folder"},
+		{"state folders cannot be made", func(f *fixture) {
+			parent := write(t, t.TempDir(), "file", "a file where a folder belongs")
+			f.state = filepath.Join(parent, "state")
+		}, "create folder"},
 		{"certificate is missing", func(f *fixture) {
-			f.cfg.Listen[0].TLS = &config.TLS{CertFile: missing, KeyFile: missing}
+			f.cfg.Listen[0] = configEndpoint(&config.TLS{CertFile: missing, KeyFile: missing}, false)
 		}, "load certificate"},
+		{"own certificate cannot be made", func(f *fixture) {
+			write(t, f.state, "local/tls", "a file where a folder belongs")
+			f.cfg.Listen[0] = configEndpoint(nil, false)
+		}, "self-signed certificate"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -284,7 +335,8 @@ func TestRunFailsAtStart(t *testing.T) {
 			f := newFixture(t)
 			tt.mutate(f)
 			ready := false
-			err := Run(context.Background(), f.cfg, Options{Ready: func([]net.Addr) { ready = true }})
+			opts := Options{Ready: func([]net.Addr) { ready = true }}
+			err := Run(context.Background(), f.cfg, f.state, opts)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("Run = %v, want an error containing %q", err, tt.want)
 			}
@@ -312,11 +364,13 @@ func TestRunFailsWhenAPortIsTaken(t *testing.T) {
 	_ = free.Close()
 
 	loopback := netip.MustParseAddr("127.0.0.1")
-	f.cfg.Listen = []config.Listener{
-		{Address: loopback, Port: freePort},
-		{Address: loopback, Port: taken.Addr().(*net.TCPAddr).Port},
+	takenPort := taken.Addr().(*net.TCPAddr).Port
+	f.cfg.Listen = []config.Endpoint{
+		{Listener: config.Listener{Address: loopback, Port: freePort}, Plain: true},
+		{Listener: config.Listener{Address: loopback, Port: takenPort}, Plain: true},
 	}
-	err = Run(context.Background(), f.cfg, Options{Ready: func([]net.Addr) { t.Error("Ready was called") }})
+	opts := Options{Ready: func([]net.Addr) { t.Error("Ready was called") }}
+	err = Run(context.Background(), f.cfg, f.state, opts)
 	if err == nil || !strings.Contains(err.Error(), "listen on 127.0.0.1:") {
 		t.Fatalf("Run = %v", err)
 	}

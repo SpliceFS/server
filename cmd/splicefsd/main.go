@@ -1,6 +1,6 @@
-// Command splicefsd is the SpliceFS server. It serves the directories named in its
-// configuration over HTTP. The hash-password subcommand makes a password hash for a user
-// file.
+// Command splicefsd is the SpliceFS server. It serves the shares of its configuration
+// directory over HTTP. The config subcommands check and show that configuration, and
+// hash-password makes a password hash for a user file.
 package main
 
 import (
@@ -33,7 +33,14 @@ const (
 
 const (
 	program = "splicefsd"
-	usage   = "usage: splicefsd [--config DIR] [--version]\n       splicefsd hash-password\n"
+	usage   = `usage: splicefsd [--config DIR] [--state DIR]
+       splicefsd [--config DIR] config check
+       splicefsd [--config DIR] config show
+       splicefsd hash-password
+       splicefsd --version
+
+SIGHUP applies the configuration without a restart.
+`
 )
 
 // exit is replaced in tests.
@@ -61,13 +68,25 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		_, _ = fmt.Fprintf(stdout, "%s %s\n", program, version.String())
 		return exitOK
 	}
-	return runServer(ctx, opts.configDir, stderr)
+	if opts.command != "" {
+		return runConfig(opts, systemDirs, stdout, stderr)
+	}
+	return runServer(ctx, opts, systemDirs, stderr)
 }
 
-// options are the settings of the command line.
+// The subcommands after "config".
+const (
+	commandCheck = "check"
+	commandShow  = "show"
+)
+
+// options are the settings of the command line. An empty directory means the default.
 type options struct {
 	configDir   string
+	stateDir    string
 	showVersion bool
+	// command is check or show for the config subcommands, empty to run the server.
+	command string
 }
 
 // parseArgs reads the command line of the server.
@@ -75,15 +94,63 @@ func parseArgs(args []string) (options, error) {
 	var opts options
 	fs := flag.NewFlagSet(program, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.StringVar(&opts.configDir, "config", config.DefaultDir, "")
+	fs.StringVar(&opts.configDir, "config", "", "")
+	fs.StringVar(&opts.stateDir, "state", "", "")
 	fs.BoolVar(&opts.showVersion, "version", false, "")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
-	if fs.NArg() > 0 {
-		return options{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	rest := fs.Args()
+	switch {
+	case len(rest) == 0:
+	case rest[0] == "config" && len(rest) == 2 && isConfigCommand(rest[1]):
+		opts.command = rest[1]
+	case rest[0] == "config":
+		return options{}, errors.New("config needs one of: check, show")
+	default:
+		return options{}, fmt.Errorf("unexpected argument %q", rest[0])
 	}
 	return opts, nil
+}
+
+// defaultDirs finds the directories used when the command line names none. They are looked
+// up only when needed, because the home directory they may be under is not always known.
+type defaultDirs struct {
+	config, state func() (string, error)
+}
+
+// systemDirs are the defaults of this build.
+var systemDirs = defaultDirs{config: config.DefaultConfigDir, state: config.DefaultStateDir}
+
+func isConfigCommand(name string) bool { return name == commandCheck || name == commandShow }
+
+// directory returns given, or the default when none was given.
+func directory(given string, fallback func() (string, error)) (string, error) {
+	if given != "" {
+		return given, nil
+	}
+	return fallback()
+}
+
+// runConfig implements config check and config show.
+func runConfig(opts options, defaults defaultDirs, stdout, stderr io.Writer) int {
+	dir, err := directory(opts.configDir, defaults.config)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	cfg, err := config.LoadDir(dir)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if opts.command == commandCheck {
+		_, err = io.WriteString(stdout, "configuration ok\n")
+	} else {
+		err = showConfig(stdout, cfg)
+	}
+	if err != nil {
+		return fail(stderr, err)
+	}
+	return exitOK
 }
 
 // runHashPassword implements the hash-password subcommand.
@@ -116,20 +183,40 @@ func hashPassword(in io.Reader, out io.Writer, random io.Reader) error {
 	return nil
 }
 
-// runServer loads the configuration in dir and serves until ctx is cancelled or a
-// termination signal arrives.
-func runServer(ctx context.Context, dir string, stderr io.Writer) int {
-	cfg, err := config.Load(dir)
+// runServer loads the configuration and serves until ctx is cancelled or a termination
+// signal arrives. An invalid configuration is reported before anything is opened. SIGHUP
+// applies the configuration again.
+func runServer(ctx context.Context, opts options, defaults defaultDirs, stderr io.Writer) int {
+	configDir, err := directory(opts.configDir, defaults.config)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	logger := newLogger(cfg.Log, stderr)
+	stateDir, err := directory(opts.stateDir, defaults.state)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	cfg, err := config.LoadDir(configDir)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	var level slog.LevelVar
+	level.Set(levelOf(cfg.Log))
+	logger := newLogger(cfg.Log.Format, &level, stderr)
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	err = app.Run(ctx, cfg, app.Options{
+	// The signal package never blocks on a full channel, so the channel needs room for one
+	// signal. A second SIGHUP that arrives while one is waiting is dropped, which loses
+	// nothing: the reload that is waiting reads the files after both changes.
+	reload := make(chan os.Signal, 1)
+	signal.Notify(reload, syscall.SIGHUP)
+	defer signal.Stop(reload)
+	err = app.Run(ctx, cfg, stateDir, app.Options{
 		Version: version.String(),
 		Logger:  logger,
 		Ready:   func(addrs []net.Addr) { logListening(logger, addrs) },
+		Reload:  reload,
+		Load:    func() (*config.Config, error) { return config.LoadDir(configDir) },
+		Applied: followLevel(&level),
 	})
 	if err != nil {
 		return fail(stderr, err)
@@ -144,14 +231,27 @@ func logListening(logger *slog.Logger, addrs []net.Addr) {
 	}
 }
 
-// newLogger returns a logger for the settings in cfg that writes to w. The configuration
-// loader has already rejected unknown levels and formats.
-func newLogger(cfg config.Log, w io.Writer) *slog.Logger {
+// levelOf returns the log level the settings name. The configuration loader has already
+// rejected unknown names.
+func levelOf(cfg config.Log) slog.Level {
 	var level slog.Level
 	// An unknown name leaves the level at info, the default.
 	_ = level.UnmarshalText([]byte(cfg.Level))
+	return level
+}
+
+// followLevel returns the function that gives a reloaded configuration's log level to level.
+func followLevel(level *slog.LevelVar) func(*config.Config) {
+	return func(cfg *config.Config) { level.Set(levelOf(cfg.Log)) }
+}
+
+// newLogger returns a logger that writes to w in the given format, json or text, at the
+// level in level. The format is fixed here, because a handler is built once and a change of
+// format in the configuration needs a restart. The level is read for every record, so a
+// reload can change it. The configuration loader has already rejected unknown formats.
+func newLogger(format string, level *slog.LevelVar, w io.Writer) *slog.Logger {
 	opts := &slog.HandlerOptions{Level: level}
-	if cfg.Format == "json" {
+	if format == "json" {
 		return slog.New(slog.NewJSONHandler(w, opts))
 	}
 	return slog.New(slog.NewTextHandler(w, opts))
