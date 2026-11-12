@@ -3,13 +3,17 @@ Description=SpliceFS server
 Documentation=https://github.com/SpliceFS/server
 After=network-online.target
 Wants=network-online.target
+# The server cannot run without its configuration. With this condition a fresh install
+# stays stopped, without an error, until the file exists.
+ConditionPathExists=/etc/splicefs/server/config.yaml
 
 [Service]
 ExecStart=/usr/local/bin/splicefsd --config /etc/splicefs/server
 Restart=on-failure
 RestartSec=5
-# Create this user first (useradd --system splicefs) and give it read access to the
-# shares, the users directory, the keys file and the node list.
+# The packages create this user. For a manual install, create it first (useradd --system
+# splicefs). Give it read access to the shares, the users directory, the keys file and
+# the node list.
 User=splicefs
 Group=splicefs
 

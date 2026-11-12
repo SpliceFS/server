@@ -1,0 +1,13 @@
+Package: splicefs-server
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: SpliceFS <anthony@splicefs.org>
+Installed-Size: @SIZE@
+Depends: passwd
+Section: net
+Priority: optional
+Homepage: https://github.com/SpliceFS/server
+Description: server of the SpliceFS read-only multi-source filesystem
+ splicefsd serves local directories over HTTP so that SpliceFS clients can
+ read each file from every node that holds a copy, at the combined speed of
+ those nodes. It only reads; it never writes to a shared directory.
