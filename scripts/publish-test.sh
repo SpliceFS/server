@@ -27,7 +27,7 @@ send() { REPO_DIR="$1" UPLOAD_TARGET="$2" sh scripts/publish.sh send; }
 # (a) A send to an empty folder reproduces dist/repo, with the modes the web server needs.
 if [ "$chmod_ok" -eq 0 ]; then
     skip "a send to an empty folder: rsync has no --chmod"
-    skip "b old package kept, stale repodata removed: rsync has no --chmod"
+    skip "b stale index removed, package missing locally refused: rsync has no --chmod"
     skip "c send refuses when a published package would disappear: rsync has no --chmod"
     cp -R dist/repo "$tmp/target"
 else
@@ -40,18 +40,30 @@ else
         fail "a send to an empty folder"; sed 's/^/     /' "$tmp/out"
     fi
 
-    # (b) An older package stays; the stale repodata file, which a new build replaces, goes.
-    old=apt/pool/main/s/splicefs-server/splicefs-server_0.0.1_amd64.deb
+    # (b) Index files that a new build replaces go; that is the only thing a send removes.
+    echo stale > "$tmp/target/rpm/x86_64/repodata/stale-primary.xml.gz"
+    if send dist/repo "$tmp/target" >"$tmp/out" 2>&1 &&
+        [ ! -e "$tmp/target/rpm/x86_64/repodata/stale-primary.xml.gz" ] &&
+        diff -r dist/repo "$tmp/target"; then
+        pass "b the stale repodata file is gone and nothing else changed"
+    else
+        fail "b stale repodata removed"; sed 's/^/     /' "$tmp/out"
+    fi
+
+    # A package that is published but missing here means the download step was skipped or
+    # failed. Sending then would publish an index without it, so the send must refuse.
+    old="apt/pool/main/old/old-package_0.0.1_amd64.deb"
     mkdir -p "$tmp/target/$(dirname "$old")"
     echo old > "$tmp/target/$old"
-    echo stale > "$tmp/target/rpm/x86_64/repodata/stale-primary.xml.gz"
-    if send dist/repo "$tmp/target" >"$tmp/out" 2>&1 && [ -f "$tmp/target/$old" ] &&
-        [ ! -e "$tmp/target/rpm/x86_64/repodata/stale-primary.xml.gz" ]; then
-        pass "b the old package is still there and the stale repodata file is gone"
+    if send dist/repo "$tmp/target" >"$tmp/out" 2>&1; then
+        fail "b send went ahead although a published package is missing locally"
+    elif [ -f "$tmp/target/$old" ] && grep -q "$old" "$tmp/out"; then
+        pass "b send refused because a published package is missing locally, and it is still there"
     else
-        fail "b old package kept, stale repodata removed"; sed 's/^/     /' "$tmp/out"
+        fail "b refusal for a package missing locally"; sed 's/^/     /' "$tmp/out"
     fi
     rm "$tmp/target/$old"
+    rmdir "$tmp/target/$(dirname "$old")"
 
     # (c) A repository that lacks a published package is refused and nothing is deleted.
     cp -R dist/repo "$tmp/copy"
