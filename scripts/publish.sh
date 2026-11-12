@@ -1,5 +1,5 @@
 #!/bin/sh
-# Publishes the package repositories in dist/repo to packages.splicefs.org/server by rsync, or
+# Publishes the package repositories in dist/repo to packages.splicefs.org by rsync, or
 # proves that the upload path works. Runs on the host (make publish-fetch, publish,
 # publish-check, and the release workflow).
 # Usage: publish.sh fetch | publish.sh send | publish.sh check
