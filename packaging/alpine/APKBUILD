@@ -1,0 +1,22 @@
+# Maintainer: SpliceFS <anthony@splicefs.org>
+# abuild only wraps files here. scripts/package-apk.sh fills in the version and says where
+# the compiled program (STAGE) and the source tree (SRC) are.
+pkgname=splicefs-server
+pkgver=@VERSION@
+pkgrel=0
+pkgdesc="Server of the SpliceFS read-only multi-source filesystem"
+url="https://github.com/SpliceFS/server"
+arch="x86_64 aarch64"
+license="MIT"
+# The binary is compiled and tested before this step, and it is already stripped.
+options="!check !strip"
+install="$pkgname.pre-install $pkgname.post-install $pkgname.post-upgrade $pkgname.pre-deinstall"
+
+package() {
+	install -D -m 755 "$STAGE/splicefsd" "$pkgdir/usr/bin/splicefsd"
+	install -D -m 755 "$SRC/packaging/openrc/splicefsd.initd" "$pkgdir/etc/init.d/splicefsd"
+	install -d "$pkgdir/etc/splicefs/server"
+	install -D -m 644 "$SRC/LICENSE" "$pkgdir/usr/share/doc/$pkgname/LICENSE"
+	install -m 644 "$SRC/README.md" "$SRC/CHANGELOG.md" "$SRC/docs/configuration.md" \
+		"$pkgdir/usr/share/doc/$pkgname/"
+}

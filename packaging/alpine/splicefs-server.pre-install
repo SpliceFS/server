@@ -1,0 +1,6 @@
+#!/bin/sh
+# The server runs as its own user so that a bug in it has no more rights than reading
+# what that user was given.
+addgroup -S splicefs 2>/dev/null
+adduser -S -D -H -h /dev/null -s /sbin/nologin -G splicefs -g splicefs splicefs 2>/dev/null
+exit 0

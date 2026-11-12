@@ -1,0 +1,27 @@
+#!/sbin/openrc-run
+# OpenRC service of the SpliceFS server, for systems without systemd (Alpine).
+
+description="SpliceFS server"
+# supervise-daemon restarts the server when it exits with an error, which is what
+# Restart=on-failure does in the systemd unit.
+supervisor=supervise-daemon
+command=/usr/bin/splicefsd
+command_args="--config /etc/splicefs/server"
+command_user="splicefs:splicefs"
+output_log=/var/log/splicefsd.log
+error_log=/var/log/splicefsd.log
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    # The server cannot run without its configuration. Saying so here is clearer than a
+    # service that starts and dies.
+    if [ ! -f /etc/splicefs/server/config.yaml ]; then
+        eerror "/etc/splicefs/server/config.yaml does not exist"
+        return 1
+    fi
+    checkpath --file --owner splicefs:splicefs --mode 0640 /var/log/splicefsd.log
+}
