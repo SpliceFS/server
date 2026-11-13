@@ -78,3 +78,8 @@ notable ones.
 
 - A request for a name longer than the file system allows is answered with 404 instead of
   500. Found by the new fuzz tests.
+
+### Removed
+
+- openSUSE Leap 15.6 is no longer supported: its vendor ended its support on 2026-04-30. A
+  system is supported only while its own vendor supports it.
