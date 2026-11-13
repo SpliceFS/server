@@ -4,8 +4,7 @@
 # powers the machine off, which ends the run on the other side.
 mkdir -p /tmp/in /tmp/out
 mount -t msdosfs -o ro /dev/msdosfs/cidata /tmp/in
-if sh /tmp/in/freebsd-job.sh /tmp/in /tmp/out "@NAME@" "@PROGRAM@" "@VERSION@" "@PROGRAM_VERSION@" \
-    > /tmp/out/log.txt 2>&1; then
+if sh /tmp/in/@JOB@ /tmp/in /tmp/out @ARGS@ > /tmp/out/log.txt 2>&1; then
     touch /tmp/out/ok
 fi
 cat /tmp/out/log.txt > /dev/console
