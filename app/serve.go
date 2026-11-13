@@ -41,12 +41,9 @@ func listenAddress(entry config.Endpoint) string {
 	return net.JoinHostPort(entry.Address.String(), strconv.Itoa(entry.Port))
 }
 
-// tlsConfigFor returns nil for a plain listener, the configured certificate when the entry
-// names files, and the server's own certificate otherwise.
+// tlsConfigFor returns the TLS settings of a listener that is not plain: the configured
+// certificate when the entry names files, and the server's own certificate otherwise.
 func tlsConfigFor(entry config.Endpoint, own certificateSource) (*tls.Config, error) {
-	if entry.Plain {
-		return nil, nil
-	}
 	var cert tls.Certificate
 	var err error
 	if entry.TLS != nil {
@@ -63,8 +60,8 @@ func tlsConfigFor(entry config.Endpoint, own certificateSource) (*tls.Config, er
 // closeAll closes every listener and reports all failures.
 func closeAll(listeners []*endpoint) error {
 	var errs []error
-	for _, ln := range listeners {
-		if err := ln.Close(); err != nil {
+	for _, listener := range listeners {
+		if err := listener.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -78,7 +75,7 @@ func shutdown(ctx context.Context, srv *http.Server, grace time.Duration) error 
 	waitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), grace)
 	defer cancel()
 	if err := srv.Shutdown(waitCtx); err != nil {
-		return srv.Close()
+		return wrap(srv.Close(), "close server")
 	}
 	return nil
 }
@@ -86,8 +83,8 @@ func shutdown(ctx context.Context, srv *http.Server, grace time.Duration) error 
 // addresses returns the bound address of every listener.
 func addresses(listeners []*endpoint) []net.Addr {
 	addrs := make([]net.Addr, 0, len(listeners))
-	for _, ln := range listeners {
-		addrs = append(addrs, ln.Addr())
+	for _, listener := range listeners {
+		addrs = append(addrs, listener.Addr())
 	}
 	return addrs
 }

@@ -44,8 +44,8 @@ func (r *runner) serve(ctx context.Context, listeners []*endpoint, grace time.Du
 	if r.opts.Ready != nil {
 		r.opts.Ready(addresses(listeners))
 	}
-	for _, e := range listeners {
-		r.start(e)
+	for _, listener := range listeners {
+		r.start(listener)
 	}
 	defer r.wg.Wait()
 
@@ -61,17 +61,17 @@ func (r *runner) serve(ctx context.Context, listeners []*endpoint, grace time.Du
 	}
 }
 
-// start serves e in the background.
-func (r *runner) start(e *endpoint) {
-	r.endpoints[e.address] = e
+// start serves listener in the background.
+func (r *runner) start(listener *endpoint) {
+	r.endpoints[listener.address] = listener
 	r.wg.Go(func() {
-		err := r.srv.Serve(e)
+		err := r.srv.Serve(listener)
 		// A retired endpoint was closed on purpose, which is not a failure.
-		if errors.Is(err, http.ErrServerClosed) || e.isRetired() {
+		if errors.Is(err, http.ErrServerClosed) || listener.isRetired() {
 			return
 		}
 		select {
-		case r.failures <- fmt.Errorf("serve on %s: %w", e.Addr(), err):
+		case r.failures <- fmt.Errorf("serve on %s: %w", listener.Addr(), err):
 		default:
 		}
 	})
@@ -87,7 +87,7 @@ func (r *runner) reload(ctx context.Context) {
 		r.logger.Error("configuration not applied", "error", err)
 		return
 	}
-	listeners, err := r.plan(ctx, cfg.Listen)
+	changes, err := r.plan(ctx, cfg.Listen)
 	if err != nil {
 		r.logger.Error("configuration not applied", "error", err)
 		return
@@ -96,23 +96,25 @@ func (r *runner) reload(ctx context.Context) {
 	// which is the one step here that cannot be taken back.
 	next, err := r.build.generation(cfg)
 	if err != nil {
-		err = errors.Join(err, closeAll(listeners.added))
+		err = errors.Join(err, closeAll(changes.added))
 		r.logger.Error("configuration not applied", "error", err)
 		return
 	}
 
 	r.handlers.replace(next)
-	for e, tlsConfig := range listeners.kept {
-		e.setTLS(tlsConfig)
+	for listener, tlsConfig := range changes.kept {
+		listener.setTLS(tlsConfig)
 	}
-	for _, e := range listeners.added {
-		r.start(e)
+	for _, listener := range changes.added {
+		r.start(listener)
 	}
-	for _, e := range listeners.removed {
-		delete(r.endpoints, e.address)
+	for _, listener := range changes.removed {
+		delete(r.endpoints, listener.address)
 		// Connections it accepted stay open and finish their requests. A close error of a
-		// listener that is going away changes nothing.
-		_ = e.retire()
+		// listener that is going away changes nothing, so it is logged and not acted on.
+		if err := listener.retire(); err != nil {
+			r.logger.Warn("close removed listener", "error", err)
+		}
 	}
 	if r.opts.Applied != nil {
 		r.opts.Applied(cfg)
@@ -124,41 +126,46 @@ func (r *runner) reload(ctx context.Context) {
 // opens every added address, so that a plan that is returned can no longer fail; on an
 // error it closes what it opened.
 func (r *runner) plan(ctx context.Context, entries []config.Endpoint) (listenPlan, error) {
-	p := listenPlan{kept: make(map[*endpoint]*tls.Config)}
+	changes := listenPlan{kept: make(map[*endpoint]*tls.Config)}
 	wanted := make(map[string]bool, len(entries))
 	for _, entry := range entries {
 		address := listenAddress(entry)
 		wanted[address] = true
-		e, err := r.planOne(ctx, entry, address, p.kept)
-		if err != nil {
+		if err := r.planOne(ctx, entry, address, &changes); err != nil {
 			return listenPlan{}, errors.Join(
-				fmt.Errorf("listen on %s: %w", address, err), closeAll(p.added))
-		}
-		if e != nil {
-			p.added = append(p.added, e)
+				fmt.Errorf("listen on %s: %w", address, err), closeAll(changes.added))
 		}
 	}
-	for address, e := range r.endpoints {
+	for address, listener := range r.endpoints {
 		if !wanted[address] {
-			p.removed = append(p.removed, e)
+			changes.removed = append(changes.removed, listener)
 		}
 	}
-	return p, nil
+	return changes, nil
 }
 
-// planOne handles one entry: an address that is already open is kept and gets the TLS
-// settings of the entry, any other is opened and returned. The certificate is loaded
-// before the port is bound, so a bad certificate does not leave a port open.
+// planOne handles one entry and records the result in changes: an address that is already
+// open is kept and gets the TLS settings of the entry, any other is opened and added. The
+// certificate is loaded before the port is bound, so a bad certificate does not leave a port
+// open.
 func (r *runner) planOne(
-	ctx context.Context, entry config.Endpoint, address string, kept map[*endpoint]*tls.Config,
-) (*endpoint, error) {
-	tlsConfig, err := tlsConfigFor(entry, r.build.ownCert)
+	ctx context.Context, entry config.Endpoint, address string, changes *listenPlan,
+) error {
+	var tlsConfig *tls.Config // stays nil for a plain listener
+	if !entry.Plain {
+		var err error
+		if tlsConfig, err = tlsConfigFor(entry, r.build.ownCert); err != nil {
+			return err
+		}
+	}
+	if listener, ok := r.endpoints[address]; ok {
+		changes.kept[listener] = tlsConfig
+		return nil
+	}
+	listener, err := openEndpoint(ctx, address, tlsConfig)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if e, ok := r.endpoints[address]; ok {
-		kept[e] = tlsConfig
-		return nil, nil
-	}
-	return openEndpoint(ctx, address, tlsConfig)
+	changes.added = append(changes.added, listener)
+	return nil
 }

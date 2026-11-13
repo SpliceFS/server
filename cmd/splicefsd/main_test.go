@@ -24,6 +24,7 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
+//nolint:paralleltest // replaces the package variable exit and os.Args for the whole process
 func TestMainRunsTheProgram(t *testing.T) {
 	oldExit, oldArgs := exit, os.Args
 	t.Cleanup(func() { exit, os.Args = oldExit, oldArgs })
@@ -39,28 +40,34 @@ func TestMainRunsTheProgram(t *testing.T) {
 	}
 }
 
-// execute runs the program with no input and returns its status and output.
-func execute(t *testing.T, args ...string) (status int, stdout, stderr string) {
+// outcome is what one run of the program did: its exit status and what it printed.
+type outcome struct {
+	status         int
+	stdout, stderr string
+}
+
+// execute runs the program with no input.
+func execute(t *testing.T, args ...string) outcome {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	status = run(context.Background(), args, strings.NewReader(""), &out, &errOut)
-	return status, out.String(), errOut.String()
+	status := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
+	return outcome{status: status, stdout: out.String(), stderr: errOut.String()}
 }
 
 func TestVersion(t *testing.T) {
 	t.Parallel()
-	status, stdout, stderr := execute(t, "--version")
-	if want := "splicefsd " + version.String() + "\n"; status != exitOK || stdout != want || stderr != "" {
-		t.Errorf("status %d stdout %q stderr %q, want 0 %q", status, stdout, stderr, want)
+	got := execute(t, "--version")
+	want := outcome{status: exitOK, stdout: "splicefsd " + version.String() + "\n"}
+	if got != want {
+		t.Errorf("got %+v, want %+v", got, want)
 	}
 }
 
 func TestHelp(t *testing.T) {
 	t.Parallel()
 	for _, arg := range []string{"-h", "--help"} {
-		status, stdout, stderr := execute(t, arg)
-		if status != exitOK || stdout != usage || stderr != "" {
-			t.Errorf("%s: status %d stdout %q stderr %q", arg, status, stdout, stderr)
+		if got, want := execute(t, arg), (outcome{status: exitOK, stdout: usage}); got != want {
+			t.Errorf("%s: got %+v, want %+v", arg, got, want)
 		}
 	}
 }
@@ -84,14 +91,34 @@ func TestBadUsage(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			status, stdout, stderr := execute(t, tt.args...)
-			if status != exitUsage || stdout != "" {
-				t.Errorf("status %d stdout %q", status, stdout)
+			got := execute(t, tt.args...)
+			if got.status != exitUsage || got.stdout != "" {
+				t.Errorf("status %d stdout %q", got.status, got.stdout)
 			}
-			if !strings.HasPrefix(stderr, "splicefsd: ") || !strings.Contains(stderr, tt.want) || !strings.HasSuffix(stderr, usage) {
-				t.Errorf("stderr = %q", stderr)
+			if !strings.HasPrefix(got.stderr, "splicefsd: ") || !strings.Contains(got.stderr, tt.want) ||
+				!strings.HasSuffix(got.stderr, usage) {
+				t.Errorf("stderr = %q", got.stderr)
 			}
 		})
+	}
+}
+
+// argon2idPrefix starts every hash that hash-password makes, with the parameters it uses.
+const argon2idPrefix = "$argon2id$v=19$m=65536,t=3,p=4$"
+
+// checkHashOutput fails the test when out is not one line with the hash of want, and not of
+// any other password.
+func checkHashOutput(t *testing.T, out, want string) {
+	t.Helper()
+	if !strings.HasSuffix(out, "\n") || strings.Count(out, "\n") != 1 || !strings.HasPrefix(out, argon2idPrefix) {
+		t.Fatalf("output = %q", out)
+	}
+	hash := strings.TrimSuffix(out, "\n")
+	if ok, err := auth.VerifyPassword(hash, want); err != nil || !ok {
+		t.Errorf("the hash does not verify %q: %v, %v", want, ok, err)
+	}
+	if ok, err := auth.VerifyPassword(hash, want+"x"); err != nil || ok {
+		t.Errorf("the hash verifies another password: %v, %v", ok, err)
 	}
 }
 
@@ -112,21 +139,12 @@ func TestHashPassword(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var out, errOut bytes.Buffer
-			status := run(context.Background(), []string{"hash-password"}, strings.NewReader(tt.input), &out, &errOut)
+			args := []string{"hash-password"}
+			status := run(context.Background(), args, strings.NewReader(tt.input), &out, &errOut)
 			if status != exitOK || errOut.Len() != 0 {
 				t.Fatalf("status %d stderr %q", status, errOut.String())
 			}
-			hash := out.String()
-			if !strings.HasSuffix(hash, "\n") || strings.Count(hash, "\n") != 1 || !strings.HasPrefix(hash, "$argon2id$v=19$m=65536,t=3,p=4$") {
-				t.Fatalf("output = %q", hash)
-			}
-			hash = strings.TrimSuffix(hash, "\n")
-			if ok, err := auth.VerifyPassword(hash, tt.want); err != nil || !ok {
-				t.Errorf("the hash does not verify %q: %v, %v", tt.want, ok, err)
-			}
-			if ok, _ := auth.VerifyPassword(hash, tt.want+"x"); ok {
-				t.Error("the hash verifies another password")
-			}
+			checkHashOutput(t, out.String(), tt.want)
 		})
 	}
 }
@@ -140,11 +158,14 @@ func TestHashPasswordErrors(t *testing.T) {
 		random io.Reader
 		want   string
 	}{
-		{"empty input", strings.NewReader(""), io.Discard, strings.NewReader("0123456789abcdef"), "empty password"},
-		{"empty line", strings.NewReader("\n"), io.Discard, strings.NewReader("0123456789abcdef"), "empty password"},
-		{"unreadable input", iotest.ErrReader(errors.New("terminal gone")), io.Discard, strings.NewReader("0123456789abcdef"), "read password: terminal gone"},
+		{"empty input", strings.NewReader(""), io.Discard, saltSource(), "empty password"},
+		{"empty line", strings.NewReader("\n"), io.Discard, saltSource(), "empty password"},
+		{
+			"unreadable input", iotest.ErrReader(errTerminalGone), io.Discard, saltSource(),
+			"read password: terminal gone",
+		},
 		{"no randomness", strings.NewReader("pw\n"), io.Discard, strings.NewReader("short"), "read salt"},
-		{"unwritable output", strings.NewReader("pw\n"), errWriter{}, strings.NewReader("0123456789abcdef"), "write hash: disk full"},
+		{"unwritable output", strings.NewReader("pw\n"), errWriter{}, saltSource(), "write hash: disk full"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -157,9 +178,18 @@ func TestHashPasswordErrors(t *testing.T) {
 	}
 }
 
+// The failures that the tests make the program's input and output report.
+var (
+	errTerminalGone = errors.New("terminal gone")
+	errDiskFull     = errors.New("disk full")
+)
+
 type errWriter struct{}
 
-func (errWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+func (errWriter) Write([]byte) (int, error) { return 0, errDiskFull }
+
+// saltSource returns a source of random bytes that is long enough for one salt.
+func saltSource() io.Reader { return strings.NewReader("0123456789abcdef") }
 
 func TestHashPasswordCommandFailure(t *testing.T) {
 	t.Parallel()
@@ -233,10 +263,13 @@ func TestFollowLevel(t *testing.T) {
 func TestLogListening(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	logListening(slog.New(slog.NewTextHandler(&buf, nil)),
-		[]net.Addr{&net.TCPAddr{IP: net.IPv4(192, 0, 2, 10), Port: 8480}, &net.TCPAddr{IP: net.IPv4(192, 0, 2, 11), Port: 8481}})
+	logListening(slog.New(slog.NewTextHandler(&buf, nil)), []net.Addr{
+		&net.TCPAddr{IP: net.IPv4(192, 0, 2, 10), Port: 8480},
+		&net.TCPAddr{IP: net.IPv4(192, 0, 2, 11), Port: 8481},
+	})
 	out := buf.String()
-	if strings.Count(out, "listening") != 2 || !strings.Contains(out, "192.0.2.10:8480") || !strings.Contains(out, "192.0.2.11:8481") {
+	if strings.Count(out, "listening") != 2 || !strings.Contains(out, "192.0.2.10:8480") ||
+		!strings.Contains(out, "192.0.2.11:8481") {
 		t.Errorf("log = %q", out)
 	}
 }
@@ -245,15 +278,18 @@ func TestLogListening(t *testing.T) {
 func freePort(t *testing.T) int {
 	t.Helper()
 	var lc net.ListenConfig
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	listener, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	if err := ln.Close(); err != nil {
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("listener address is a %T, want a TCP address", listener.Addr())
+	}
+	if err := listener.Close(); err != nil {
 		t.Fatal(err)
 	}
-	return port
+	return addr.Port
 }
 
 // writeFiles creates the files, given by their path below dir, with their content.
@@ -280,14 +316,26 @@ func lowCostHash(password string) string {
 		enc.EncodeToString(salt), enc.EncodeToString(key))
 }
 
-// serverDirs writes a configuration directory for a server on a free loopback port, and a
+// serverSetup is where a test server reads its configuration and keeps its state, and the
+// port it listens on.
+type serverSetup struct {
+	configDir, stateDir string
+	port                int
+}
+
+// healthURL is the address of the health check of the server.
+func (setup serverSetup) healthURL() string {
+	return "http://127.0.0.1:" + strconv.Itoa(setup.port) + "/api/v1/health"
+}
+
+// setUpServer writes a configuration directory for a server on a free loopback port, and a
 // state directory that holds only what an administrator makes (a user). The server makes
 // everything else on its first start, so the tests that need other files write them.
-func serverDirs(t *testing.T) (configDir, stateDir string, port int) {
+func setUpServer(t *testing.T) serverSetup {
 	t.Helper()
-	port = freePort(t)
+	port := freePort(t)
 	root := t.TempDir()
-	configDir, stateDir = filepath.Join(root, "config"), filepath.Join(root, "state")
+	configDir, stateDir := filepath.Join(root, "config"), filepath.Join(root, "state")
 	writeFiles(t, configDir, map[string]string{
 		"conf.d/10-server.yaml": "listen:\n  - address: 127.0.0.1\n    port: " + strconv.Itoa(port) + "\n" +
 			"    plain: true\n" +
@@ -299,7 +347,7 @@ func serverDirs(t *testing.T) (configDir, stateDir string, port int) {
 		"shared/users/alice.yaml": "password_hash: \"" + lowCostHash("secret") + "\"\n" +
 			"shares: [media]\n",
 	})
-	return configDir, stateDir, port
+	return serverSetup{configDir: configDir, stateDir: stateDir, port: port}
 }
 
 // watchedLog collects what the server logs, and tells when it has started listening.
@@ -312,14 +360,14 @@ type watchedLog struct {
 
 func newWatchedLog() *watchedLog { return &watchedLog{ready: make(chan struct{})} }
 
-func (w *watchedLog) Write(p []byte) (int, error) {
+func (w *watchedLog) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.buf.Write(p)
+	written, err := w.buf.Write(data)
 	if strings.Contains(w.buf.String(), `"msg":"listening"`) {
 		w.once.Do(func() { close(w.ready) })
 	}
-	return len(p), nil
+	return written, err
 }
 
 func (w *watchedLog) String() string {
@@ -328,15 +376,19 @@ func (w *watchedLog) String() string {
 	return w.buf.String()
 }
 
+// runningServer is a server that a test started in the background.
+type runningServer struct {
+	logs   *watchedLog
+	status <-chan int // receives the exit status when the server has stopped
+}
+
 // startServer runs the server in the background and waits until it listens.
-func startServer(
-	ctx context.Context, t *testing.T, configDir, stateDir string,
-) (*watchedLog, <-chan int) {
+func startServer(ctx context.Context, t *testing.T, setup serverSetup) runningServer {
 	t.Helper()
 	logs := newWatchedLog()
 	status := make(chan int, 1)
 	go func() {
-		args := []string{"--config", configDir, "--state", stateDir}
+		args := []string{"--config", setup.configDir, "--state", setup.stateDir}
 		status <- run(ctx, args, strings.NewReader(""), io.Discard, logs)
 	}()
 	select {
@@ -344,26 +396,27 @@ func startServer(
 	case code := <-status:
 		t.Fatalf("the server exited with status %d: %s", code, logs)
 	}
-	return logs, status
+	return runningServer{logs: logs, status: status}
 }
 
 func TestServerRunsUntilCancelled(t *testing.T) {
 	t.Parallel()
-	configDir, stateDir, port := serverDirs(t)
+	setup := setUpServer(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	logs, status := startServer(ctx, t, configDir, stateDir)
+	server := startServer(ctx, t, setup)
 
-	body := fetch(t, "http://127.0.0.1:"+strconv.Itoa(port)+"/api/v1/health")
-	if want := `"version":"` + version.String() + `"`; !strings.Contains(body, want) || !strings.Contains(body, `"node":"east"`) {
+	body := fetch(t, setup.healthURL())
+	want := `"version":"` + version.String() + `"`
+	if !strings.Contains(body, want) || !strings.Contains(body, `"node":"east"`) {
 		t.Errorf("health = %s", body)
 	}
 	cancel()
-	if code := <-status; code != exitOK {
-		t.Errorf("exit status = %d, want 0\n%s", code, logs)
+	if code := <-server.status; code != exitOK {
+		t.Errorf("exit status = %d, want 0\n%s", code, server.logs)
 	}
-	if !strings.Contains(logs.String(), `"msg":"request"`) {
-		t.Errorf("no access log:\n%s", logs)
+	if !strings.Contains(server.logs.String(), `"msg":"request"`) {
+		t.Errorf("no access log:\n%s", server.logs)
 	}
 }
 
@@ -375,41 +428,49 @@ func TestServerFailures(t *testing.T) {
 		want   string
 	}{
 		{"invalid configuration", func(t *testing.T, configDir, _ string) {
+			t.Helper()
 			writeFiles(t, configDir, map[string]string{"conf.d/20-bad.yaml": "listen: []\n"})
 		}, "invalid server config"},
 		{"unreadable configuration", func(t *testing.T, configDir, _ string) {
+			t.Helper()
 			writeFiles(t, configDir, map[string]string{"conf.d/20-bad.yaml": "unknown: 1\n"})
 		}, "read server config"},
 		{"share directory is missing", func(t *testing.T, configDir, _ string) {
+			t.Helper()
 			missing := map[string]string{"shares.d/media.yaml": "path: /nonexistent/media\n"}
 			writeFiles(t, configDir, missing)
 		}, `share "media"`},
 		// A server never replaces a node id or a key it cannot read: other nodes know them.
 		{"node id file is malformed", func(t *testing.T, _, stateDir string) {
+			t.Helper()
 			writeFiles(t, stateDir, map[string]string{"local/node-id": "not an id\n"})
 		}, "node id file"},
 		{"signing key file is invalid", func(t *testing.T, _, stateDir string) {
+			t.Helper()
 			writeFiles(t, stateDir, map[string]string{
 				"local/node-id":                     "0123456789abcdef\n",
 				"shared/keys/0123456789abcdef.yaml": "keys: []\n",
 			})
 		}, "signing key file"},
 		{"data folder is a file", func(t *testing.T, _, stateDir string) {
+			t.Helper()
 			writeFiles(t, stateDir, map[string]string{"shared/keys": "a file where a folder belongs"})
 		}, "is not a folder"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			configDir, stateDir, _ := serverDirs(t)
-			tt.mutate(t, configDir, stateDir)
+			setup := setUpServer(t)
+			tt.mutate(t, setup.configDir, setup.stateDir)
 			var out, errOut bytes.Buffer
-			args := []string{"--config", configDir, "--state", stateDir}
+			args := []string{"--config", setup.configDir, "--state", setup.stateDir}
 			status := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
 			if status != exitError || out.Len() != 0 {
 				t.Errorf("status %d stdout %q", status, out.String())
 			}
-			if got := errOut.String(); !strings.HasPrefix(got, "splicefsd: ") || !strings.Contains(got, tt.want) || !strings.HasSuffix(got, "\n") {
+			got := errOut.String()
+			if !strings.HasPrefix(got, "splicefsd: ") || !strings.Contains(got, tt.want) ||
+				!strings.HasSuffix(got, "\n") {
 				t.Errorf("stderr = %q", got)
 			}
 		})
@@ -485,11 +546,11 @@ func TestDefaultsThatCannotBeFound(t *testing.T) {
 
 func TestConfigCheck(t *testing.T) {
 	t.Parallel()
-	configDir, _, _ := serverDirs(t)
-	for _, dir := range []string{configDir, filepath.Join(t.TempDir(), "empty")} {
-		status, stdout, stderr := execute(t, "--config", dir, "config", "check")
-		if status != exitOK || stdout != "configuration ok\n" || stderr != "" {
-			t.Errorf("%s: status %d stdout %q stderr %q", dir, status, stdout, stderr)
+	setup := setUpServer(t)
+	for _, dir := range []string{setup.configDir, filepath.Join(t.TempDir(), "empty")} {
+		got := execute(t, "--config", dir, "config", "check")
+		if want := (outcome{status: exitOK, stdout: "configuration ok\n"}); got != want {
+			t.Errorf("%s: got %+v, want %+v", dir, got, want)
 		}
 	}
 }
@@ -502,14 +563,14 @@ func TestConfigCheckPrintsEveryProblem(t *testing.T) {
 		"shares.d/m.yaml":   "path: relative\n",
 		"shares.d/Bad.yaml": "path: /srv\n",
 	})
-	status, stdout, stderr := execute(t, "--config", dir, "config", "check")
-	if status != exitError || stdout != "" {
-		t.Errorf("status %d stdout %q", status, stdout)
+	got := execute(t, "--config", dir, "config", "check")
+	if got.status != exitError || got.stdout != "" {
+		t.Errorf("status %d stdout %q", got.status, got.stdout)
 	}
 	wanted := []string{"log.level", "base_path", "shares.m.path", "shares.Bad", "a.yaml", "m.yaml"}
 	for _, want := range wanted {
-		if !strings.Contains(stderr, want) {
-			t.Errorf("stderr does not mention %q:\n%s", want, stderr)
+		if !strings.Contains(got.stderr, want) {
+			t.Errorf("stderr does not mention %q:\n%s", want, got.stderr)
 		}
 	}
 }
@@ -525,9 +586,9 @@ func TestConfigShow(t *testing.T) {
 			"follow_symlinks: true\n",
 		"shares.d/plain.yaml": "path: /srv/plain\n",
 	})
-	status, stdout, stderr := execute(t, "--config", dir, "config", "show")
-	if status != exitOK || stderr != "" {
-		t.Fatalf("status %d stderr %q", status, stderr)
+	got := execute(t, "--config", dir, "config", "show")
+	if got.status != exitOK || got.stderr != "" {
+		t.Fatalf("status %d stderr %q", got.status, got.stderr)
 	}
 	want := `listen: # 10-base.yaml
   - address: 127.0.0.1
@@ -556,16 +617,16 @@ shares:
   plain:
     path: /srv/plain # plain.yaml
 `
-	if stdout != want {
-		t.Errorf("output:\n%s\nwant:\n%s", stdout, want)
+	if got.stdout != want {
+		t.Errorf("output:\n%s\nwant:\n%s", got.stdout, want)
 	}
 }
 
 func TestConfigShowWithoutShares(t *testing.T) {
 	t.Parallel()
-	_, stdout, _ := execute(t, "--config", t.TempDir(), "config", "show")
-	if !strings.HasSuffix(stdout, "trusted_proxies: []\nshares: {}\n") {
-		t.Errorf("output:\n%s", stdout)
+	got := execute(t, "--config", t.TempDir(), "config", "show")
+	if !strings.HasSuffix(got.stdout, "trusted_proxies: []\nshares: {}\n") {
+		t.Errorf("output:\n%s", got.stdout)
 	}
 }
 
@@ -573,7 +634,7 @@ func TestConfigShowWriteFailure(t *testing.T) {
 	t.Parallel()
 	var errOut bytes.Buffer
 	opts := options{configDir: t.TempDir(), command: commandShow}
-	status := runConfig(opts, systemDirs, errWriter{}, &errOut)
+	status := runConfig(opts, systemDirs(), errWriter{}, &errOut)
 	if status != exitError || !strings.Contains(errOut.String(), "disk full") {
 		t.Errorf("status %d stderr %q", status, errOut.String())
 	}
@@ -582,7 +643,7 @@ func TestConfigShowWriteFailure(t *testing.T) {
 // fetch returns the body of a GET request.
 func fetch(t *testing.T, url string) string {
 	t.Helper()
-	req, err := http.NewRequestWithContext(context.Background(), "GET", url, nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -590,10 +651,18 @@ func fetch(t *testing.T, url string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(t, resp)
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+// closeBody closes the body of a response, and fails the test when that does not work.
+func closeBody(t *testing.T, resp *http.Response) {
+	t.Helper()
+	if err := resp.Body.Close(); err != nil {
+		t.Errorf("close the response body: %v", err)
+	}
 }

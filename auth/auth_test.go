@@ -26,39 +26,48 @@ type authFixture struct {
 
 func newAuthFixture(t *testing.T, limit int) *authFixture {
 	t.Helper()
-	f := &authFixture{usersDir: t.TempDir(), clock: newFakeClock(), result: true}
+	fixture := &authFixture{usersDir: t.TempDir(), clock: newFakeClock(), result: true}
 	keysDir := t.TempDir()
-	f.keysPath = filepath.Join(keysDir, testNode+".yaml")
+	fixture.keysPath = filepath.Join(keysDir, testNode+".yaml")
 	writeFile(t, keysDir, testNode+".yaml", twoKeys())
-	writeFile(t, f.usersDir, "alice.yaml", "password_hash: alice-hash\nshares: [media]\n")
-	writeFile(t, f.usersDir, "dave.yaml", "password_hash: dave-hash\nshares: [media]\ndisabled: true\n")
-	f.auth = New(
-		NewUsers(f.usersDir),
-		NewTokens(keysDir, testNode, 30*time.Minute, f.clock.Now, discard),
-		NewLimiter(limit, time.Minute, f.clock.Now),
+	writeFile(t, fixture.usersDir, "alice.yaml", "password_hash: alice-hash\nshares: [media]\n")
+	writeFile(t, fixture.usersDir, "dave.yaml", "password_hash: dave-hash\nshares: [media]\ndisabled: true\n")
+	fixture.auth = New(
+		NewUsers(fixture.usersDir),
+		NewTokens(keysDir, testNode, 30*time.Minute, fixture.clock.Now, discard()),
+		NewLimiter(limit, time.Minute, fixture.clock.Now),
 		4,
 	)
-	f.auth.verify = func(encoded, password string) (bool, error) {
-		f.calls = append(f.calls, verifyCall{encoded, password})
-		return f.result, f.err
+	fixture.auth.verify = func(encoded, password string) (bool, error) {
+		fixture.calls = append(fixture.calls, verifyCall{encoded, password})
+		return fixture.result, fixture.err
 	}
-	return f
+	return fixture
+}
+
+// wantLoginError logs user in from a fixed address and checks that the error is want, or
+// nil for a login that succeeds.
+func (fixture *authFixture) wantLoginError(t *testing.T, user string, want error) {
+	t.Helper()
+	if _, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", user, "pw"); !errors.Is(err, want) {
+		t.Errorf("login of %q: err = %v, want %v", user, err, want)
+	}
 }
 
 func TestLoginSuccess(t *testing.T) {
 	t.Parallel()
-	f := newAuthFixture(t, 10)
-	token, expires, err := f.auth.Login(context.Background(), "192.0.2.1", "alice", "pw")
+	fixture := newAuthFixture(t, 10)
+	token, expires, err := fixture.auth.Login(context.Background(), "192.0.2.1", "alice", "pw")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := f.clock.Now().Add(30 * time.Minute); !expires.Equal(want) {
+	if want := fixture.clock.Now().Add(30 * time.Minute); !expires.Equal(want) {
 		t.Errorf("expires = %v, want %v", expires, want)
 	}
-	if len(f.calls) != 1 || f.calls[0] != (verifyCall{"alice-hash", "pw"}) {
-		t.Errorf("verify calls = %v", f.calls)
+	if len(fixture.calls) != 1 || fixture.calls[0] != (verifyCall{"alice-hash", "pw"}) {
+		t.Errorf("verify calls = %v", fixture.calls)
 	}
-	claims, err := f.auth.Verify(token)
+	claims, err := fixture.auth.Verify(token)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,9 +92,9 @@ func TestLoginBadCredentials(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			f := newAuthFixture(t, 10)
-			f.result = tt.result
-			token, expires, err := f.auth.Login(context.Background(), "192.0.2.1", tt.user, "pw")
+			fixture := newAuthFixture(t, 10)
+			fixture.result = tt.result
+			token, expires, err := fixture.auth.Login(context.Background(), "192.0.2.1", tt.user, "pw")
 			if !errors.Is(err, ErrBadCredentials) {
 				t.Fatalf("err = %v, want ErrBadCredentials", err)
 			}
@@ -93,8 +102,8 @@ func TestLoginBadCredentials(t *testing.T) {
 				t.Errorf("token %q and expires %v must be empty", token, expires)
 			}
 			// Every failure costs exactly one password verification.
-			if len(f.calls) != 1 || f.calls[0] != (verifyCall{tt.wantHash, "pw"}) {
-				t.Errorf("verify calls = %v, want one with %q", f.calls, tt.wantHash)
+			if len(fixture.calls) != 1 || fixture.calls[0] != (verifyCall{tt.wantHash, "pw"}) {
+				t.Errorf("verify calls = %v, want one with %q", fixture.calls, tt.wantHash)
 			}
 		})
 	}
@@ -102,41 +111,42 @@ func TestLoginBadCredentials(t *testing.T) {
 
 func TestLoginUnknownUserIgnoresVerifierFailure(t *testing.T) {
 	t.Parallel()
-	f := newAuthFixture(t, 10)
-	f.err = errors.New("verifier broke")
-	if _, _, err := f.auth.Login(context.Background(), "192.0.2.1", "nobody", "pw"); !errors.Is(err, ErrBadCredentials) {
+	fixture := newAuthFixture(t, 10)
+	fixture.err = errors.New("verifier broke")
+	_, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "nobody", "pw")
+	if !errors.Is(err, ErrBadCredentials) {
 		t.Errorf("err = %v, want ErrBadCredentials", err)
 	}
 }
 
 func TestLoginRateLimited(t *testing.T) {
 	t.Parallel()
-	f := newAuthFixture(t, 2)
+	fixture := newAuthFixture(t, 2)
 	for range 2 {
-		if _, _, err := f.auth.Login(context.Background(), "192.0.2.1", "alice", "bad"); err != nil {
+		if _, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "alice", "bad"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	f.calls = nil
-	token, _, err := f.auth.Login(context.Background(), "192.0.2.1", "alice", "pw")
+	fixture.calls = nil
+	token, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "alice", "pw")
 	if !errors.Is(err, ErrRateLimited) || token != "" {
 		t.Fatalf("token %q, err = %v, want ErrRateLimited", token, err)
 	}
-	if len(f.calls) != 0 {
-		t.Errorf("a rate limited attempt must not verify a password: %v", f.calls)
+	if len(fixture.calls) != 0 {
+		t.Errorf("a rate limited attempt must not verify a password: %v", fixture.calls)
 	}
-	if _, _, err := f.auth.Login(context.Background(), "192.0.2.2", "alice", "pw"); err != nil {
+	if _, _, err := fixture.auth.Login(context.Background(), "192.0.2.2", "alice", "pw"); err != nil {
 		t.Errorf("other address: %v", err)
 	}
 }
 
 func TestLoginCountsEveryAttempt(t *testing.T) {
 	t.Parallel()
-	f := newAuthFixture(t, 2)
-	f.result = false
-	_, _, _ = f.auth.Login(context.Background(), "192.0.2.1", "nobody", "pw")
-	_, _, _ = f.auth.Login(context.Background(), "192.0.2.1", "dave", "pw")
-	if _, _, err := f.auth.Login(context.Background(), "192.0.2.1", "alice", "pw"); !errors.Is(err, ErrRateLimited) {
+	fixture := newAuthFixture(t, 2)
+	fixture.result = false
+	fixture.wantLoginError(t, "nobody", ErrBadCredentials)
+	fixture.wantLoginError(t, "dave", ErrBadCredentials)
+	if _, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "alice", "pw"); !errors.Is(err, ErrRateLimited) {
 		t.Errorf("err = %v, want ErrRateLimited", err)
 	}
 }
@@ -145,30 +155,30 @@ func TestLoginOtherFailuresAreNotBadCredentials(t *testing.T) {
 	t.Parallel()
 	t.Run("broken user file", func(t *testing.T) {
 		t.Parallel()
-		f := newAuthFixture(t, 10)
-		writeFile(t, f.usersDir, "erin.yaml", "password_hash: [\n")
-		_, _, err := f.auth.Login(context.Background(), "192.0.2.1", "erin", "pw")
+		fixture := newAuthFixture(t, 10)
+		writeFile(t, fixture.usersDir, "erin.yaml", "password_hash: [\n")
+		_, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "erin", "pw")
 		if err == nil || errors.Is(err, ErrBadCredentials) || errors.Is(err, ErrNoUser) {
 			t.Errorf("err = %v", err)
 		}
 	})
 	t.Run("verifier error", func(t *testing.T) {
 		t.Parallel()
-		f := newAuthFixture(t, 10)
-		f.err = errors.New("invalid password hash")
-		_, _, err := f.auth.Login(context.Background(), "192.0.2.1", "alice", "pw-secret")
+		fixture := newAuthFixture(t, 10)
+		fixture.err = errors.New("invalid password hash")
+		_, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "alice", "pw-secret")
 		if err == nil || errors.Is(err, ErrBadCredentials) {
 			t.Fatalf("err = %v", err)
 		}
-		if !errors.Is(err, f.err) || strings.Contains(err.Error(), "pw-secret") {
+		if !errors.Is(err, fixture.err) || strings.Contains(err.Error(), "pw-secret") {
 			t.Errorf("err = %v, want it to wrap the cause and hide the password", err)
 		}
 	})
 	t.Run("broken keys file", func(t *testing.T) {
 		t.Parallel()
-		f := newAuthFixture(t, 10)
-		writeFile(t, filepath.Dir(f.keysPath), testNode+".yaml", "keys: []\n")
-		_, _, err := f.auth.Login(context.Background(), "192.0.2.1", "alice", "pw")
+		fixture := newAuthFixture(t, 10)
+		writeFile(t, filepath.Dir(fixture.keysPath), testNode+".yaml", "keys: []\n")
+		_, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "alice", "pw")
 		if err == nil || errors.Is(err, ErrBadCredentials) {
 			t.Errorf("err = %v", err)
 		}
@@ -177,16 +187,16 @@ func TestLoginOtherFailuresAreNotBadCredentials(t *testing.T) {
 
 func TestAuthenticatorVerify(t *testing.T) {
 	t.Parallel()
-	f := newAuthFixture(t, 10)
-	if _, err := f.auth.Verify("not-a-token"); !errors.Is(err, ErrInvalidToken) {
+	fixture := newAuthFixture(t, 10)
+	if _, err := fixture.auth.Verify("not-a-token"); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("err = %v, want ErrInvalidToken", err)
 	}
-	token, _, err := f.auth.Login(context.Background(), "192.0.2.1", "alice", "pw")
+	token, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "alice", "pw")
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.clock.Advance(time.Hour)
-	if _, err := f.auth.Verify(token); !errors.Is(err, ErrExpiredToken) {
+	fixture.clock.Advance(time.Hour)
+	if _, err := fixture.auth.Verify(token); !errors.Is(err, ErrExpiredToken) {
 		t.Errorf("err = %v, want ErrExpiredToken", err)
 	}
 }
@@ -202,13 +212,14 @@ func TestNewUsesRealVerifier(t *testing.T) {
 
 func TestLoginWithRealPasswordHash(t *testing.T) {
 	t.Parallel()
-	f := newAuthFixture(t, 10)
-	f.auth.verify = VerifyPassword
-	writeFile(t, f.usersDir, "frank.yaml", "password_hash: \""+smallHash("right")+"\"\nshares: [\"*\"]\n")
-	if _, _, err := f.auth.Login(context.Background(), "192.0.2.1", "frank", "right"); err != nil {
+	fixture := newAuthFixture(t, 10)
+	fixture.auth.verify = VerifyPassword
+	writeFile(t, fixture.usersDir, "frank.yaml", "password_hash: \""+smallHash("right")+"\"\nshares: [\"*\"]\n")
+	if _, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "frank", "right"); err != nil {
 		t.Errorf("right password: %v", err)
 	}
-	if _, _, err := f.auth.Login(context.Background(), "192.0.2.1", "frank", "wrong"); !errors.Is(err, ErrBadCredentials) {
+	_, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "frank", "wrong")
+	if !errors.Is(err, ErrBadCredentials) {
 		t.Errorf("wrong password: err = %v", err)
 	}
 }
@@ -236,43 +247,46 @@ func TestNewSlotCount(t *testing.T) {
 
 func TestLoginWaitsForSlotUntilContextEnds(t *testing.T) {
 	t.Parallel()
-	f := newAuthFixture(t, 10)
-	f.auth.slots = make(chan struct{}, 1)
-	f.auth.slots <- struct{}{}
+	fixture := newAuthFixture(t, 10)
+	fixture.auth.slots = make(chan struct{}, 1)
+	fixture.auth.slots <- struct{}{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	token, expires, err := f.auth.Login(ctx, "192.0.2.1", "alice", "pw")
+	token, expires, err := fixture.auth.Login(ctx, "192.0.2.1", "alice", "pw")
 	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrBadCredentials) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
-	if token != "" || !expires.IsZero() || len(f.calls) != 0 {
-		t.Errorf("token %q, expires %v, verify calls %v; want none", token, expires, f.calls)
+	if token != "" || !expires.IsZero() || len(fixture.calls) != 0 {
+		t.Errorf("token %q, expires %v, verify calls %v; want none", token, expires, fixture.calls)
 	}
 }
 
 func TestLoginReleasesSlot(t *testing.T) {
 	t.Parallel()
-	f := newAuthFixture(t, 10)
-	f.auth.slots = make(chan struct{}, 1)
-	for _, user := range []string{"alice", "nobody", "alice"} {
-		f.result = user == "alice"
-		_, _, _ = f.auth.Login(context.Background(), "192.0.2.1", user, "pw")
-		if n := len(f.auth.slots); n != 0 {
-			t.Fatalf("after login of %q: %d slots still held", user, n)
+	fixture := newAuthFixture(t, 10)
+	fixture.auth.slots = make(chan struct{}, 1)
+	for _, attempt := range []struct {
+		user string
+		want error
+	}{{"alice", nil}, {"nobody", ErrBadCredentials}, {"alice", nil}} {
+		fixture.result = attempt.user == "alice"
+		fixture.wantLoginError(t, attempt.user, attempt.want)
+		if n := len(fixture.auth.slots); n != 0 {
+			t.Fatalf("after login of %q: %d slots still held", attempt.user, n)
 		}
 	}
 }
 
 func TestLoginBoundsConcurrentVerifications(t *testing.T) {
 	t.Parallel()
-	f := newAuthFixture(t, 100)
+	fixture := newAuthFixture(t, 100)
 	const slots, logins = 2, 8
-	f.auth.slots = make(chan struct{}, slots)
+	fixture.auth.slots = make(chan struct{}, slots)
 	var mu sync.Mutex
 	var running, peak int
 	entered := make(chan struct{}, logins)
 	release := make(chan struct{})
-	f.auth.verify = func(string, string) (bool, error) {
+	fixture.auth.verify = func(string, string) (bool, error) {
 		mu.Lock()
 		running++
 		peak = max(peak, running)
@@ -286,11 +300,9 @@ func TestLoginBoundsConcurrentVerifications(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	for range logins {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, _, _ = f.auth.Login(context.Background(), "192.0.2.1", "alice", "pw")
-		}()
+		wg.Go(func() {
+			fixture.wantLoginError(t, "alice", nil)
+		})
 	}
 	for range slots {
 		<-entered

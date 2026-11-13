@@ -57,7 +57,8 @@ func NewDir[T any](
 // Refresh brings what is loaded up to date and returns the files' values sorted by file
 // name, and whether any value was added, replaced or removed since the last call. A
 // directory that does not exist has no files.
-func (d *Dir[T]) Refresh() (entries []Entry[T], changed bool) {
+func (d *Dir[T]) Refresh() ([]Entry[T], bool) {
+	var changed bool
 	if found, ok := d.scan(); ok {
 		changed = d.drop(found)
 		for name, st := range found {
@@ -72,13 +73,13 @@ func (d *Dir[T]) Refresh() (entries []Entry[T], changed bool) {
 
 // scan returns the stamps of the files now in the directory. It is not ok when the
 // directory cannot be listed, in which case what is loaded stays as it is.
-func (d *Dir[T]) scan() (found map[string]stamp, ok bool) {
+func (d *Dir[T]) scan() (map[string]stamp, bool) {
 	items, err := os.ReadDir(d.dir)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		d.log.Warn("cannot list directory, keeping what was loaded", "dir", d.dir, "error", err)
 		return nil, false
 	}
-	found = map[string]stamp{}
+	found := map[string]stamp{}
 	for _, item := range items {
 		name := item.Name()
 		if !strings.HasSuffix(name, FileExt) || strings.HasPrefix(name, ".") {
@@ -96,7 +97,8 @@ func (d *Dir[T]) scan() (found map[string]stamp, ok bool) {
 }
 
 // drop forgets the files that are gone and reports whether any had a value.
-func (d *Dir[T]) drop(found map[string]stamp) (changed bool) {
+func (d *Dir[T]) drop(found map[string]stamp) bool {
+	var changed bool
 	for name := range d.stamps {
 		if _, here := found[name]; here {
 			continue

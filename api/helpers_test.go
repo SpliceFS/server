@@ -18,7 +18,9 @@ import (
 	"github.com/SpliceFS/server/share"
 )
 
-var testTime = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+// testTime is the modification time of every fake file. It is a function so that no test
+// can change it.
+func testTime() time.Time { return time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC) }
 
 // fileData is a file of a fakeShare.
 type fileData struct {
@@ -34,20 +36,11 @@ type fakeShare struct {
 	errs  map[string]error
 }
 
-func (f *fakeShare) info(name string, d fileData) share.Info {
-	return share.Info{
-		Name:  name[strings.LastIndex(name, "/")+1:],
-		Size:  int64(len(d.content)),
-		MTime: testTime,
-		ETag:  share.ETag(int64(len(d.content)), testTime),
-	}
-}
-
 func (f *fakeShare) Stat(string) (share.Info, error) {
 	if err := f.errs["stat"]; err != nil {
 		return share.Info{}, err
 	}
-	return share.Info{Name: ".", Dir: true, MTime: testTime}, nil
+	return share.Info{Name: ".", Dir: true, MTime: testTime()}, nil
 }
 
 func (f *fakeShare) List(name string) ([]share.Info, error) {
@@ -64,37 +57,24 @@ func (f *fakeShare) List(name string) ([]share.Info, error) {
 	return infos, nil
 }
 
-func (f *fakeShare) lookup(name string) (fileData, error) {
-	if _, ok := f.dirs[name]; ok {
-		return fileData{}, share.ErrIsDir
-	}
-	d, ok := f.files[name]
-	if !ok {
-		return fileData{}, share.ErrNotFound
-	}
-	return d, nil
-}
-
+//nolint:ireturn // Share.Open returns the File interface, so its implementations must too.
 func (f *fakeShare) Open(name string) (File, error) {
-	if err := f.errs["open"]; err != nil {
-		return nil, err
-	}
-	d, err := f.lookup(name)
+	file, err := f.openFile(name)
 	if err != nil {
 		return nil, err
 	}
-	return &fakeFile{ReadSeeker: strings.NewReader(d.content), info: f.info(name, d), closed: new(bool)}, nil
+	return file, nil
 }
 
 func (f *fakeShare) HeadDigest(name string) (string, share.Info, error) {
 	if err := f.errs["head"]; err != nil {
 		return "", share.Info{}, err
 	}
-	d, err := f.lookup(name)
+	data, err := f.lookup(name)
 	if err != nil {
 		return "", share.Info{}, err
 	}
-	return "digest-of-" + name, f.info(name, d), nil
+	return "digest-of-" + name, fileInfo(name, data), nil
 }
 
 func (f *fakeShare) Space() (wire.Space, error) {
@@ -104,9 +84,43 @@ func (f *fakeShare) Space() (wire.Space, error) {
 	return f.space, nil
 }
 
+// openFile is Open with the concrete type, which the fakes that wrap a file need.
+func (f *fakeShare) openFile(name string) (*fakeFile, error) {
+	if err := f.errs["open"]; err != nil {
+		return nil, err
+	}
+	data, err := f.lookup(name)
+	if err != nil {
+		return nil, err
+	}
+	return &fakeFile{ReadSeeker: strings.NewReader(data.content), info: fileInfo(name, data), closed: new(bool)}, nil
+}
+
+func (f *fakeShare) lookup(name string) (fileData, error) {
+	if _, ok := f.dirs[name]; ok {
+		return fileData{}, share.ErrIsDir
+	}
+	data, ok := f.files[name]
+	if !ok {
+		return fileData{}, share.ErrNotFound
+	}
+	return data, nil
+}
+
+// fileInfo describes the file of a fakeShare that has the given path and data.
+func fileInfo(name string, data fileData) share.Info {
+	return share.Info{
+		Name:  name[strings.LastIndex(name, "/")+1:],
+		Size:  int64(len(data.content)),
+		MTime: testTime(),
+		ETag:  share.ETag(int64(len(data.content)), testTime()),
+	}
+}
+
 // fakeFile is a File over a ReadSeeker.
 type fakeFile struct {
 	io.ReadSeeker
+
 	info   share.Info
 	closed *bool
 }
@@ -170,8 +184,8 @@ type loginCall struct{ clientAddr, user, password string }
 
 func newEnv(t *testing.T, mutate ...func(*Options)) *env {
 	t.Helper()
-	e := &env{logs: new(bytes.Buffer)}
-	e.media = &fakeShare{
+	fixture := &env{logs: new(bytes.Buffer)}
+	fixture.media = &fakeShare{
 		files: map[string]fileData{
 			"blob.zzz":       {content: "0123456789"},
 			"empty.zzz":      {content: ""},
@@ -184,8 +198,8 @@ func newEnv(t *testing.T, mutate ...func(*Options)) *env {
 		},
 		dirs: map[string][]share.Info{
 			".": {
-				{Name: "blob.zzz", Size: 10, MTime: testTime, ETag: share.ETag(10, testTime)},
-				{Name: "sub", Dir: true, MTime: testTime},
+				{Name: "blob.zzz", Size: 10, MTime: testTime(), ETag: share.ETag(10, testTime())},
+				{Name: "sub", Dir: true, MTime: testTime()},
 			},
 			"sub":       {},
 			"sub/empty": nil,
@@ -193,9 +207,9 @@ func newEnv(t *testing.T, mutate ...func(*Options)) *env {
 		space: wire.Space{Total: 1000, Free: 400},
 		errs:  map[string]error{},
 	}
-	e.media.dirs[""] = e.media.dirs["."]
-	e.docs = &fakeShare{files: map[string]fileData{}, dirs: map[string][]share.Info{}, errs: map[string]error{}}
-	e.auth = &fakeAuth{
+	fixture.media.dirs[""] = fixture.media.dirs["."]
+	fixture.docs = &fakeShare{files: map[string]fileData{}, dirs: map[string][]share.Info{}, errs: map[string]error{}}
+	fixture.auth = &fakeAuth{
 		tokens: map[string]auth.Claims{
 			tokenMedia: {User: "alice", Shares: []string{"media"}},
 			tokenAll:   {User: "bob", Shares: []string{"*"}},
@@ -203,26 +217,29 @@ func newEnv(t *testing.T, mutate ...func(*Options)) *env {
 		},
 		verifyErr: map[string]error{tokenExpired: auth.ErrExpiredToken, tokenBroken: errBroken},
 	}
-	e.loginResult = func() (string, time.Time, error) { return "new-token", testTime.Add(time.Hour), nil }
-	e.auth.login = func(_ context.Context, addr, user, password string) (string, time.Time, error) {
-		e.loginCalls = append(e.loginCalls, loginCall{addr, user, password})
-		return e.loginResult()
+	fixture.loginResult = func() (string, time.Time, error) { return "new-token", testTime().Add(time.Hour), nil }
+	fixture.auth.login = func(_ context.Context, addr, user, password string) (string, time.Time, error) {
+		fixture.loginCalls = append(fixture.loginCalls, loginCall{addr, user, password})
+		return fixture.loginResult()
 	}
-	e.nodes = &fakeNodes{nodes: wire.Nodes{Cluster: "example", Nodes: []wire.Node{{Name: "east", URL: "https://east.example.com/api"}}}}
+	fixture.nodes = &fakeNodes{nodes: wire.Nodes{
+		Cluster: "example",
+		Nodes:   []wire.Node{{Name: "east", URL: "https://east.example.com/api"}},
+	}}
 	opts := Options{
 		BasePath: "/api",
 		Node:     "east",
 		Version:  "v1.2.3",
-		Shares:   map[string]Share{"media": e.media, "docs": e.docs},
-		Auth:     e.auth,
-		Nodes:    e.nodes,
-		Logger:   slog.New(slog.NewJSONHandler(e.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Shares:   map[string]Share{"media": fixture.media, "docs": fixture.docs},
+		Auth:     fixture.auth,
+		Nodes:    fixture.nodes,
+		Logger:   slog.New(slog.NewJSONHandler(fixture.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
 	for _, m := range mutate {
 		m(&opts)
 	}
-	e.handler = NewHandler(opts)
-	return e
+	fixture.handler = NewHandler(opts)
+	return fixture
 }
 
 // response is a recorded response. It is a struct of its own so that tests, which read
@@ -239,20 +256,21 @@ type request struct {
 	remote string
 }
 
-// do sends r to the handler and returns the response.
-func (e *env) do(r request) response {
-	if r.method == "" {
-		r.method = http.MethodGet
+// do sends spec to the handler and returns the response.
+func (e *env) do(spec *request) response {
+	method := spec.method
+	if method == "" {
+		method = http.MethodGet
 	}
-	req := httptest.NewRequestWithContext(context.Background(), r.method, r.target, r.body)
+	req := httptest.NewRequestWithContext(context.Background(), method, spec.target, spec.body)
 	req.RemoteAddr = "192.0.2.1:4321"
-	if r.remote != "" {
-		req.RemoteAddr = r.remote
+	if spec.remote != "" {
+		req.RemoteAddr = spec.remote
 	}
-	if r.token != "" {
-		req.Header.Set("Authorization", "Bearer "+r.token)
+	if spec.token != "" {
+		req.Header.Set("Authorization", "Bearer "+spec.token)
 	}
-	for k, v := range r.header {
+	for k, v := range spec.header {
 		req.Header.Set(k, v)
 	}
 	rec := httptest.NewRecorder()
@@ -262,11 +280,11 @@ func (e *env) do(r request) response {
 
 // get is a GET with a token.
 func (e *env) get(target, token string, header ...string) response {
-	h := map[string]string{}
+	headers := map[string]string{}
 	for i := 0; i+1 < len(header); i += 2 {
-		h[header[i]] = header[i+1]
+		headers[header[i]] = header[i+1]
 	}
-	return e.do(request{target: target, token: token, header: h})
+	return e.do(&request{target: target, token: token, header: headers})
 }
 
 // logRecords returns the log lines written so far.
@@ -300,7 +318,9 @@ func body(t *testing.T, resp response) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = resp.Body.Close()
+	if err = resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	return string(data)
 }
 

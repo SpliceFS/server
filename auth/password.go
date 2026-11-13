@@ -29,8 +29,24 @@ const (
 	maxThreads = 64
 )
 
+// Hash parsing errors. The text of a reason never contains the hash.
+var (
+	errEmptyPassword = errors.New("empty password")
+	errInvalidHash   = errors.New("invalid password hash")
+)
+
+// costFieldCount is the number of values in the "m=<KiB>,t=<passes>,p=<threads>" field.
+const costFieldCount = 3
+
 // phcEncoding is the base64 flavor of the PHC string format: standard alphabet, no padding.
-var phcEncoding = base64.RawStdEncoding
+func phcEncoding() *base64.Encoding {
+	return base64.RawStdEncoding
+}
+
+// invalidHash returns errInvalidHash with a reason that never contains hash content.
+func invalidHash(reason string) error {
+	return fmt.Errorf("%w: %s", errInvalidHash, reason)
+}
 
 // hashParams is a parsed argon2id PHC string.
 type hashParams struct {
@@ -45,7 +61,7 @@ type hashParams struct {
 // from random. An empty password is an error.
 func HashPassword(password string, random io.Reader) (string, error) {
 	if password == "" {
-		return "", errors.New("hash password: empty password")
+		return "", fmt.Errorf("hash password: %w", errEmptyPassword)
 	}
 	salt := make([]byte, saltLength)
 	if _, err := io.ReadFull(random, salt); err != nil {
@@ -54,71 +70,85 @@ func HashPassword(password string, random io.Reader) (string, error) {
 	key := argon2.IDKey([]byte(password), salt, hashTime, hashMemory, hashThreads, keyLength)
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version, hashMemory, hashTime, hashThreads,
-		phcEncoding.EncodeToString(salt), phcEncoding.EncodeToString(key)), nil
+		phcEncoding().EncodeToString(salt), phcEncoding().EncodeToString(key)), nil
 }
 
 // VerifyPassword reports whether password matches the argon2id PHC string encoded. The
 // parameters in the string are used for the computation. A malformed or unsupported
 // string is an error; a well-formed string that does not match returns false and nil.
 func VerifyPassword(encoded, password string) (bool, error) {
-	h, err := parseHash(encoded)
+	params, err := parseHash(encoded)
 	if err != nil {
 		return false, err
 	}
-	threads := uint8(h.threads)  //nolint:gosec // parseCosts bounds it to maxThreads
-	keyLen := uint32(len(h.key)) //nolint:gosec // a decoded field of one config line cannot exceed uint32
-	key := argon2.IDKey([]byte(password), h.salt, h.time, h.memory, threads, keyLen)
-	return subtle.ConstantTimeCompare(key, h.key) == 1, nil
+	threads := uint8(params.threads)  //nolint:gosec // parseCosts bounds it to maxThreads
+	keyLen := uint32(len(params.key)) //nolint:gosec // a decoded field of one config line cannot exceed uint32
+	key := argon2.IDKey([]byte(password), params.salt, params.time, params.memory, threads, keyLen)
+	return subtle.ConstantTimeCompare(key, params.key) == 1, nil
 }
 
 // parseHash splits and validates an argon2id PHC string. Errors never contain the string.
 func parseHash(encoded string) (hashParams, error) {
 	fields := strings.Split(encoded, "$")
 	if len(fields) != 6 || fields[0] != "" {
-		return hashParams{}, errors.New("invalid password hash: wrong number of fields")
+		return hashParams{}, invalidHash("wrong number of fields")
 	}
 	if fields[1] != "argon2id" {
-		return hashParams{}, errors.New("invalid password hash: unsupported algorithm")
+		return hashParams{}, invalidHash("unsupported algorithm")
 	}
 	if fields[2] != "v="+strconv.Itoa(argon2.Version) {
-		return hashParams{}, errors.New("invalid password hash: unsupported version")
+		return hashParams{}, invalidHash("unsupported version")
 	}
-	h, err := parseCosts(fields[3])
+	params, err := parseCosts(fields[3])
 	if err != nil {
 		return hashParams{}, err
 	}
-	if h.salt, err = phcEncoding.DecodeString(fields[4]); err != nil || len(h.salt) == 0 {
-		return hashParams{}, errors.New("invalid password hash: bad salt")
+	if params.salt, err = phcEncoding().DecodeString(fields[4]); err != nil || len(params.salt) == 0 {
+		return hashParams{}, invalidHash("bad salt")
 	}
-	if h.key, err = phcEncoding.DecodeString(fields[5]); err != nil || len(h.key) == 0 {
-		return hashParams{}, errors.New("invalid password hash: bad hash")
+	if params.key, err = phcEncoding().DecodeString(fields[5]); err != nil || len(params.key) == 0 {
+		return hashParams{}, invalidHash("bad hash")
 	}
-	return h, nil
+	return params, nil
 }
 
 // parseCosts parses and bounds the "m=<KiB>,t=<passes>,p=<threads>" field.
 func parseCosts(field string) (hashParams, error) {
 	parts := strings.Split(field, ",")
-	if len(parts) != 3 {
-		return hashParams{}, errors.New("invalid password hash: bad parameters")
+	if len(parts) != costFieldCount {
+		return hashParams{}, invalidHash("bad parameters")
 	}
-	var values [3]uint32
-	for i, prefix := range [3]string{"m=", "t=", "p="} {
-		rest, ok := strings.CutPrefix(parts[i], prefix)
+	var values [costFieldCount]uint32
+	for i, prefix := range [costFieldCount]string{"m=", "t=", "p="} {
+		value, ok := parseCostValue(parts[i], prefix)
 		if !ok {
-			return hashParams{}, errors.New("invalid password hash: bad parameters")
+			return hashParams{}, invalidHash("bad parameters")
 		}
-		v, err := strconv.ParseUint(rest, 10, 32)
-		if err != nil {
-			return hashParams{}, errors.New("invalid password hash: bad parameters")
-		}
-		values[i] = uint32(v)
+		values[i] = value
 	}
-	h := hashParams{memory: values[0], time: values[1], threads: values[2]}
-	if h.memory < 1 || h.memory > maxMemory ||
-		h.time < 1 || h.time > maxTime ||
-		h.threads < 1 || h.threads > maxThreads {
-		return hashParams{}, errors.New("invalid password hash: parameters out of range")
+	params := hashParams{memory: values[0], time: values[1], threads: values[2]}
+	if !costsInRange(params) {
+		return hashParams{}, invalidHash("parameters out of range")
 	}
-	return h, nil
+	return params, nil
+}
+
+// parseCostValue reads one "<prefix><number>" part of the costs field.
+func parseCostValue(part, prefix string) (uint32, bool) {
+	rest, ok := strings.CutPrefix(part, prefix)
+	if !ok {
+		return 0, false
+	}
+	value, err := strconv.ParseUint(rest, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(value), true
+}
+
+// costsInRange reports whether every cost of params is at least 1 and within its upper bound.
+func costsInRange(params hashParams) bool {
+	return params.memory >= 1 && params.memory <= maxMemory &&
+		params.time >= 1 && params.time <= maxTime &&
+		params.threads >= 1 && params.threads <= maxThreads
 }

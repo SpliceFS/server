@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -34,13 +35,13 @@ func (l *live) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// the write lock, so it cannot start waiting for a generation that a request has picked but
 	// not yet counted, which would let the generation be closed while this request uses it.
 	l.mu.RLock()
-	g := l.current
-	g.active.Add(1)
+	gen := l.current
+	gen.active.Add(1)
 	l.mu.RUnlock()
 	// A deferred Done also releases the count when the handler panics, so a panic cannot keep
 	// the old generation open forever.
-	defer g.active.Done()
-	g.handler.ServeHTTP(w, r)
+	defer gen.active.Done()
+	gen.handler.ServeHTTP(w, r)
 }
 
 // replace makes next the generation for all new requests. The generation it replaces is closed
@@ -51,14 +52,12 @@ func (l *live) replace(next *generation) {
 	l.current = next
 	l.mu.Unlock()
 
-	l.retiring.Add(1)
-	go func() {
-		defer l.retiring.Done()
+	l.retiring.Go(func() {
 		old.active.Wait()
 		if err := old.closer.Close(); err != nil {
 			l.logger.Warn("close replaced configuration", "error", err)
 		}
-	}()
+	})
 }
 
 // close is for shutdown. It must be called after the HTTP server has stopped, so no request
@@ -67,8 +66,11 @@ func (l *live) replace(next *generation) {
 func (l *live) close() error {
 	l.retiring.Wait()
 	l.mu.RLock()
-	g := l.current
+	gen := l.current
 	l.mu.RUnlock()
-	g.active.Wait()
-	return g.closer.Close()
+	gen.active.Wait()
+	if err := gen.closer.Close(); err != nil {
+		return fmt.Errorf("close configuration: %w", err)
+	}
+	return nil
 }

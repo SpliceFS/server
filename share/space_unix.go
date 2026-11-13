@@ -3,6 +3,7 @@
 package share
 
 import (
+	"fmt"
 	"os"
 	"syscall"
 
@@ -15,14 +16,18 @@ const openFlags = os.O_RDONLY | syscall.O_NONBLOCK
 
 // statSpace reports the total and the unprivileged free bytes of the file system
 // holding path. The field types of syscall.Statfs_t differ between platforms, so
-// every value is converted explicitly.
+// every value goes through nonNegative.
 func statSpace(path string) (wire.Space, error) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(path, &st); err != nil {
-		return wire.Space{}, err
+	var stats syscall.Statfs_t
+	if err := syscall.Statfs(path, &stats); err != nil {
+		return wire.Space{}, fmt.Errorf("statfs %q: %w", path, err)
 	}
-	block := uint64(st.Bsize)  //nolint:gosec // a block size reported by the kernel is never negative
-	total := uint64(st.Blocks) //nolint:unconvert // the field type differs between unix systems
-	free := uint64(st.Bavail)  //nolint:unconvert // the field type differs between unix systems
-	return wire.Space{Total: total * block, Free: free * block}, nil
+	block := nonNegative(stats.Bsize)
+	return wire.Space{Total: nonNegative(stats.Blocks) * block, Free: nonNegative(stats.Bavail) * block}, nil
+}
+
+// nonNegative converts a size reported by the kernel to uint64. The kernel never
+// reports a negative size, so a negative value becomes 0 and not a huge number.
+func nonNegative[T ~int32 | ~uint32 | ~int64 | ~uint64](value T) uint64 {
+	return uint64(max(value, 0))
 }

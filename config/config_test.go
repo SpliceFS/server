@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -27,31 +28,36 @@ func TestRateUnmarshalText(t *testing.T) {
 		{"0/h", Rate{0, time.Hour}},
 		{"600/h", Rate{600, time.Hour}},
 	}
-	for _, tc := range tests {
+	for _, tt := range tests {
 		var got Rate
-		if err := got.UnmarshalText([]byte(tc.in)); err != nil {
-			t.Errorf("UnmarshalText(%q): %v", tc.in, err)
+		if err := got.UnmarshalText([]byte(tt.in)); err != nil {
+			t.Errorf("UnmarshalText(%q): %v", tt.in, err)
 		}
-		if got != tc.want {
-			t.Errorf("UnmarshalText(%q) = %+v, want %+v", tc.in, got, tc.want)
+		if got != tt.want {
+			t.Errorf("UnmarshalText(%q) = %+v, want %+v", tt.in, got, tt.want)
 		}
 	}
 }
 
 func TestRateUnmarshalTextErrors(t *testing.T) {
 	t.Parallel()
-	for _, in := range []string{"", "10", "/m", "10/", "x/m", "-1/m", "+1/m", "1.5/m", "10/d", "10/min", "10/m/x", "99999999999/s"} {
-		r := Rate{Count: 7, Per: time.Hour}
-		err := r.UnmarshalText([]byte(in))
+	inputs := []string{
+		"", "10", "/m", "10/", "x/m", "-1/m", "+1/m", "1.5/m", "10/d", "10/min", "10/m/x",
+		"99999999999/s",
+	}
+	for _, input := range inputs {
+		before := Rate{Count: 7, Per: time.Hour}
+		rate := before
+		err := rate.UnmarshalText([]byte(input))
 		if err == nil {
-			t.Errorf("UnmarshalText(%q) succeeded with %+v", in, r)
+			t.Errorf("UnmarshalText(%q) succeeded with %+v", input, rate)
 			continue
 		}
-		if !strings.Contains(err.Error(), `"`+in+`"`) || !strings.Contains(err.Error(), "<count>/<s|m|h>") {
-			t.Errorf("UnmarshalText(%q) error %q does not name the value and the form", in, err)
+		if !errors.Is(err, ErrInvalidRate) || !strings.Contains(err.Error(), `"`+input+`"`) {
+			t.Errorf("UnmarshalText(%q) error %q does not name the value and the form", input, err)
 		}
-		if r != (Rate{Count: 7, Per: time.Hour}) {
-			t.Errorf("UnmarshalText(%q) changed the value to %+v", in, r)
+		if rate != before {
+			t.Errorf("UnmarshalText(%q) changed the value to %+v", input, rate)
 		}
 	}
 }
@@ -67,9 +73,9 @@ func TestRateString(t *testing.T) {
 		{Rate{60, time.Hour}, "60/h"},
 		{Rate{5, 90 * time.Second}, "5/1m30s"},
 	}
-	for _, tc := range tests {
-		if got := tc.in.String(); got != tc.want {
-			t.Errorf("%+v.String() = %q, want %q", tc.in, got, tc.want)
+	for _, tt := range tests {
+		if got := tt.in.String(); got != tt.want {
+			t.Errorf("%+v.String() = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 }
