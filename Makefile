@@ -74,6 +74,21 @@ fuzz:
 check-linux:
 	$(LINUX_RUN) sh -c 'cp -r /src /tmp/w && cd /tmp/w && make check'
 
+# Runs the tests on FreeBSD itself: the test programs are built for FreeBSD in the Go
+# container and run as root in a virtual machine of every FreeBSD release in
+# packaging/freebsd/images, with the same 100% coverage gate as make check. FreeBSD cannot
+# run in a container, so the machine runs under QEMU inside the Go container; this needs
+# Docker, curl and xz, nothing else. FREEBSD=15.1 limits the run to one release. Where the
+# machine has to be emulated (any computer but Linux on amd64) a run takes many minutes.
+FREEBSD ?=
+FREEBSD_ONLY ?=
+.PHONY: check-freebsd
+check-freebsd:
+	mkdir -p dist
+	$(PACKAGE_RUN) $(LINUX_IMAGE) sh -c 'cp -r /src /tmp/w && cd /tmp/w && \
+		scripts/freebsd-tests.sh /out/freebsd-check'
+	LINUX_IMAGE=$(LINUX_IMAGE) FREEBSD=$(FREEBSD) FREEBSD_ONLY=$(FREEBSD_ONLY) scripts/check-freebsd.sh dist
+
 lint:
 	golangci-lint run
 
@@ -93,7 +108,6 @@ package:
 # in a container, so each release in packaging/freebsd/images runs as a virtual machine (QEMU
 # inside the Go container), where pkg(8) builds the packages, installs the one for the
 # machine and checks that the service runs. FREEBSD=15.1 limits the run to one release.
-FREEBSD ?=
 .PHONY: package-freebsd
 package-freebsd:
 	mkdir -p dist
