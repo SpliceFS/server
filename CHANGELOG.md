@@ -55,6 +55,9 @@ notable ones.
   real service manager (systemd or OpenRC as process 1 of a container) and the service must
   start by itself, come back after a reboot and stop when the package is removed. CI also
   installs the package on the runner itself (`make service-test-host`).
+- FreeBSD package: `make package-freebsd` builds `splicefs-server` for FreeBSD 14 and 15, on
+  amd64 and arm64, with `pkg` on FreeBSD itself (a virtual machine per release), installs it
+  there and checks that the service runs. The package is not published yet.
 
 ### Changed
 

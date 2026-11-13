@@ -127,6 +127,7 @@ make lint         # golangci-lint
 make package      # deb, rpm and apk packages for amd64 and arm64 in ./dist (needs Docker)
 make package-test # installs and removes each package in a clean container of every system
 make repo         # signed apt, rpm and Alpine repositories in ./dist/repo from the packages in ./dist
+make package-freebsd  # FreeBSD packages in ./dist/freebsd, built and tested in a FreeBSD virtual machine
 make repo-test    # installs from the repositories with signature checks on, in every system
 make publish-fetch  # downloads the published repositories into ./dist/repo
 make publish        # uploads ./dist/repo to packages.splicefs.org/server, never deleting a package

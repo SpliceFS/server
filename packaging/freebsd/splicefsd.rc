@@ -1,0 +1,58 @@
+#!/bin/sh
+# rc.d service of the SpliceFS server on FreeBSD.
+#
+# PROVIDE: splicefsd
+# REQUIRE: NETWORKING DAEMON
+# KEYWORD: shutdown
+#
+# Settings for /etc/rc.conf:
+#   splicefsd_enable   "NO" keeps the server from starting. The default is "YES", so that
+#                      an installed server runs after the next boot without any setting,
+#                      which is as close as FreeBSD lets a package come to "installing
+#                      means running": pkg stops whatever an install script starts.
+
+. /etc/rc.subr
+
+name=splicefsd
+rcvar=splicefsd_enable
+load_rc_config "$name"
+
+: "${splicefsd_enable:=YES}"
+
+program=/usr/local/bin/splicefsd
+statedir=/var/db/splicefs/server
+logfile=/var/log/splicefsd.log
+# daemon(8) writes two pid files: its own, which stop and status use, and the server's,
+# which reload needs because the signal must reach the server and not its supervisor.
+pidfile=/var/run/splicefsd/daemon.pid
+childpidfile=/var/run/splicefsd/splicefsd.pid
+
+# daemon(8) drops to the service user itself (-u), so rc.subr must not wrap it in su.
+command=/usr/sbin/daemon
+# -r restarts the server when it exits, which is what Restart=on-failure does in the
+# systemd unit; -R 5 waits five seconds first.
+command_args="-f -r -R 5 -P ${pidfile} -p ${childpidfile} -u splicefs -o ${logfile} ${program}"
+
+extra_commands=reload
+start_precmd=splicefsd_prestart
+reload_cmd=splicefsd_reload
+
+splicefsd_prestart() {
+    # The server keeps its data here and creates local/ and shared/ inside on first start.
+    install -d -o root -g wheel -m 0755 /var/db/splicefs
+    install -d -o splicefs -g splicefs -m 0750 "${statedir}"
+    # The pid files belong to root: daemon(8) writes them before it drops privileges.
+    install -d -o root -g wheel -m 0755 /var/run/splicefsd
+}
+
+splicefsd_reload() {
+    # The server applies its configuration again on SIGHUP: requests in progress finish and
+    # a configuration with an error is refused and only logged.
+    if [ ! -r "${childpidfile}" ]; then
+        echo "${name} is not running."
+        return 1
+    fi
+    kill -HUP "$(cat "${childpidfile}")"
+}
+
+run_rc_command "$1"
