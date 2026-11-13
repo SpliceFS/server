@@ -83,6 +83,8 @@ notable ones.
   the client uses.
 - A user file that cannot be read as YAML is reported without quoting any of its content, so a
   misplaced password hash cannot reach a log.
+- `make lint` also runs ShellCheck, with every optional check on; the two that are off say why
+  in `.shellcheckrc`. The scripts no longer hide the failure of a command inside `$(...)`.
 
 ### Removed
 

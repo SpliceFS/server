@@ -89,8 +89,21 @@ check-freebsd:
 		scripts/freebsd-tests.sh /out/freebsd-check'
 	LINUX_IMAGE=$(LINUX_IMAGE) FREEBSD=$(FREEBSD) FREEBSD_ONLY=$(FREEBSD_ONLY) scripts/check-freebsd.sh dist
 
-lint:
+# ShellCheck runs with every optional check on (see .shellcheckrc). The globs pick up a new
+# script in scripts/ without editing this file; the maintainer and Alpine scripts have no .sh
+# extension, so they are named. The OpenRC script (not a shell ShellCheck knows), the rpm spec
+# and the FreeBSD manifest template are not shell files and are left out.
+lint: lint-shell
 	golangci-lint run
+
+# The shell part of lint by itself, for the CI job that has no Go tools.
+.PHONY: lint-shell
+lint-shell:
+	shellcheck scripts/*.sh packaging/*.sh packaging/*/*.sh \
+		packaging/deb/postinst packaging/deb/prerm packaging/deb/postrm \
+		packaging/alpine/*.post-install packaging/alpine/*.post-upgrade \
+		packaging/alpine/*.pre-deinstall packaging/alpine/*.pre-install \
+		packaging/freebsd/splicefsd.rc packaging/freebsd/user-data.in
 
 # Installable packages in ./dist: deb (dpkg-deb), rpm (rpmbuild) and apk (abuild), each
 # for amd64 and arm64. The program is compiled once and every format wraps that binary. The
