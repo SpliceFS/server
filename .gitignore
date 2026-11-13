@@ -138,3 +138,7 @@ $RECYCLE.BIN/
 .Trash-*
 .nfs*
 .fuse_hidden*
+
+# go build in a command folder writes the program next to the source.
+/cmd/*/splicefsd
+
