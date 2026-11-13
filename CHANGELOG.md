@@ -80,6 +80,9 @@ notable ones.
 
 ### Fixed
 
+- The package and service tests download each test image with up to 3 tries and name a
+  failed download as one; a service manager that did not start shows the container's own
+  output.
 - A request for a name longer than the file system allows is answered with 404 instead of
   500. Found by the new fuzz tests.
 - FreeBSD: `make check-freebsd` runs the tests as root in a FreeBSD virtual machine, with the
