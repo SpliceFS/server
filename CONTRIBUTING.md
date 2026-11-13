@@ -165,7 +165,7 @@ and Alpine repositories, installs every package and every repository in clean co
 supported system, and only when all of that passes publishes the repositories to
 `packages.splicefs.org/server` (older versions stay in them). It then creates the GitHub release
 for the tag, with the packages, `SHA256SUMS` and its signature `SHA256SUMS.asc`, and the
-changelog entries of that version as the notes.
+merged pull request as the notes.
 
 ## License
 
