@@ -58,6 +58,8 @@ notable ones.
 - FreeBSD package: `make package-freebsd` builds `splicefs-server` for FreeBSD 14 and 15, on
   amd64 and arm64, with `pkg` on FreeBSD itself (a virtual machine per release), installs it
   there and checks that the service runs. The package is not published yet.
+- `make check` fails when a tracked file names a private machine, account or place, and the
+  ignore rules cover programs built in place, editor leftovers and disk images.
 
 ### Changed
 
