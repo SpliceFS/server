@@ -83,3 +83,6 @@ notable ones.
 
 - openSUSE Leap 15.6 is no longer supported: its vendor ended its support on 2026-04-30. A
   system is supported only while its own vendor supports it.
+- A compiled copy of the program that was committed by mistake is removed from the repository,
+  and `make check` now fails when a compiled program or a file over 1 MiB is tracked.
+

@@ -27,7 +27,7 @@ build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/splicefsd ./cmd/splicefsd
 
 # Everything CI runs except the linter.
-check: fmt-check vet cover package-lib-test script-modes
+check: fmt-check vet cover package-lib-test script-modes tracked-files
 
 # A script that lost its executable bit fails only where it is run directly, which for the
 # publishing script is the release job. This finds it in every check. Libraries (-lib.sh) are
@@ -35,6 +35,12 @@ check: fmt-check vet cover package-lib-test script-modes
 script-modes:
 	@bad="$$(git ls-files -s -- 'scripts/*.sh' 'packaging/*.sh' | awk '$$1 != "100755" && $$4 !~ /-lib\.sh$$/ {print $$4}')"; \
 	if [ -n "$$bad" ]; then echo "not executable in git:"; echo "$$bad"; exit 1; fi
+
+# A compiled program or a very large file must never be committed: a program built on a
+# developer's machine carries the folder names of that machine.
+.PHONY: tracked-files
+tracked-files:
+	scripts/tracked-files.sh
 
 fmt:
 	gofmt -w .
