@@ -5,6 +5,7 @@
 set -eu
 
 dir="${1:?usage: package-test-deb.sh PACKAGE_DIR}"
+# shellcheck source=package-lib.sh
 . scripts/package-lib.sh
 unit="/usr/lib/systemd/system/$program.service"
 deb="$dir/${name}_${debver}_$(dpkg --print-architecture).deb"
@@ -23,12 +24,16 @@ if grep -q /usr/local/bin "$unit"; then fail "service unit points at /usr/local/
 [ -d "$confdir" ] || fail "$confdir is missing"
 for folder in $confsubdirs; do
     [ -d "$confdir/$folder" ] || fail "$confdir/$folder is missing"
-    [ -z "$(ls -A "$confdir/$folder")" ] || fail "$confdir/$folder must be empty after an install"
+    contents="$(ls -A "$confdir/$folder")"
+    [ -z "$contents" ] || fail "$confdir/$folder must be empty after an install"
 done
 # The package ships the folders and nothing else: any file there would be one an
 # upgrade could overwrite.
-[ "$(ls -A "$confdir" | sort | tr '\n' ' ')" = "$(echo "$confsubdirs" | sort | tr '\n' ' ')" ] ||
-    fail "$confdir holds something other than its empty folders"
+# ls -A is used because it lists hidden entries too; the folder holds no names that need care.
+# shellcheck disable=SC2012
+found="$(ls -A "$confdir" | sort | tr '\n' ' ')"
+expected="$(echo "$confsubdirs" | sort | tr '\n' ' ')"
+[ "$found" = "$expected" ] || fail "$confdir holds something other than its empty folders"
 kept="$confdir/$(echo "$confsubdirs" | head -n 1)/local.yaml"
 user="$(sed -n 's/^User=//p' "$unit")"
 if [ -n "$user" ]; then
@@ -44,5 +49,8 @@ dpkg -r "$name" >/dev/null 2>&1 || fail "remove failed"
 dpkg -P "$name" >/dev/null 2>&1 || fail "purge failed"
 [ ! -e "$confdir" ] || fail "purge must delete the configuration"
 
+# shellcheck source=/dev/null
 . /etc/os-release
+# PRETTY_NAME comes from /etc/os-release.
+# shellcheck disable=SC2154
 echo "package test passed on $PRETTY_NAME: $(basename "$deb")"

@@ -23,6 +23,7 @@ git ls-files | while read -r file; do
         7f454c46 | cffaedfe | cefaedfe | cafebabe | 4d5a*)
             echo "tracked file is a compiled program: $file" >> "$found"
             ;;
+        *) ;; # any other first bytes are not a compiled program
     esac
 done
 

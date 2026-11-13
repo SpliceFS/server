@@ -42,4 +42,6 @@ if [ -n "$failed" ]; then
     echo "FAIL: tests failed in:$failed"
     exit 1
 fi
-echo "all tests passed on $(freebsd-version) ($(uname -m))"
+os_version="$(freebsd-version)"
+cpu="$(uname -m)"
+echo "all tests passed on $os_version ($cpu)"
