@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,16 +36,32 @@ var (
 	ErrExpiredToken = errors.New("expired token")
 )
 
+// Errors of a keys file. The text of one never contains the content of the file, because
+// they are logged and a mistake in the file may put a secret where a name belongs.
+var (
+	errNotNodeFile    = errors.New("the file name is not a node id and .yaml")
+	errKeysUnparsable = errors.New("cannot be parsed as a keys file with only a keys list")
+	errNoKeys         = errors.New("no keys")
+	errKeyHasNoID     = errors.New("has no id")
+	errKeyRepeatsID   = errors.New("repeats the id of an earlier key")
+	errSecretNotB64   = errors.New("secret is not valid base64")
+	errSecretTooShort = errors.New("secret is shorter than " + strconv.Itoa(minSecretSize) + " bytes")
+	errNoSigningKey   = errors.New("no signing key for this node")
+)
+
 // Token header values and limits.
 const (
 	tokenAlgorithm = "HS256"
 	tokenType      = "JWT"
+	tokenSegments  = 3 // header, payload and signature
 	minSecretSize  = 32
 	ownKeyMode     = 0o600
 )
 
 // tokenEncoding is the base64 flavor of JWT segments: URL alphabet, no padding.
-var tokenEncoding = base64.RawURLEncoding
+func tokenEncoding() *base64.Encoding {
+	return base64.RawURLEncoding
+}
 
 // Claims is what a valid token states.
 type Claims struct {
@@ -85,10 +102,13 @@ type signingKey struct {
 
 // keysFile is the YAML layout of a keys file.
 type keysFile struct {
-	Keys []struct {
-		ID     string `yaml:"id"`
-		Secret string `yaml:"secret"`
-	} `yaml:"keys"`
+	Keys []keyEntry `yaml:"keys"`
+}
+
+// keyEntry is one key of a keys file, as written.
+type keyEntry struct {
+	ID     string `yaml:"id"`
+	Secret string `yaml:"secret"`
 }
 
 // Tokens issues and verifies tokens: compact JWTs signed with HMAC-SHA256. Every node writes
@@ -149,25 +169,14 @@ func (t *Tokens) EnsureOwnKey() error {
 	return nil
 }
 
-// createOwnKey writes the first key file of this node.
-func (t *Tokens) createOwnKey(path string) error {
-	secret := make([]byte, minSecretSize)
-	if _, err := io.ReadFull(t.random, secret); err != nil {
-		return err
-	}
-	content := fmt.Sprintf("keys:\n  - id: %q\n    secret: %q\n",
-		t.nodeID+"-1", base64.StdEncoding.EncodeToString(secret))
-	return datadir.WriteAtomic(path, []byte(content), ownKeyMode)
-}
-
 // Issue returns a token for user that allows shares, and its expiry (whole seconds).
-func (t *Tokens) Issue(user string, shares []string) (token string, expires time.Time, err error) {
+func (t *Tokens) Issue(user string, shares []string) (string, time.Time, error) {
 	key := t.currentRing().signer
 	if key == nil {
-		return "", time.Time{}, errors.New("no signing key for this node")
+		return "", time.Time{}, errNoSigningKey
 	}
 	now := t.now()
-	iat, exp := now.Unix(), now.Add(t.ttl).Unix()
+	issuedSec, expiresSec := now.Unix(), now.Add(t.ttl).Unix()
 	if shares == nil {
 		shares = []string{}
 	}
@@ -175,12 +184,12 @@ func (t *Tokens) Issue(user string, shares []string) (token string, expires time
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	payload, err := t.segment(tokenPayload{Sub: user, Shares: shares, Iat: &iat, Exp: &exp})
+	payload, err := t.segment(tokenPayload{Sub: user, Shares: shares, Iat: &issuedSec, Exp: &expiresSec})
 	if err != nil {
 		return "", time.Time{}, err
 	}
 	input := header + "." + payload
-	return input + "." + tokenEncoding.EncodeToString(sign(key.secret, input)), time.Unix(exp, 0), nil
+	return input + "." + tokenEncoding().EncodeToString(sign(key.secret, input)), time.Unix(expiresSec, 0), nil
 }
 
 // Verify checks the token and returns what it states. It returns ErrInvalidToken for a
@@ -189,7 +198,7 @@ func (t *Tokens) Issue(user string, shares []string) (token string, expires time
 // that expired more than Leeway ago. The signature is checked before any claim is used.
 func (t *Tokens) Verify(token string) (Claims, error) {
 	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
+	if len(parts) != tokenSegments {
 		return Claims{}, invalidToken("wrong number of segments")
 	}
 	var header tokenHeader
@@ -203,7 +212,7 @@ func (t *Tokens) Verify(token string) (Claims, error) {
 	if !ok {
 		return Claims{}, invalidToken("unknown key id")
 	}
-	signature, err := tokenEncoding.DecodeString(parts[2])
+	signature, err := tokenEncoding().DecodeString(parts[2])
 	if err != nil {
 		return Claims{}, invalidToken("bad signature encoding")
 	}
@@ -217,20 +226,34 @@ func (t *Tokens) Verify(token string) (Claims, error) {
 	return t.claims(payload)
 }
 
+// createOwnKey writes the first key file of this node.
+func (t *Tokens) createOwnKey(path string) error {
+	secret := make([]byte, minSecretSize)
+	if _, err := io.ReadFull(t.random, secret); err != nil {
+		return fmt.Errorf("read random secret: %w", err)
+	}
+	content := fmt.Sprintf("keys:\n  - id: %q\n    secret: %q\n",
+		t.nodeID+"-1", base64.StdEncoding.EncodeToString(secret))
+	if err := datadir.WriteAtomic(path, []byte(content), ownKeyMode); err != nil {
+		return fmt.Errorf("write key file: %w", err)
+	}
+	return nil
+}
+
 // claims turns an authenticated payload into Claims, checking the claims and the time.
-func (t *Tokens) claims(p tokenPayload) (Claims, error) {
-	if p.Sub == "" || p.Iat == nil || p.Exp == nil {
+func (t *Tokens) claims(payload tokenPayload) (Claims, error) {
+	if payload.Sub == "" || payload.Iat == nil || payload.Exp == nil {
 		return Claims{}, invalidToken("missing claim")
 	}
 	now := t.now()
-	if time.Unix(*p.Iat, 0).Sub(now) > Leeway {
+	if time.Unix(*payload.Iat, 0).Sub(now) > Leeway {
 		return Claims{}, invalidToken("issued in the future")
 	}
-	expires := time.Unix(*p.Exp, 0)
+	expires := time.Unix(*payload.Exp, 0)
 	if now.Sub(expires) > Leeway {
 		return Claims{}, ErrExpiredToken
 	}
-	return Claims{User: p.Sub, Shares: p.Shares, Expires: expires}, nil
+	return Claims{User: payload.Sub, Shares: payload.Shares, Expires: expires}, nil
 }
 
 // segment returns v as JSON in base64url.
@@ -239,7 +262,7 @@ func (t *Tokens) segment(v any) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("encode token: %w", err)
 	}
-	return tokenEncoding.EncodeToString(data), nil
+	return tokenEncoding().EncodeToString(data), nil
 }
 
 // invalidToken returns ErrInvalidToken with a reason that never contains token content.
@@ -249,17 +272,21 @@ func invalidToken(reason string) error {
 
 // decodeSegment decodes one base64url JSON segment into v.
 func decodeSegment(segment string, v any) error {
-	data, err := tokenEncoding.DecodeString(segment)
+	data, err := tokenEncoding().DecodeString(segment)
 	if err != nil {
-		return err
+		return fmt.Errorf("decode token segment: %w", err)
 	}
-	return json.Unmarshal(data, v)
+	if err := json.Unmarshal(data, v); err != nil {
+		return fmt.Errorf("parse token segment: %w", err)
+	}
+	return nil
 }
 
 // sign returns the HMAC-SHA256 of input.
 func sign(secret []byte, input string) []byte {
 	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(input))
+	// hash.Hash.Write never returns an error, by its documentation.
+	_, _ = mac.Write([]byte(input))
 	return mac.Sum(nil)
 }
 
@@ -280,20 +307,20 @@ func (t *Tokens) merge(entries []datadir.Entry[[]signingKey]) *keyring {
 	ring := &keyring{byID: map[string]signingKey{}}
 	owner := map[string]string{}
 	own := datadir.NodeFile(t.nodeID)
-	for _, e := range entries {
-		for _, key := range e.Value {
+	for _, entry := range entries {
+		for _, key := range entry.Value {
 			if first, dup := owner[key.id]; dup {
 				// The id is left out: a mistake in a file may put a secret where the
 				// id belongs, and this line is logged.
 				t.log.Warn("duplicate key id, keeping the first file's key",
-					"kept", first, "ignored", e.Name)
+					slog.String("kept", first), slog.String("ignored", entry.Name))
 				continue
 			}
-			owner[key.id] = e.Name
+			owner[key.id] = entry.Name
 			ring.byID[key.id] = key
 		}
-		if e.Name == own {
-			ring.signer = &e.Value[0]
+		if entry.Name == own {
+			ring.signer = &entry.Value[0]
 		}
 	}
 	return ring
@@ -303,7 +330,7 @@ func (t *Tokens) merge(entries []datadir.Entry[[]signingKey]) *keyring {
 // node, so a stray file never adds keys.
 func parseKeysFile(name string, data []byte) ([]signingKey, error) {
 	if _, ok := datadir.NodeOfFile(name); !ok {
-		return nil, errors.New("the file name is not a node id and .yaml")
+		return nil, errNotNodeFile
 	}
 	return parseKeys(data)
 }
@@ -312,31 +339,31 @@ func parseKeysFile(name string, data []byte) ([]signingKey, error) {
 // because they are logged and a mistake in the file may put a secret where a name belongs. They
 // name a key by its position for that reason, never by its id.
 func parseKeys(data []byte) ([]signingKey, error) {
-	var f keysFile
+	var parsed keysFile
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
-	if err := dec.Decode(&f); err != nil {
-		return nil, errors.New("cannot be parsed as a keys file with only a keys list")
+	if err := dec.Decode(&parsed); err != nil {
+		return nil, errKeysUnparsable
 	}
-	if len(f.Keys) == 0 {
-		return nil, errors.New("no keys")
+	if len(parsed.Keys) == 0 {
+		return nil, errNoKeys
 	}
-	keys := make([]signingKey, 0, len(f.Keys))
+	keys := make([]signingKey, 0, len(parsed.Keys))
 	seen := map[string]bool{}
-	for i, entry := range f.Keys {
+	for i, entry := range parsed.Keys {
 		if entry.ID == "" {
-			return nil, fmt.Errorf("key %d has no id", i+1)
+			return nil, fmt.Errorf("key %d %w", i+1, errKeyHasNoID)
 		}
 		if seen[entry.ID] {
-			return nil, fmt.Errorf("key %d repeats the id of an earlier key", i+1)
+			return nil, fmt.Errorf("key %d %w", i+1, errKeyRepeatsID)
 		}
 		seen[entry.ID] = true
 		secret, err := base64.StdEncoding.DecodeString(entry.Secret)
 		if err != nil {
-			return nil, fmt.Errorf("key %d: secret is not valid base64", i+1)
+			return nil, fmt.Errorf("key %d: %w", i+1, errSecretNotB64)
 		}
 		if len(secret) < minSecretSize {
-			return nil, fmt.Errorf("key %d: secret is shorter than %d bytes", i+1, minSecretSize)
+			return nil, fmt.Errorf("key %d: %w", i+1, errSecretTooShort)
 		}
 		keys = append(keys, signingKey{id: entry.ID, secret: secret})
 	}

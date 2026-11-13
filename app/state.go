@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -32,29 +33,44 @@ type folder struct {
 // nodeIDBytes is the number of random bytes of a node id; the id is their hexadecimal form.
 const nodeIDBytes = 8
 
+// nodeIDMode is the mode of the node id file. Only this machine's server reads it.
+const nodeIDMode = 0o600
+
+// ErrNotAFolder is the cause of a start that fails because a file sits where the server
+// needs a folder. The text goes after the path.
+var ErrNotAFolder = errors.New("exists and is not a folder")
+
+// ErrMalformedNodeID is the cause of a start that fails because the saved node id is not an
+// id. The text goes after the name of the file.
+var ErrMalformedNodeID = errors.New("must hold 16 lowercase hexadecimal characters")
+
 // layout returns the data paths inside stateDir.
 func layout(stateDir string) dataPaths {
 	local := filepath.Join(stateDir, localDirName)
 	shared := filepath.Join(stateDir, "shared")
-	d := dataPaths{
+	paths := dataPaths{
 		nodeIDFile: filepath.Join(local, "node-id"),
 		usersDir:   filepath.Join(shared, "users"),
 		keysDir:    filepath.Join(shared, "keys"),
 		nodesDir:   filepath.Join(shared, "nodes"),
 	}
-	d.folders = []folder{
-		{stateDir, 0o750}, {local, 0o700}, {shared, 0o750},
-		{d.usersDir, 0o750}, {d.keysDir, 0o700}, {d.nodesDir, 0o755},
+	paths.folders = []folder{
+		{stateDir, 0o750},
+		{local, 0o700},
+		{shared, 0o750},
+		{paths.usersDir, 0o750},
+		{paths.keysDir, 0o700},
+		{paths.nodesDir, 0o755},
 	}
-	return d
+	return paths
 }
 
 // makeFolders creates the folders that are missing. A folder that exists keeps its mode,
 // because the operator or the package may have set it on purpose.
-func (d dataPaths) makeFolders() error {
-	for _, f := range d.folders {
-		if err := makeFolder(f); err != nil {
-			return fmt.Errorf("create folder: %w", err)
+func (d *dataPaths) makeFolders() error {
+	for _, spec := range d.folders {
+		if err := makeFolder(spec); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -63,28 +79,33 @@ func (d dataPaths) makeFolders() error {
 // makeFolder creates one folder with exactly its mode, not the mode that the umask leaves.
 // A folder that exists is left alone, but a file in its place is an error here, because
 // otherwise the failure would only show up later, far from its cause.
-func makeFolder(f folder) error {
-	err := os.Mkdir(f.path, f.mode)
+func makeFolder(spec folder) error {
+	err := os.Mkdir(spec.path, spec.mode)
 	if errors.Is(err, fs.ErrExist) {
-		info, statErr := os.Stat(f.path)
-		if statErr != nil {
-			return statErr
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("%s exists and is not a folder", f.path)
-		}
-		return nil
+		return checkFolder(spec.path)
 	}
 	if err != nil {
-		return err
+		return wrap(err, "create folder")
 	}
-	return os.Chmod(f.path, f.mode)
+	return wrap(os.Chmod(spec.path, spec.mode), "create folder")
+}
+
+// checkFolder fails if path is not a folder.
+func checkFolder(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return wrap(err, "create folder")
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("create folder: %s %w", path, ErrNotAFolder)
+	}
+	return nil
 }
 
 // nodeID returns the id of this node, making and saving it on the first start. An id that
 // is saved but malformed is an error and is never replaced: the id names this node's files
 // in the shared folder, and a new one would orphan them.
-func (d dataPaths) nodeID(random io.Reader) (string, error) {
+func (d *dataPaths) nodeID(random io.Reader) (string, error) {
 	data, err := os.ReadFile(d.nodeIDFile)
 	if errors.Is(err, fs.ErrNotExist) {
 		return d.createNodeID(random)
@@ -94,19 +115,19 @@ func (d dataPaths) nodeID(random io.Reader) (string, error) {
 	}
 	id := strings.TrimSpace(string(data))
 	if !datadir.IsNodeID(id) {
-		return "", fmt.Errorf("node id file %s must hold 16 lowercase hexadecimal characters", d.nodeIDFile)
+		return "", fmt.Errorf("node id file %s %w", d.nodeIDFile, ErrMalformedNodeID)
 	}
 	return id, nil
 }
 
 // createNodeID makes a new id and saves it.
-func (d dataPaths) createNodeID(random io.Reader) (string, error) {
+func (d *dataPaths) createNodeID(random io.Reader) (string, error) {
 	raw := make([]byte, nodeIDBytes)
 	if _, err := io.ReadFull(random, raw); err != nil {
 		return "", fmt.Errorf("make node id: %w", err)
 	}
-	id := fmt.Sprintf("%x", raw)
-	if err := datadir.WriteAtomic(d.nodeIDFile, []byte(id+"\n"), 0o600); err != nil {
+	id := hex.EncodeToString(raw)
+	if err := datadir.WriteAtomic(d.nodeIDFile, []byte(id+"\n"), nodeIDMode); err != nil {
 		return "", fmt.Errorf("write node id file %s: %w", d.nodeIDFile, err)
 	}
 	return id, nil
@@ -123,5 +144,8 @@ type namedCluster struct {
 func (c namedCluster) Nodes() (wire.Nodes, error) {
 	nodes, err := c.nodes.Nodes()
 	nodes.Cluster = c.name
-	return nodes, err
+	if err != nil {
+		return nodes, fmt.Errorf("list nodes: %w", err)
+	}
+	return nodes, nil
 }

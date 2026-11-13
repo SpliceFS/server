@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -45,14 +46,14 @@ func lowCostHash(password string) string {
 
 func write(t *testing.T, dir, name, content string) string {
 	t.Helper()
-	p := filepath.Join(dir, name)
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+	path := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return p
+	return path
 }
 
 // setMTime gives a file a fixed modification time, so its tag is known to the test.
@@ -63,10 +64,37 @@ func setMTime(t *testing.T, path string, mtime time.Time) {
 	}
 }
 
-var fileTime = time.Date(2026, 10, 1, 8, 30, 0, 0, time.UTC)
+// fileTime is the modification time that the files of a fixture get.
+func fileTime() time.Time {
+	return time.Date(2026, 10, 1, 8, 30, 0, 0, time.UTC)
+}
 
 // htmlContent is a compressible file of 2600 bytes.
-var htmlContent = strings.Repeat("<p>hello world</p>\n", 100)
+func htmlContent() string {
+	return strings.Repeat("<p>hello world</p>\n", 100)
+}
+
+// closeQuietly closes closer at the end of a test. The test has its result by then, and a
+// close that fails because the other side closed first says nothing about it.
+func closeQuietly(closer io.Closer) {
+	_ = closer.Close() //nolint:errcheck // cleanup after the result is known
+}
+
+// respondText writes text as the body of a response. The client of a test handler is gone only
+// when the test is over, so a failed write has nobody to be reported to.
+func respondText(w io.Writer, text string) {
+	_, _ = io.WriteString(w, text) //nolint:errcheck // see above
+}
+
+// portOf returns the port of a TCP address.
+func portOf(t *testing.T, addr net.Addr) int {
+	t.Helper()
+	tcp, ok := addr.(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("%v is a %T, not a TCP address", addr, addr)
+	}
+	return tcp.Port
+}
 
 // loadConfig writes the files to a new configuration directory and loads it. A test needs
 // a free port, which the validation refuses to take as 0, so the listener is replaced.
@@ -103,21 +131,21 @@ const testSettings = "cluster:\n  name: example\n  node: east\n  url: https://ea
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	root := t.TempDir()
-	f := &fixture{shareDir: filepath.Join(root, "media"), state: filepath.Join(root, "state")}
-	f.data = layout(f.state)
-	hello := write(t, f.shareDir, "hello.bin", "0123456789")
-	setMTime(t, hello, fileTime)
-	page := write(t, f.shareDir, "page.html", htmlContent)
-	setMTime(t, page, fileTime)
-	write(t, f.shareDir, ".hidden", "never served")
+	fix := &fixture{shareDir: filepath.Join(root, "media"), state: filepath.Join(root, "state")}
+	fix.data = layout(fix.state)
+	hello := write(t, fix.shareDir, "hello.bin", "0123456789")
+	setMTime(t, hello, fileTime())
+	page := write(t, fix.shareDir, "page.html", htmlContent())
+	setMTime(t, page, fileTime())
+	write(t, fix.shareDir, ".hidden", "never served")
 
 	alice := "password_hash: \"" + lowCostHash("right-password") + "\"\nshares: [media]\n"
-	write(t, f.data.usersDir, "alice.yaml", alice)
+	write(t, fix.data.usersDir, "alice.yaml", alice)
 
-	f.cfg = loadConfig(t,
+	fix.cfg = loadConfig(t,
 		map[string]string{"10-test.yaml": testSettings},
-		map[string]string{"media.yaml": "path: " + f.shareDir + "\n"})
-	return f
+		map[string]string{"media.yaml": "path: " + fix.shareDir + "\n"})
+	return fix
 }
 
 // syncBuffer is a log that the server writes while a test reads it.
@@ -178,13 +206,13 @@ type running struct {
 
 // start runs the server and waits until it is ready. The server is stopped when the test
 // ends, if the test has not already stopped it.
-func start(t *testing.T, f *fixture) *running {
+func start(t *testing.T, fix *fixture) *running {
 	t.Helper()
-	return startWith(t, f, nil)
+	return startWith(t, fix, nil)
 }
 
 // startWith is start, with the chance to set more options of Run.
-func startWith(t *testing.T, f *fixture, adjust func(*Options)) *running {
+func startWith(t *testing.T, fix *fixture, adjust func(*Options)) *running {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &running{cancel: cancel, done: make(chan error, 1), logs: newSyncBuffer()}
@@ -197,14 +225,14 @@ func startWith(t *testing.T, f *fixture, adjust func(*Options)) *running {
 	if adjust != nil {
 		adjust(&opts)
 	}
-	go func() { r.done <- Run(ctx, f.cfg, f.state, opts) }()
+	go func() { r.done <- Run(ctx, fix.cfg, fix.state, opts) }()
 	select {
 	case r.addrs = <-ready:
 	case err := <-r.done:
 		cancel()
 		t.Fatalf("Run returned before it was ready: %v", err)
 	}
-	t.Cleanup(func() { _ = r.stop() })
+	t.Cleanup(func() { r.stopForCleanup() })
 	return r
 }
 
@@ -218,21 +246,33 @@ func (r *running) stop() error {
 	return r.err
 }
 
+// stopForCleanup stops the server at the end of a test. A test that cares what Run returned
+// has stopped it already and checked, so the result is not checked again here.
+func (r *running) stopForCleanup() {
+	_ = r.stop() //nolint:errcheck // checked by the tests that care, see above
+}
+
 // url returns the plain HTTP URL of path on the first listener.
 func (r *running) url(path string) string {
 	return "http://" + r.addrs[0].String() + path
 }
 
+// certFiles is a certificate and key on disk, and a pool that trusts the certificate.
+type certFiles struct {
+	certFile, keyFile string
+	pool              *x509.CertPool
+}
+
 // selfSigned makes a certificate and key for this machine and the loopback names with the
-// code the server uses, and returns their paths and a pool that trusts the certificate.
-func selfSigned(t *testing.T) (certFile, keyFile string, pool *x509.CertPool) {
+// code the server uses.
+func selfSigned(t *testing.T) certFiles {
 	t.Helper()
 	dir := t.TempDir()
 	if _, err := loadOrCreateCert(dir, testCertSource()); err != nil {
 		t.Fatal(err)
 	}
-	certFile, keyFile = filepath.Join(dir, certFileName), filepath.Join(dir, keyFileName)
-	return certFile, keyFile, trusting(t, certFile)
+	certFile := filepath.Join(dir, certFileName)
+	return certFiles{certFile: certFile, keyFile: filepath.Join(dir, keyFileName), pool: trusting(t, certFile)}
 }
 
 // testCertSource is the real clock and randomness with a fixed host name.
@@ -275,7 +315,11 @@ func tlsConfig(pool *x509.CertPool) *tls.Config {
 }
 
 // response is a recorded response. Its body has been read by call.
-type response struct{ *http.Response }
+type response struct {
+	*http.Response
+
+	body []byte
+}
 
 // isOpen reports whether something accepts connections at addr.
 func isOpen(addr string) bool {
@@ -284,6 +328,6 @@ func isOpen(addr string) bool {
 	if err != nil {
 		return false
 	}
-	_ = conn.Close()
+	closeQuietly(conn)
 	return true
 }

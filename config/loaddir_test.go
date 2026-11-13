@@ -43,7 +43,7 @@ func share(content string) files { return files{"shares.d/m.yaml": content} }
 
 func load(t *testing.T, f files) (*Config, error) {
 	t.Helper()
-	return loadDir(writeDir(t, f), testHost)
+	return loadDirWithHostname(writeDir(t, f), testHost)
 }
 
 func defaultSettings() *Config {
@@ -161,6 +161,29 @@ func TestLoadDirIgnoredEntries(t *testing.T) {
 	}
 }
 
+// loadError loads f and fails the test unless the configuration is refused. It returns the
+// error.
+func loadError(t *testing.T, f files) error {
+	t.Helper()
+	got, err := load(t, f)
+	if err == nil || got != nil {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	return err
+}
+
+// requireLoadError fails the test unless loading f is refused with an error that holds every
+// text in want.
+func requireLoadError(t *testing.T, f files, want []string) {
+	t.Helper()
+	err := loadError(t, f)
+	for _, text := range want {
+		if !strings.Contains(err.Error(), text) {
+			t.Errorf("error %q lacks %q", err, text)
+		}
+	}
+}
+
 func TestLoadDirDecodeErrors(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {
@@ -179,46 +202,63 @@ func TestLoadDirDecodeErrors(t *testing.T) {
 		"share unknown":    {share("path: /a\nname: m\n"), []string{"m.yaml", "name"}},
 		"share two docs":   {share("path: /a\n---\npath: /b\n"), []string{"m.yaml", "more than one"}},
 		"share wrong type": {share("path: [a]\n"), []string{"m.yaml"}},
-		"both dirs": {files{"conf.d/a.yaml": "x: 1", "shares.d/m.yaml": "y: 1"},
-			[]string{"a.yaml", "m.yaml"}},
+		"both dirs": {
+			files{"conf.d/a.yaml": "x: 1", "shares.d/m.yaml": "y: 1"},
+			[]string{"a.yaml", "m.yaml"},
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			got, err := load(t, tt.f)
-			if err == nil || got != nil {
+			requireLoadError(t, tt.f, tt.want)
+		})
+	}
+}
+
+func TestLoadDirAccepts(t *testing.T) {
+	t.Parallel()
+	tests := map[string]files{
+		"plain":     conf("listen: [{address: '::', port: 80, plain: true}]"),
+		"tls":       conf("listen: [{address: '::', port: 80, tls: {cert_file: c, key_file: k}}]"),
+		"url ok":    conf("cluster: {url: 'https://example.com:8443/x/'}"),
+		"node good": conf("cluster: {node: n-1.x}"),
+		"base root": conf("base_path: /"),
+		"share ok": {"shares.d/media.yaml": "path: /srv/media\nexclude: ['*.tmp']\nmin_age: 5m\n" +
+			"follow_symlinks: true"},
+	}
+	for name, f := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, err := load(t, f)
+			if err != nil || got == nil {
 				t.Fatalf("got %+v, %v", got, err)
-			}
-			for _, w := range tt.want {
-				if !strings.Contains(err.Error(), w) {
-					t.Errorf("error %q lacks %q", err, w)
-				}
 			}
 		})
 	}
 }
 
-func TestLoadDirValidation(t *testing.T) {
+func TestLoadDirRejects(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {
 		f    files
-		want []string // empty: valid
+		want []string
 	}{
-		"plain": {conf("listen: [{address: '::', port: 80, plain: true}]"), nil},
-		"tls":   {conf("listen: [{address: '::', port: 80, tls: {cert_file: c, key_file: k}}]"), nil},
-		"plain and tls": {conf("listen: [{address: '::', port: 80, plain: true,\n" +
-			" tls: {cert_file: c, key_file: k}}]"),
-			[]string{"listen[0].plain: must not be true together with tls", "(file a.yaml)"}},
-		"cert only": {conf("listen: [{address: '::', port: 80, tls: {cert_file: c}}]"),
-			[]string{"cert_file and key_file must both be set", "(file a.yaml)"}},
-		"key only": {conf("listen: [{address: '::', port: 80, tls: {key_file: k}}]"),
-			[]string{"both be set"}},
+		"plain and tls": {
+			conf("listen: [{address: '::', port: 80, plain: true,\n tls: {cert_file: c, key_file: k}}]"),
+			[]string{"listen[0].plain: must not be true together with tls", "(file a.yaml)"},
+		},
+		"cert only": {
+			conf("listen: [{address: '::', port: 80, tls: {cert_file: c}}]"),
+			[]string{"cert_file and key_file must both be set", "(file a.yaml)"},
+		},
+		"key only":     {conf("listen: [{address: '::', port: 80, tls: {key_file: k}}]"), []string{"both be set"}},
 		"empty listen": {conf("listen: []"), []string{"listen: at least one entry"}},
 		"no address":   {conf("listen: [{port: 80}]"), []string{"listen[0].address"}},
 		"bad port":     {conf("listen: [{address: '::', port: 0}]"), []string{"listen[0].port"}},
-		"dup listener": {conf("listen: [{address: '::', port: 1}, {address: '::', port: 1}]"),
-			[]string{"already listed"}},
-		"url ok":          {conf("cluster: {url: 'https://example.com:8443/x/'}"), nil},
+		"dup listener": {
+			conf("listen: [{address: '::', port: 1}, {address: '::', port: 1}]"),
+			[]string{"already listed"},
+		},
 		"url relative":    {conf("cluster: {url: /x}"), []string{"cluster.url", "(file a.yaml)"}},
 		"url ftp":         {conf("cluster: {url: 'ftp://h'}"), []string{"cluster.url"}},
 		"url no host":     {conf("cluster: {url: 'http://'}"), []string{"cluster.url"}},
@@ -226,29 +266,30 @@ func TestLoadDirValidation(t *testing.T) {
 		"url fragment":    {conf("cluster: {url: 'http://h/#f'}"), []string{"cluster.url"}},
 		"url empty query": {conf("cluster: {url: 'http://h/?'}"), []string{"cluster.url"}},
 		"url unparsable":  {conf("cluster: {url: 'http://h:x'}"), []string{"cluster.url"}},
-		"node bad": {conf("cluster: {node: 'Bad Node'}"),
-			[]string{"cluster.node", "(file a.yaml)"}},
-		"node good": {conf("cluster: {node: n-1.x}"), nil},
-		"base path": {conf("base_path: api"), []string{"base_path", "(file a.yaml)"}},
-		"base root": {conf("base_path: /"), nil},
-		"proxy bad": {conf("trusted_proxies: [nope]"),
-			[]string{"trusted_proxies[0]", "(file a.yaml)"}},
-		"ttl short":   {conf("auth: {token_ttl: 1s}"), []string{"auth.token_ttl", "(file a.yaml)"}},
-		"rate zero":   {conf("auth: {login_rate: 0/m}"), []string{"auth.login_rate"}},
-		"mtime short": {conf("mtime_precision: unlimited"), []string{"mtime_precision"}},
-		"log level":   {conf("log: {level: loud}"), []string{"log.level", "(file a.yaml)"}},
-		"log format":  {conf("log: {format: xml}"), []string{"log.format"}},
-		"later file named": {files{"conf.d/a.yaml": "log: {level: loud}",
-			"conf.d/b.yaml": "log: {level: bogus}"},
-			[]string{"(file b.yaml)"}},
-		"all together": {conf("base_path: x\nlog: {level: loud}"),
-			[]string{"base_path", "log.level"}},
-		"share ok": {files{"shares.d/media.yaml": "path: /srv/media\nexclude: ['*.tmp']\nmin_age: 5m\n" +
-			"follow_symlinks: true"}, nil},
-		"share name": {files{"shares.d/Bad Name.yaml": "path: /a"},
-			[]string{"shares.Bad Name", "(file Bad Name.yaml)"}},
-		"share rel": {share("path: rel/dir"),
-			[]string{"shares.m.path", "must be absolute", "(file m.yaml)"}},
+		"node bad":        {conf("cluster: {node: 'Bad Node'}"), []string{"cluster.node", "(file a.yaml)"}},
+		"base path":       {conf("base_path: api"), []string{"base_path", "(file a.yaml)"}},
+		"proxy bad":       {conf("trusted_proxies: [nope]"), []string{"trusted_proxies[0]", "(file a.yaml)"}},
+		"ttl short":       {conf("auth: {token_ttl: 1s}"), []string{"auth.token_ttl", "(file a.yaml)"}},
+		"rate zero":       {conf("auth: {login_rate: 0/m}"), []string{"auth.login_rate"}},
+		"mtime short":     {conf("mtime_precision: unlimited"), []string{"mtime_precision"}},
+		"log level":       {conf("log: {level: loud}"), []string{"log.level", "(file a.yaml)"}},
+		"log format":      {conf("log: {format: xml}"), []string{"log.format"}},
+		"later file named": {
+			files{"conf.d/a.yaml": "log: {level: loud}", "conf.d/b.yaml": "log: {level: bogus}"},
+			[]string{"(file b.yaml)"},
+		},
+		"all together": {
+			conf("base_path: x\nlog: {level: loud}"),
+			[]string{"base_path", "log.level"},
+		},
+		"share name": {
+			files{"shares.d/Bad Name.yaml": "path: /a"},
+			[]string{"shares.Bad Name", "(file Bad Name.yaml)"},
+		},
+		"share rel": {
+			share("path: rel/dir"),
+			[]string{"shares.m.path", "must be absolute", "(file m.yaml)"},
+		},
 		"share none":   {share("exclude: []"), []string{"shares.m.path: must not be empty"}},
 		"share glob":   {share("path: /a\nexclude: ['[']"), []string{"shares.m.exclude[0]"}},
 		"share slash":  {share("path: /a\nexclude: [a/b]"), []string{"must not contain"}},
@@ -258,20 +299,47 @@ func TestLoadDirValidation(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			got, err := load(t, tt.f)
-			if len(tt.want) == 0 {
-				if err != nil || got == nil {
-					t.Fatalf("got %+v, %v", got, err)
-				}
-				return
-			}
-			if err == nil || got != nil {
-				t.Fatalf("got %+v, %v", got, err)
-			}
-			for _, w := range tt.want {
-				if !strings.Contains(err.Error(), w) {
-					t.Errorf("error %q lacks %q", err, w)
-				}
+			requireLoadError(t, tt.f, tt.want)
+		})
+	}
+}
+
+// TestLoadDirReasons checks that a caller can tell why a configuration was refused without
+// reading the message.
+func TestLoadDirReasons(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		f    files
+		want error
+	}{
+		"rate":          {conf("auth: {login_rate: 5/d}"), ErrInvalidRate},
+		"two documents": {conf("a: 1\n---\nb: 2\n"), ErrMultipleDocuments},
+		"base path":     {conf("base_path: api"), ErrBasePathNoSlash},
+		"empty path":    {share("exclude: []"), ErrEmpty},
+		"empty address": {conf("listen: [{port: 80}]"), ErrEmpty},
+		"not one of":    {conf("log: {level: loud}"), ErrNotOneOf},
+		"short ttl":     {conf("auth: {token_ttl: 1s}"), ErrDurationTooShort},
+		"short min age": {share("path: /a\nmin_age: unlimited"), ErrDurationTooShort},
+		"no listener":   {conf("listen: []"), ErrNoListener},
+		"port":          {conf("listen: [{address: '::', port: 0}]"), ErrPortOutOfRange},
+		"duplicate":     {conf("listen: [{address: '::', port: 1}, {address: '::', port: 1}]"), ErrDuplicateListener},
+		"half tls":      {conf("listen: [{address: '::', port: 80, tls: {cert_file: c}}]"), ErrTLSPairIncomplete},
+		"plain and tls": {
+			conf("listen: [{address: '::', port: 80, plain: true, tls: {cert_file: c, key_file: k}}]"),
+			ErrPlainWithTLS,
+		},
+		"node name":      {conf("cluster: {node: 'Bad Node'}"), ErrNamePattern},
+		"share name":     {files{"shares.d/Bad Name.yaml": "path: /a"}, ErrNamePattern},
+		"exclude slash":  {share("path: /a\nexclude: [a/b]"), ErrExcludeSlash},
+		"rate count":     {conf("auth: {login_rate: 0/m}"), ErrCountBelowOne},
+		"cluster url":    {conf("cluster: {url: ftp://h}"), ErrURLInvalid},
+		"relative share": {share("path: rel/dir"), ErrPathNotAbsolute},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if err := loadError(t, tt.f); !errors.Is(err, tt.want) {
+				t.Errorf("error %q is not %q", err, tt.want)
 			}
 		})
 	}
@@ -313,7 +381,7 @@ func TestLoadDirResolvesTLSPaths(t *testing.T) {
 	t.Parallel()
 	dir := writeDir(t, conf("listen:\n  - address: '::'\n    port: 1\n"+
 		"    tls: {cert_file: tls/c.pem, key_file: /abs/../abs/k.pem}\n"))
-	got, err := loadDir(dir, testHost)
+	got, err := loadDirWithHostname(dir, testHost)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,25 +391,34 @@ func TestLoadDirResolvesTLSPaths(t *testing.T) {
 	}
 }
 
-func TestLoadDirHostName(t *testing.T) {
+func TestLoadDirHostNameUnavailable(t *testing.T) {
 	t.Parallel()
-	dir := writeDir(t, files{})
-	_, err := loadDir(dir, failingHost)
-	if err == nil || !strings.Contains(err.Error(), "cluster.node") {
+	_, err := loadDirWithHostname(writeDir(t, files{}), failingHost)
+	if !errors.Is(err, errNoHost) || !strings.Contains(err.Error(), "cluster.node") {
 		t.Errorf("host failure: %v", err)
 	}
-	// A configured node never asks for the host name.
-	dir = writeDir(t, conf("cluster: {node: n}"))
-	if got, err := loadDir(dir, failingHost); err != nil || got.Cluster.Node != "n" {
+}
+
+func TestLoadDirConfiguredNodeSkipsHostName(t *testing.T) {
+	t.Parallel()
+	dir := writeDir(t, conf("cluster: {node: n}"))
+	if got, err := loadDirWithHostname(dir, failingHost); err != nil || got.Cluster.Node != "n" {
 		t.Errorf("configured node: %+v, %v", got, err)
 	}
-	dir = writeDir(t, files{})
-	empty := func() (string, error) { return "", nil }
-	if _, err := loadDir(dir, empty); err == nil {
+}
+
+func TestLoadDirEmptyHostName(t *testing.T) {
+	t.Parallel()
+	emptyHost := func() (string, error) { return "", nil }
+	if _, err := loadDirWithHostname(writeDir(t, files{}), emptyHost); err == nil {
 		t.Error("empty host name accepted")
 	}
+}
+
+func TestLoadDirRealHostName(t *testing.T) {
+	t.Parallel()
 	// The exported function uses the real host name; the result is valid or names cluster.node.
-	_, err = LoadDir(writeDir(t, files{}))
+	_, err := LoadDir(writeDir(t, files{}))
 	if err != nil && !strings.Contains(err.Error(), "cluster.node") {
 		t.Errorf("LoadDir: %v", err)
 	}
@@ -388,7 +465,7 @@ func TestLoadDirUnreadable(t *testing.T) {
 			if err := os.Symlink(filepath.Join(dir, "nowhere"), file); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := loadDir(dir, testHost); err == nil || !strings.Contains(err.Error(), file) {
+			if _, err := loadDirWithHostname(dir, testHost); err == nil || !strings.Contains(err.Error(), file) {
 				t.Errorf("error %v does not name %s", err, file)
 			}
 		})
@@ -398,7 +475,7 @@ func TestLoadDirUnreadable(t *testing.T) {
 		t.Run("dir "+sub, func(t *testing.T) {
 			t.Parallel()
 			dir := writeDir(t, files{sub: "a file where a folder belongs"})
-			if _, err := loadDir(dir, testHost); err == nil || !strings.Contains(err.Error(), sub) {
+			if _, err := loadDirWithHostname(dir, testHost); err == nil || !strings.Contains(err.Error(), sub) {
 				t.Errorf("error %v does not name %s", err, sub)
 			}
 		})

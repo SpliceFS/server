@@ -6,7 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -15,22 +15,22 @@ import (
 
 func TestOpenErrors(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	f.write(t, "file.txt", "x", epoch)
+	fix := newFixture(t)
+	fix.write(t, "file.txt", "x", epoch())
 	tests := []struct {
 		name string
 		opts Options
 	}{
-		{"missing path", Options{Name: "a", Path: filepath.Join(f.base, "nope")}},
-		{"file path", Options{Name: "a", Path: filepath.Join(f.root, "file.txt")}},
-		{"bad pattern", Options{Name: "a", Path: f.root, Exclude: []string{"[a"}}},
+		{"missing path", Options{Name: "a", Path: filepath.Join(fix.base, "nope")}},
+		{"file path", Options{Name: "a", Path: filepath.Join(fix.root, "file.txt")}},
+		{"bad pattern", Options{Name: "a", Path: fix.root, Exclude: []string{"[a"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			s, err := Open(tt.opts)
+			share, err := Open(tt.opts)
 			if err == nil {
-				_ = s.Close()
+				mustClose(t, share)
 				t.Fatal("Open succeeded")
 			}
 			if !strings.Contains(err.Error(), `"a"`) {
@@ -42,34 +42,36 @@ func TestOpenErrors(t *testing.T) {
 
 func TestDefaults(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	s, err := Open(Options{Name: "photos", Path: f.root})
+	fix := newFixture(t)
+	share, err := Open(Options{Name: "photos", Path: fix.root})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = s.Close() }()
-	if s.Name() != "photos" {
-		t.Errorf("Name = %q", s.Name())
+	defer mustClose(t, share)
+	if share.Name() != "photos" {
+		t.Errorf("Name = %q", share.Name())
 	}
-	if s.now == nil || s.digests.limit != defaultDigestCacheSize {
-		t.Errorf("defaults not applied: now=%v limit=%d", s.now != nil, s.digests.limit)
+	if share.now == nil || share.digests.limit != defaultDigestCacheSize {
+		t.Errorf("defaults not applied: now=%v limit=%d", share.now != nil, share.digests.limit)
 	}
 }
 
-func TestStatAndList(t *testing.T) {
-	t.Parallel()
-	f := newFixture(t)
+// listingShare opens a share over a few files whose modification time has a fraction
+// of a second, with a precision of one second.
+func listingShare(t *testing.T) *Share {
+	t.Helper()
+	fix := newFixture(t)
 	mtime := time.Date(2021, 5, 6, 7, 8, 9, 123456789, time.UTC)
-	f.write(t, "b.txt", "hello", mtime)
-	f.write(t, "a.txt", "", mtime)
-	f.write(t, "sub/c.txt", "ccc", mtime)
-	f.write(t, "Z.txt", "z", mtime)
-	s := f.open(t, Options{MTimePrecision: time.Second})
+	fix.write(t, "b.txt", "hello", mtime)
+	fix.write(t, "a.txt", "", mtime)
+	fix.write(t, "sub/c.txt", "ccc", mtime)
+	fix.write(t, "Z.txt", "z", mtime)
+	return fix.open(t, &Options{MTimePrecision: time.Second})
+}
 
-	got, err := s.Stat("b.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestStatFile(t *testing.T) {
+	t.Parallel()
+	got := mustStat(t, listingShare(t), "b.txt")
 	want := Info{
 		Name:  "b.txt",
 		Size:  5,
@@ -82,27 +84,28 @@ func TestStatAndList(t *testing.T) {
 	if got.MTime.Location() != time.UTC {
 		t.Errorf("MTime location = %v", got.MTime.Location())
 	}
+}
 
-	dir, err := s.Stat("sub")
-	if err != nil || !dir.Dir || dir.Size != 0 || dir.ETag != "" || dir.Name != "sub" {
-		t.Errorf("Stat(sub) = %+v, %v", dir, err)
+func TestStatDirectories(t *testing.T) {
+	t.Parallel()
+	share := listingShare(t)
+	dir := mustStat(t, share, "sub")
+	if !dir.Dir || dir.Size != 0 || dir.ETag != "" || dir.Name != "sub" {
+		t.Errorf("Stat(sub) = %+v", dir)
 	}
-
 	for _, root := range []string{"", "."} {
-		in, err := s.Stat(root)
-		if err != nil || !in.Dir || in.Name != "." {
-			t.Errorf("Stat(%q) = %+v, %v", root, in, err)
+		info := mustStat(t, share, root)
+		if !info.Dir || info.Name != "." {
+			t.Errorf("Stat(%q) = %+v", root, info)
 		}
 	}
+}
 
-	list, err := s.List("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"Z.txt", "a.txt", "b.txt", "sub"}; !reflect.DeepEqual(names(list), want) {
-		t.Errorf("List names = %v, want %v", names(list), want)
-	}
-	sub, err := s.List("sub")
+func TestList(t *testing.T) {
+	t.Parallel()
+	share := listingShare(t)
+	requireListing(t, share, "", []string{"Z.txt", "a.txt", "b.txt", "sub"})
+	sub, err := share.List("sub")
 	if err != nil || len(sub) != 1 || sub[0].Name != "c.txt" || sub[0].Size != 3 {
 		t.Errorf("List(sub) = %+v, %v", sub, err)
 	}
@@ -110,14 +113,10 @@ func TestStatAndList(t *testing.T) {
 
 func TestFullResolutionKeptWithoutPrecision(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
+	fix := newFixture(t)
 	mtime := time.Date(2021, 5, 6, 7, 8, 9, 5000, time.UTC)
-	f.write(t, "a", "x", mtime)
-	s := f.open(t, Options{})
-	got, err := s.Stat("a")
-	if err != nil {
-		t.Fatal(err)
-	}
+	fix.write(t, "a", "x", mtime)
+	got := mustStat(t, fix.open(t, &Options{}), "a")
 	if !got.MTime.Equal(mtime) {
 		t.Errorf("MTime = %v, want %v", got.MTime, mtime)
 	}
@@ -131,60 +130,60 @@ func TestETagFormat(t *testing.T) {
 	}
 }
 
-func TestErrorKinds(t *testing.T) {
+func TestErrorKindsForTheWrongType(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	f.write(t, "dir/file.txt", "x", epoch)
-	s := f.open(t, Options{})
-	long := strings.Repeat("a", 300)
+	fix := newFixture(t)
+	fix.write(t, "dir/file.txt", "x", epoch())
+	share := fix.open(t, &Options{})
 
-	if _, err := s.List("dir/file.txt"); !errors.Is(err, ErrNotDir) {
+	if _, err := share.List("dir/file.txt"); !errors.Is(err, ErrNotDir) {
 		t.Errorf("List(file) = %v, want ErrNotDir", err)
 	}
-	if _, err := s.OpenFile("dir"); !errors.Is(err, ErrIsDir) {
+	if _, err := share.OpenFile("dir"); !errors.Is(err, ErrIsDir) {
 		t.Errorf("OpenFile(dir) = %v, want ErrIsDir", err)
 	}
-	if _, _, err := s.HeadDigest("dir"); !errors.Is(err, ErrIsDir) {
+	if _, _, err := share.HeadDigest("dir"); !errors.Is(err, ErrIsDir) {
 		t.Errorf("HeadDigest(dir) = %v, want ErrIsDir", err)
 	}
-	for _, name := range []string{"missing", "dir/file.txt/x", "dir/missing/x"} {
-		if _, err := s.Stat(name); !errors.Is(err, ErrNotFound) {
-			t.Errorf("Stat(%q) = %v, want ErrNotFound", name, err)
-		}
-	}
-	if _, err := s.List("missing"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("List(missing) = %v, want ErrNotFound", err)
-	}
-	if _, err := s.OpenFile("missing"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("OpenFile(missing) = %v, want ErrNotFound", err)
-	}
-	if _, _, err := s.HeadDigest("missing"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("HeadDigest(missing) = %v, want ErrNotFound", err)
-	}
+}
 
-	// A name longer than the file system allows cannot exist, whatever way it is asked for.
-	for _, name := range []string{long, "dir/" + long, strings.Repeat("a/", 5000) + "a"} {
-		if _, err := s.Stat(name); !errors.Is(err, ErrNotFound) {
-			t.Errorf("Stat(%d bytes) = %v, want ErrNotFound", len(name), err)
-		}
-		if _, err := s.OpenFile(name); !errors.Is(err, ErrNotFound) {
-			t.Errorf("OpenFile(%d bytes) = %v, want ErrNotFound", len(name), err)
+func TestErrorKindsForMissingNames(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t)
+	fix.write(t, "dir/file.txt", "x", epoch())
+	share := fix.open(t, &Options{})
+
+	requireHidden(t, share, "missing")
+	for _, name := range []string{"dir/file.txt/x", "dir/missing/x"} {
+		if _, err := share.Stat(name); !errors.Is(err, ErrNotFound) {
+			t.Errorf("Stat(%q) = %v, want ErrNotFound", name, err)
 		}
 	}
 }
 
+func TestNamesLongerThanTheFileSystemAllowsAreMissing(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t)
+	fix.write(t, "dir/file.txt", "x", epoch())
+	share := fix.open(t, &Options{})
+	long := strings.Repeat("a", 300)
+
+	// Such a name cannot exist, whatever way it is asked for.
+	requireHidden(t, share, long, "dir/"+long, strings.Repeat("a/", 5000)+"a")
+}
+
 func TestInvalidNames(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	f.write(t, "a/b", "inside", epoch)
-	s := f.open(t, Options{})
-	names := []string{
+	fix := newFixture(t)
+	fix.write(t, "a/b", "inside", epoch())
+	share := fix.open(t, &Options{})
+	requireHidden(t, share,
 		"../secret.txt",
 		"..",
 		"a/../../secret.txt",
 		"a/..",
 		"/secret.txt",
-		"/" + filepath.ToSlash(f.base) + "/secret.txt",
+		"/"+filepath.ToSlash(fix.base)+"/secret.txt",
 		`..\secret.txt`,
 		`a\b`,
 		"a\x00b",
@@ -193,282 +192,204 @@ func TestInvalidNames(t *testing.T) {
 		"./a/b",
 		"a/./b",
 		"//a/b",
-	}
-	for _, name := range names {
-		if _, err := s.Stat(name); !errors.Is(err, ErrNotFound) {
-			t.Errorf("Stat(%q) = %v", name, err)
-		}
-		if _, err := s.List(name); !errors.Is(err, ErrNotFound) {
-			t.Errorf("List(%q) = %v", name, err)
-		}
-		if _, err := s.OpenFile(name); !errors.Is(err, ErrNotFound) {
-			t.Errorf("OpenFile(%q) = %v", name, err)
-		}
-		if _, _, err := s.HeadDigest(name); !errors.Is(err, ErrNotFound) {
-			t.Errorf("HeadDigest(%q) = %v", name, err)
-		}
-	}
+	)
+}
+
+// outsideLinksShare opens a share with one real file, and with links that point out of
+// the share root by relative path, by absolute path, to a file and to a folder.
+func outsideLinksShare(t *testing.T, follow bool) *Share {
+	t.Helper()
+	fix := newFixture(t)
+	fix.write(t, "real.txt", "inside", epoch())
+	fix.writeOutside(t, "other/data.txt", "outside")
+	fix.symlink(t, filepath.Join(fix.base, "secret.txt"), "abs-file")
+	fix.symlink(t, "../secret.txt", "rel-file")
+	fix.symlink(t, filepath.Join(fix.base, "other"), "abs-dir")
+	fix.symlink(t, "../other", "rel-dir")
+	fix.symlink(t, "../other/data.txt", "sub/deep-file")
+	return fix.open(t, &Options{FollowSymlinks: follow})
 }
 
 func TestSymlinksOutsideAreInvisible(t *testing.T) {
 	t.Parallel()
-	for _, follow := range []bool{false, true} {
-		t.Run(map[bool]string{false: "nofollow", true: "follow"}[follow], func(t *testing.T) {
+	tests := []struct {
+		name   string
+		follow bool
+	}{
+		{"nofollow", false},
+		{"follow", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			f := newFixture(t)
-			f.write(t, "real.txt", "inside", epoch)
-			outDir := filepath.Join(f.base, "other")
-			if err := os.Mkdir(outDir, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(outDir, "data.txt"), []byte("outside"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			f.symlink(t, filepath.Join(f.base, "secret.txt"), "abs-file")
-			f.symlink(t, "../secret.txt", "rel-file")
-			f.symlink(t, outDir, "abs-dir")
-			f.symlink(t, "../other", "rel-dir")
-			f.symlink(t, "../other/data.txt", "sub/deep-file")
-			s := f.open(t, Options{FollowSymlinks: follow})
-
-			list, err := s.List("")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if want := []string{"real.txt", "sub"}; !reflect.DeepEqual(names(list), want) {
-				t.Errorf("List = %v, want %v", names(list), want)
-			}
-			if sub, err := s.List("sub"); err != nil || len(sub) != 0 {
-				t.Errorf("List(sub) = %v, %v", sub, err)
-			}
-			for _, name := range []string{
+			share := outsideLinksShare(t, tt.follow)
+			requireListing(t, share, "", []string{"real.txt", "sub"})
+			requireListing(t, share, "sub", []string{})
+			requireHidden(t, share,
 				"abs-file", "rel-file", "abs-dir", "rel-dir",
 				"abs-dir/data.txt", "rel-dir/data.txt", "sub/deep-file",
-			} {
-				if _, err := s.Stat(name); !errors.Is(err, ErrNotFound) {
-					t.Errorf("Stat(%q) = %v", name, err)
-				}
-				if _, err := s.OpenFile(name); !errors.Is(err, ErrNotFound) {
-					t.Errorf("OpenFile(%q) = %v", name, err)
-				}
-				if _, _, err := s.HeadDigest(name); !errors.Is(err, ErrNotFound) {
-					t.Errorf("HeadDigest(%q) = %v", name, err)
-				}
-				if _, err := s.List(name); !errors.Is(err, ErrNotFound) {
-					t.Errorf("List(%q) = %v", name, err)
-				}
-			}
+			)
 		})
 	}
 }
 
-func TestSymlinksInside(t *testing.T) {
+// insideLinksFixture holds a real file, links that stay inside the share root, and
+// links that dangle, loop or leave the root.
+func insideLinksFixture(t *testing.T) fixture {
+	t.Helper()
+	fix := newFixture(t)
+	fix.write(t, "real/file.txt", "inside", epoch())
+	fix.symlink(t, "real/file.txt", "link-file")
+	fix.symlink(t, "real", "link-dir")
+	fix.symlink(t, "link-file", "link-chain")
+	fix.symlink(t, "missing", "dangling")
+	fix.symlink(t, "loop", "loop")
+	fix.symlink(t, "/etc", "link-abs")
+	return fix
+}
+
+func TestSymlinksInsideAreHiddenWhenNotFollowed(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	f.write(t, "real/file.txt", "inside", epoch)
-	f.symlink(t, "real/file.txt", "link-file")
-	f.symlink(t, "real", "link-dir")
-	f.symlink(t, "link-file", "link-chain")
-	f.symlink(t, "missing", "dangling")
-	f.symlink(t, "loop", "loop")
-	f.symlink(t, "/etc", "link-abs")
+	share := insideLinksFixture(t).open(t, &Options{})
+	requireListing(t, share, "", []string{"real"})
+	requireHidden(t, share, "link-file", "link-dir", "link-dir/file.txt", "link-chain")
+}
 
-	t.Run("hidden when not followed", func(t *testing.T) {
-		t.Parallel()
-		s := f.open(t, Options{})
-		list, err := s.List("")
-		if err != nil {
-			t.Fatal(err)
+func TestSymlinksInsideAreServedWhenFollowed(t *testing.T) {
+	t.Parallel()
+	share := insideLinksFixture(t).open(t, &Options{FollowSymlinks: true})
+	requireListing(t, share, "", []string{"link-chain", "link-dir", "link-file", "real"})
+	for _, name := range []string{"link-file", "link-dir/file.txt", "link-chain"} {
+		if info := mustStat(t, share, name); info.Dir || info.Size != 6 {
+			t.Errorf("Stat(%q) = %+v", name, info)
 		}
-		if want := []string{"real"}; !reflect.DeepEqual(names(list), want) {
-			t.Errorf("List = %v, want %v", names(list), want)
+		if got := readFile(t, share, name); got != "inside" {
+			t.Errorf("OpenFile(%q) read %q", name, got)
 		}
-		for _, name := range []string{"link-file", "link-dir", "link-dir/file.txt", "link-chain"} {
-			if _, err := s.Stat(name); !errors.Is(err, ErrNotFound) {
-				t.Errorf("Stat(%q) = %v", name, err)
-			}
-			if _, err := s.OpenFile(name); !errors.Is(err, ErrNotFound) {
-				t.Errorf("OpenFile(%q) = %v", name, err)
-			}
-		}
-	})
+	}
+	if info := mustStat(t, share, "link-dir"); !info.Dir || info.Name != "link-dir" {
+		t.Errorf("Stat(link-dir) = %+v", info)
+	}
+	requireListing(t, share, "link-dir", []string{"file.txt"})
+}
 
-	t.Run("followed", func(t *testing.T) {
-		t.Parallel()
-		s := f.open(t, Options{FollowSymlinks: true})
-		list, err := s.List("")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if want := []string{"link-chain", "link-dir", "link-file", "real"}; !reflect.DeepEqual(names(list), want) {
-			t.Errorf("List = %v, want %v", names(list), want)
-		}
-		for _, name := range []string{"link-file", "link-dir/file.txt", "link-chain"} {
-			in, err := s.Stat(name)
-			if err != nil || in.Dir || in.Size != 6 {
-				t.Errorf("Stat(%q) = %+v, %v", name, in, err)
-			}
-			file, err := s.OpenFile(name)
-			if err != nil {
-				t.Fatalf("OpenFile(%q): %v", name, err)
-			}
-			data, _ := io.ReadAll(file)
-			_ = file.Close()
-			if string(data) != "inside" {
-				t.Errorf("OpenFile(%q) read %q", name, data)
-			}
-		}
-		if in, err := s.Stat("link-dir"); err != nil || !in.Dir || in.Name != "link-dir" {
-			t.Errorf("Stat(link-dir) = %+v, %v", in, err)
-		}
-		sub, err := s.List("link-dir")
-		if err != nil || len(sub) != 1 || sub[0].Name != "file.txt" {
-			t.Errorf("List(link-dir) = %+v, %v", sub, err)
-		}
-		for _, name := range []string{"dangling", "loop", "link-abs", "link-abs/passwd"} {
-			if _, err := s.Stat(name); !errors.Is(err, ErrNotFound) {
-				t.Errorf("Stat(%q) = %v", name, err)
-			}
-		}
-	})
+func TestSymlinksThatCannotBeResolvedInsideAreHiddenWhenFollowed(t *testing.T) {
+	t.Parallel()
+	share := insideLinksFixture(t).open(t, &Options{FollowSymlinks: true})
+	requireHidden(t, share, "dangling", "loop", "link-abs", "link-abs/passwd")
 }
 
 func TestExclude(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	f.write(t, ".hidden", "x", epoch)
-	f.write(t, "keep.txt", "x", epoch)
-	f.write(t, "tmp.part", "x", epoch)
-	f.write(t, ".git/config", "x", epoch)
-	f.write(t, "docs/.cache/blob", "x", epoch)
-	f.write(t, "docs/readme", "x", epoch)
-	s := f.open(t, Options{Exclude: []string{".*", "*.part"}})
+	fix := newFixture(t)
+	fix.write(t, ".hidden", "x", epoch())
+	fix.write(t, "keep.txt", "x", epoch())
+	fix.write(t, "tmp.part", "x", epoch())
+	fix.write(t, ".git/config", "x", epoch())
+	fix.write(t, "docs/.cache/blob", "x", epoch())
+	fix.write(t, "docs/readme", "x", epoch())
+	share := fix.open(t, &Options{Exclude: []string{".*", "*.part"}})
 
-	list, err := s.List("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"docs", "keep.txt"}; !reflect.DeepEqual(names(list), want) {
-		t.Errorf("List = %v, want %v", names(list), want)
-	}
-	docs, err := s.List("docs")
-	if err != nil || !reflect.DeepEqual(names(docs), []string{"readme"}) {
-		t.Errorf("List(docs) = %v, %v", names(docs), err)
-	}
-	for _, name := range []string{".hidden", "tmp.part", ".git", ".git/config", "docs/.cache", "docs/.cache/blob"} {
-		if _, err := s.Stat(name); !errors.Is(err, ErrNotFound) {
-			t.Errorf("Stat(%q) = %v", name, err)
-		}
-		if _, err := s.OpenFile(name); !errors.Is(err, ErrNotFound) {
-			t.Errorf("OpenFile(%q) = %v", name, err)
-		}
-		if _, err := s.List(name); !errors.Is(err, ErrNotFound) {
-			t.Errorf("List(%q) = %v", name, err)
-		}
-	}
+	requireListing(t, share, "", []string{"docs", "keep.txt"})
+	requireListing(t, share, "docs", []string{"readme"})
+	requireHidden(t, share, ".hidden", "tmp.part", ".git", ".git/config", "docs/.cache", "docs/.cache/blob")
 }
 
 func TestMinAge(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	now := clockTime
-	f.write(t, "old.txt", "x", now.Add(-time.Hour))
-	f.write(t, "edge.txt", "x", now.Add(-10*time.Minute))
-	f.write(t, "new.txt", "x", now.Add(-time.Minute))
-	f.write(t, "newdir/old.txt", "x", now.Add(-time.Hour))
-	if err := os.Chtimes(filepath.Join(f.root, "newdir"), now, now); err != nil {
+	fix := newFixture(t)
+	now := clockTime()
+	fix.write(t, "old.txt", "x", now.Add(-time.Hour))
+	fix.write(t, "edge.txt", "x", now.Add(-10*time.Minute))
+	fix.write(t, "new.txt", "x", now.Add(-time.Minute))
+	fix.write(t, "newdir/old.txt", "x", now.Add(-time.Hour))
+	if err := os.Chtimes(filepath.Join(fix.root, "newdir"), now, now); err != nil {
 		t.Fatal(err)
 	}
 	clock := now
-	s := f.open(t, Options{MinAge: 10 * time.Minute, Now: func() time.Time { return clock }})
+	share := fix.open(t, &Options{MinAge: 10 * time.Minute, Now: func() time.Time { return clock }})
 
-	list, err := s.List("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"edge.txt", "newdir", "old.txt"}; !reflect.DeepEqual(names(list), want) {
-		t.Errorf("List = %v, want %v", names(list), want)
-	}
-	if _, err := s.Stat("new.txt"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("Stat(new.txt) = %v", err)
-	}
-	if _, err := s.OpenFile("new.txt"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("OpenFile(new.txt) = %v", err)
-	}
-	if _, _, err := s.HeadDigest("new.txt"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("HeadDigest(new.txt) = %v", err)
-	}
-	if _, err := s.Stat("newdir"); err != nil {
-		t.Errorf("Stat(newdir) = %v, directories are never hidden by age", err)
-	}
+	requireListing(t, share, "", []string{"edge.txt", "newdir", "old.txt"})
+	requireHidden(t, share, "new.txt")
+	// Directories are never hidden by age.
+	mustStat(t, share, "newdir")
 
 	clock = now.Add(10 * time.Minute)
-	if _, err := s.Stat("new.txt"); err != nil {
-		t.Errorf("Stat(new.txt) after the clock advanced = %v", err)
-	}
+	// The clock has advanced, so the file is old enough now.
+	mustStat(t, share, "new.txt")
 }
 
 func TestSameFileSameIdentity(t *testing.T) {
 	t.Parallel()
 	mtime := time.Date(2022, 3, 4, 5, 6, 7, 0, time.UTC)
-	a, b := newFixture(t), newFixture(t)
-	a.write(t, "x/f.bin", "same content", mtime)
-	b.write(t, "x/f.bin", "same content", mtime.Add(400*time.Millisecond))
-	sa := a.open(t, Options{MTimePrecision: time.Second})
-	sb := b.open(t, Options{MTimePrecision: time.Second})
+	fixA, fixB := newFixture(t), newFixture(t)
+	fixA.write(t, "x/f.bin", "same content", mtime)
+	fixB.write(t, "x/f.bin", "same content", mtime.Add(400*time.Millisecond))
+	shareA := fixA.open(t, &Options{MTimePrecision: time.Second})
+	shareB := fixB.open(t, &Options{MTimePrecision: time.Second})
 
-	ia, err := sa.Stat("x/f.bin")
-	if err != nil {
-		t.Fatal(err)
+	infoA := mustStat(t, shareA, "x/f.bin")
+	infoB := mustStat(t, shareB, "x/f.bin")
+	if infoA != infoB {
+		t.Errorf("infos differ: %+v and %+v", infoA, infoB)
 	}
-	ib, err := sb.Stat("x/f.bin")
-	if err != nil {
-		t.Fatal(err)
+	digestA, _ := mustHeadDigest(t, shareA, "x/f.bin")
+	digestB, _ := mustHeadDigest(t, shareB, "x/f.bin")
+	if digestA != digestB {
+		t.Errorf("digests differ: %s and %s", digestA, digestB)
 	}
-	if ia != ib {
-		t.Errorf("infos differ: %+v and %+v", ia, ib)
-	}
-	da, _, err := sa.HeadDigest("x/f.bin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db, _, err := sb.HeadDigest("x/f.bin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if da != db {
-		t.Errorf("digests differ: %s and %s", da, db)
-	}
-	// SHA-256 of "same content".
-	if len(da) != 64 || da != strings.ToLower(da) {
-		t.Errorf("digest %q is not lowercase hex SHA-256", da)
+	if len(digestA) != 64 || digestA != strings.ToLower(digestA) {
+		t.Errorf("digest %q is not lowercase hex SHA-256", digestA)
 	}
 }
 
 func TestOpenFileReportsTheFileActuallyOpened(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	f.write(t, "f", "old", epoch)
-	s := f.open(t, Options{MTimePrecision: time.Second})
-	before, err := s.Stat("f")
-	if err != nil {
-		t.Fatal(err)
-	}
-	newTime := epoch.Add(time.Hour)
-	s.beforeOpen = func(string) {
-		f.write(t, "f.new", "much longer", newTime)
-		if err := os.Rename(filepath.Join(f.root, "f.new"), filepath.Join(f.root, "f")); err != nil {
+	fix := newFixture(t)
+	fix.write(t, "f", "old", epoch())
+	share := fix.open(t, &Options{MTimePrecision: time.Second})
+	before := mustStat(t, share, "f")
+	newTime := epoch().Add(time.Hour)
+	share.beforeOpen = func(string) {
+		fix.write(t, "f.new", "much longer", newTime)
+		if err := os.Rename(filepath.Join(fix.root, "f.new"), filepath.Join(fix.root, "f")); err != nil {
 			t.Error(err)
 		}
 	}
-	file, err := s.OpenFile("f")
+	file, err := share.OpenFile("f")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = file.Close() }()
+	defer mustClose(t, file)
 	got := file.Info()
 	if got.Size != 11 || !got.MTime.Equal(newTime) || got.ETag != ETag(11, newTime) || got == before {
 		t.Errorf("Info = %+v, before = %+v", got, before)
+	}
+}
+
+// replaceWithDirectory swaps the file full for a folder of the same name.
+func replaceWithDirectory(t *testing.T, full string) {
+	t.Helper()
+	mustRemove(t, full)
+	if err := os.Mkdir(full, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// replaceWithPipe swaps the file full for a named pipe of the same name.
+func replaceWithPipe(t *testing.T, full string) {
+	t.Helper()
+	mustRemove(t, full)
+	if err := mkfifo(full); err != nil {
+		t.Skipf("cannot create a named pipe: %v", err)
+	}
+}
+
+// touchToClock sets the modification time of the file full to the time of the test clock.
+func touchToClock(t *testing.T, full string) {
+	t.Helper()
+	if err := os.Chtimes(full, clockTime(), clockTime()); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -479,44 +400,23 @@ func TestOpenFileRacesAreRechecked(t *testing.T) {
 		mutate func(t *testing.T, full string)
 		want   error
 	}{
-		{"deleted", func(t *testing.T, full string) {
-			if err := os.Remove(full); err != nil {
-				t.Fatal(err)
-			}
-		}, ErrNotFound},
-		{"replaced by directory", func(t *testing.T, full string) {
-			if err := os.Remove(full); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Mkdir(full, 0o755); err != nil {
-				t.Fatal(err)
-			}
-		}, ErrIsDir},
-		{"replaced by pipe", func(t *testing.T, full string) {
-			if err := os.Remove(full); err != nil {
-				t.Fatal(err)
-			}
-			if err := mkfifo(full); err != nil {
-				t.Skipf("cannot create a named pipe: %v", err)
-			}
-		}, ErrNotFound},
-		{"replaced by fresh file", func(t *testing.T, full string) {
-			if err := os.Chtimes(full, clockTime, clockTime); err != nil {
-				t.Fatal(err)
-			}
-		}, ErrNotFound},
+		{"deleted", mustRemove, ErrNotFound},
+		{"replaced by directory", replaceWithDirectory, ErrIsDir},
+		{"replaced by pipe", replaceWithPipe, ErrNotFound},
+		{"replaced by fresh file", touchToClock, ErrNotFound},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			f := newFixture(t)
-			f.write(t, "f", "x", epoch)
-			s := f.open(t, Options{MinAge: time.Hour})
-			s.beforeOpen = func(string) { tt.mutate(t, filepath.Join(f.root, "f")) }
-			if file, err := s.OpenFile("f"); !errors.Is(err, tt.want) {
-				if err == nil {
-					_ = file.Close()
-				}
+			fix := newFixture(t)
+			fix.write(t, "f", "x", epoch())
+			share := fix.open(t, &Options{MinAge: time.Hour})
+			share.beforeOpen = func(string) { tt.mutate(t, filepath.Join(fix.root, "f")) }
+			file, err := share.OpenFile("f")
+			if err == nil {
+				mustClose(t, file)
+			}
+			if !errors.Is(err, tt.want) {
 				t.Errorf("OpenFile = %v, want %v", err, tt.want)
 			}
 		})
@@ -525,128 +425,120 @@ func TestOpenFileRacesAreRechecked(t *testing.T) {
 
 func TestListOpenRace(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	f.write(t, "d/x", "x", epoch)
-	s := f.open(t, Options{})
-	s.beforeOpen = func(string) {
-		if err := os.RemoveAll(filepath.Join(f.root, "d")); err != nil {
+	fix := newFixture(t)
+	fix.write(t, "d/x", "x", epoch())
+	share := fix.open(t, &Options{})
+	share.beforeOpen = func(string) {
+		if err := os.RemoveAll(filepath.Join(fix.root, "d")); err != nil {
 			t.Error(err)
 		}
 	}
-	if _, err := s.List("d"); !errors.Is(err, ErrNotFound) {
+	if _, err := share.List("d"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("List = %v, want ErrNotFound", err)
 	}
 }
 
-func TestHeadDigestCache(t *testing.T) {
-	t.Parallel()
-	f := newFixture(t)
-	f.write(t, "f", "first", epoch)
-	s := f.open(t, Options{MTimePrecision: time.Second})
-	opens := 0
-	s.beforeOpen = func(string) { opens++ }
+// countedShare opens a share over a file "f" that holds "first", and counts the opens.
+func countedShare(t *testing.T) (fixture, *Share, *openCounter) {
+	t.Helper()
+	fix := newFixture(t)
+	fix.write(t, "f", "first", epoch())
+	share := fix.open(t, &Options{MTimePrecision: time.Second})
+	counter := &openCounter{}
+	counter.attach(share)
+	return fix, share, counter
+}
 
-	d1, info1, err := s.HeadDigest("f")
-	if err != nil {
-		t.Fatal(err)
+func TestHeadDigestIsCached(t *testing.T) {
+	t.Parallel()
+	_, share, counter := countedShare(t)
+	digest1, info1 := mustHeadDigest(t, share, "f")
+	digest2, info2 := mustHeadDigest(t, share, "f")
+	if counter.opens != 1 || digest1 != digest2 || info1 != info2 {
+		t.Errorf("opens = %d, digest1 = %s, digest2 = %s", counter.opens, digest1, digest2)
 	}
-	d2, info2, err := s.HeadDigest("f")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if opens != 1 || d1 != d2 || info1 != info2 {
-		t.Errorf("opens = %d, d1 = %s, d2 = %s", opens, d1, d2)
-	}
+}
+
+func TestHeadDigestIsReadAgainForANewModificationTime(t *testing.T) {
+	t.Parallel()
+	fix, share, counter := countedShare(t)
+	digest1, info1 := mustHeadDigest(t, share, "f")
 
 	// Same size, new modification time: a different version.
-	f.write(t, "f", "other", epoch.Add(time.Minute))
-	d3, info3, err := s.HeadDigest("f")
-	if err != nil {
-		t.Fatal(err)
+	fix.write(t, "f", "other", epoch().Add(time.Minute))
+	digest2, info2 := mustHeadDigest(t, share, "f")
+	if counter.opens != 2 || digest2 == digest1 || info2.ETag == info1.ETag {
+		t.Errorf("opens = %d, digest2 = %s", counter.opens, digest2)
 	}
-	if opens != 2 || d3 == d1 || info3.ETag == info1.ETag {
-		t.Errorf("opens = %d, d3 = %s", opens, d3)
-	}
+}
+
+func TestHeadDigestIsReadAgainForANewSize(t *testing.T) {
+	t.Parallel()
+	fix, share, counter := countedShare(t)
+	fix.write(t, "f", "other", epoch().Add(time.Minute))
+	digest1, _ := mustHeadDigest(t, share, "f")
 
 	// New size, same modification time.
-	f.write(t, "f", "longer content", epoch.Add(time.Minute))
-	d4, _, err := s.HeadDigest("f")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if opens != 3 || d4 == d3 {
-		t.Errorf("opens = %d, d4 = %s", opens, d4)
+	fix.write(t, "f", "longer content", epoch().Add(time.Minute))
+	digest2, _ := mustHeadDigest(t, share, "f")
+	if counter.opens != 2 || digest2 == digest1 {
+		t.Errorf("opens = %d, digest2 = %s", counter.opens, digest2)
 	}
 }
 
 func TestHeadDigestCoversOnlyTheHead(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
+	fix := newFixture(t)
 	head := strings.Repeat("h", 64<<10)
-	f.write(t, "a", head+"tail one", epoch)
-	f.write(t, "b", head+"tail two", epoch)
-	f.write(t, "short", "abc", epoch)
-	s := f.open(t, Options{})
-	da, _, err := s.HeadDigest("a")
-	if err != nil {
-		t.Fatal(err)
+	fix.write(t, "a", head+"tail one", epoch())
+	fix.write(t, "b", head+"tail two", epoch())
+	fix.write(t, "short", "abc", epoch())
+	share := fix.open(t, &Options{})
+	digestA, _ := mustHeadDigest(t, share, "a")
+	digestB, _ := mustHeadDigest(t, share, "b")
+	if digestA != digestB {
+		t.Error("digests of equal heads differ")
 	}
-	db, _, err := s.HeadDigest("b")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if da != db {
-		t.Errorf("digests of equal heads differ")
-	}
-	ds, _, err := s.HeadDigest("short")
-	if err != nil {
-		t.Fatal(err)
-	}
+	shortDigest, _ := mustHeadDigest(t, share, "short")
 	// SHA-256 of "abc".
-	if want := "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"; ds != want {
-		t.Errorf("digest = %s, want %s", ds, want)
+	if want := "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"; shortDigest != want {
+		t.Errorf("digest = %s, want %s", shortDigest, want)
 	}
 }
 
 func TestHeadDigestCacheEvicts(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	for _, n := range []string{"a", "b", "c"} {
-		f.write(t, n, n, epoch)
+	fix := newFixture(t)
+	for _, name := range []string{"a", "b", "c"} {
+		fix.write(t, name, name, epoch())
 	}
-	s := f.open(t, Options{DigestCacheSize: 2})
-	opens := 0
-	s.beforeOpen = func(string) { opens++ }
-	digest := func(n string) {
-		t.Helper()
-		if _, _, err := s.HeadDigest(n); err != nil {
-			t.Fatal(err)
-		}
+	share := fix.open(t, &Options{DigestCacheSize: 2})
+	counter := &openCounter{}
+	counter.attach(share)
+	mustHeadDigest(t, share, "a")
+	mustHeadDigest(t, share, "b")
+	mustHeadDigest(t, share, "c") // evicts a
+	if counter.opens != 3 {
+		t.Fatalf("opens = %d, want 3", counter.opens)
 	}
-	digest("a")
-	digest("b")
-	digest("c") // evicts a
-	if opens != 3 {
-		t.Fatalf("opens = %d, want 3", opens)
+	mustHeadDigest(t, share, "c")
+	mustHeadDigest(t, share, "b")
+	if counter.opens != 3 {
+		t.Errorf("cached entries were read again: opens = %d", counter.opens)
 	}
-	digest("c")
-	digest("b")
-	if opens != 3 {
-		t.Errorf("cached entries were read again: opens = %d", opens)
-	}
-	digest("a")
-	if opens != 4 {
-		t.Errorf("evicted entry was not read again: opens = %d", opens)
+	mustHeadDigest(t, share, "a")
+	if counter.opens != 4 {
+		t.Errorf("evicted entry was not read again: opens = %d", counter.opens)
 	}
 }
 
 func TestHeadDigestOpenFailure(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	f.write(t, "f", "x", epoch)
-	s := f.open(t, Options{})
-	s.beforeOpen = func(string) { _ = os.Remove(filepath.Join(f.root, "f")) }
-	if _, _, err := s.HeadDigest("f"); !errors.Is(err, ErrNotFound) {
+	fix := newFixture(t)
+	fix.write(t, "f", "x", epoch())
+	share := fix.open(t, &Options{})
+	share.beforeOpen = func(string) { mustRemove(t, filepath.Join(fix.root, "f")) }
+	if _, _, err := share.HeadDigest("f"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("HeadDigest = %v, want ErrNotFound", err)
 	}
 }
@@ -660,11 +552,11 @@ func TestHeadDigestReadError(t *testing.T) {
 	if _, err := headDigest(failingReader{}); err == nil {
 		t.Error("headDigest succeeded on a failing reader")
 	}
-	f := newFixture(t)
-	f.write(t, "f", "x", epoch)
-	s := f.open(t, Options{})
-	s.headDigest = func(io.Reader) (string, error) { return headDigest(failingReader{}) }
-	_, _, err := s.HeadDigest("f")
+	fix := newFixture(t)
+	fix.write(t, "f", "x", epoch())
+	share := fix.open(t, &Options{})
+	share.headDigest = func(io.Reader) (string, error) { return headDigest(failingReader{}) }
+	_, _, err := share.HeadDigest("f")
 	if err == nil || errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), `share "test"`) {
 		t.Errorf("HeadDigest = %v", err)
 	}
@@ -672,10 +564,10 @@ func TestHeadDigestReadError(t *testing.T) {
 
 func TestFile(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	f.write(t, "f", "0123456789", epoch)
-	s := f.open(t, Options{})
-	file, err := s.OpenFile("f")
+	fix := newFixture(t)
+	fix.write(t, "f", "0123456789", epoch())
+	share := fix.open(t, &Options{})
+	file, err := share.OpenFile("f")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -690,11 +582,29 @@ func TestFile(t *testing.T) {
 	if _, err := io.ReadFull(file, buf); err != nil || string(buf) != "456" {
 		t.Errorf("read %q, %v", buf, err)
 	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
+	mustClose(t, file)
 	if _, err := file.Read(buf); err == nil {
 		t.Error("Read after Close succeeded")
+	}
+}
+
+func TestFileErrorsNameTheFile(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t)
+	fix.write(t, "f", "0123456789", epoch())
+	file, err := fix.open(t, &Options{}).OpenFile("f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustClose(t, file)
+
+	_, seekErr := file.Seek(0, io.SeekStart)
+	if !errors.Is(seekErr, os.ErrClosed) || !strings.Contains(seekErr.Error(), `"f"`) {
+		t.Errorf("Seek after Close = %v", seekErr)
+	}
+	closeErr := file.Close()
+	if !errors.Is(closeErr, os.ErrClosed) || !strings.Contains(closeErr.Error(), `"f"`) {
+		t.Errorf("second Close = %v", closeErr)
 	}
 }
 
@@ -703,25 +613,25 @@ type fakeDir struct {
 	err   error
 }
 
-func (d fakeDir) Readdirnames(int) ([]string, error) { return d.names, d.err }
+func (dir fakeDir) Readdirnames(int) ([]string, error) { return dir.names, dir.err }
 
 func TestCollect(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	f.write(t, "d/real", "x", epoch)
-	s := f.open(t, Options{})
+	fix := newFixture(t)
+	fix.write(t, "d/real", "x", epoch())
+	share := fix.open(t, &Options{})
 
-	if _, err := s.collect("d", fakeDir{err: errors.New("read failed")}); err == nil || errors.Is(err, ErrNotFound) {
+	if _, err := share.collect("d", fakeDir{err: errors.New("read failed")}); err == nil || errors.Is(err, ErrNotFound) {
 		t.Errorf("collect with a read error = %v", err)
 	}
 	// An entry that vanished after the directory was read is skipped.
-	got, err := s.collect("d", fakeDir{names: []string{"vanished", "real"}})
-	if err != nil || !reflect.DeepEqual(names(got), []string{"real"}) {
+	got, err := share.collect("d", fakeDir{names: []string{"vanished", "real"}})
+	if err != nil || !slices.Equal(names(got), []string{"real"}) {
 		t.Errorf("collect = %v, %v", names(got), err)
 	}
 	// An entry that cannot be examined fails the listing.
 	long := strings.Repeat("a", 300)
-	_, err = s.collect("d", fakeDir{names: []string{long}})
+	_, err = share.collect("d", fakeDir{names: []string{long}})
 	if err == nil || errors.Is(err, ErrNotFound) {
 		t.Fatalf("collect with an unreadable entry = %v", err)
 	}
@@ -732,13 +642,12 @@ func TestCollect(t *testing.T) {
 
 type fakeHandle struct{ err error }
 
-func (h fakeHandle) Stat() (os.FileInfo, error) { return nil, h.err }
+func (handle fakeHandle) Stat() (os.FileInfo, error) { return nil, handle.err }
 
 func TestOpenInfoStatError(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	s := f.open(t, Options{})
-	err := func() error { _, err := s.openInfo("f", fakeHandle{err: errors.New("stat failed")}); return err }()
+	share := newFixture(t).open(t, &Options{})
+	_, err := share.openInfo("f", fakeHandle{err: errors.New("stat failed")})
 	if err == nil || errors.Is(err, ErrNotFound) {
 		t.Errorf("openInfo = %v", err)
 	}
@@ -746,17 +655,17 @@ func TestOpenInfoStatError(t *testing.T) {
 
 func TestAbsent(t *testing.T) {
 	t.Parallel()
-	pe := func(err error) error { return &fs.PathError{Op: "x", Path: "p", Err: err} }
+	pathError := func(err error) error { return &fs.PathError{Op: "x", Path: "p", Err: err} }
 	tests := []struct {
 		name string
 		err  error
 		want bool
 	}{
-		{"not exist", pe(fs.ErrNotExist), true},
-		{"not a directory", pe(errSyscall("ENOTDIR")), true},
-		{"loop", pe(errSyscall("ELOOP")), true},
-		{"escape", pe(errors.New("path escapes from parent")), true},
-		{"permission", pe(fs.ErrPermission), false},
+		{"not exist", pathError(fs.ErrNotExist), true},
+		{"not a directory", pathError(errSyscall("ENOTDIR")), true},
+		{"loop", pathError(errSyscall("ELOOP")), true},
+		{"escape", pathError(errors.New("path escapes from parent")), true},
+		{"permission", pathError(fs.ErrPermission), false},
 		{"other", errors.New("boom"), false},
 	}
 	for _, tt := range tests {
@@ -768,92 +677,81 @@ func TestAbsent(t *testing.T) {
 
 func TestSpace(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	s := f.open(t, Options{})
-	sp, err := s.Space()
+	space, err := newFixture(t).open(t, &Options{}).Space()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sp.Total == 0 || sp.Free > sp.Total {
-		t.Errorf("Space = %+v", sp)
+	if space.Total == 0 || space.Free > space.Total {
+		t.Errorf("Space = %+v", space)
 	}
 }
 
 func TestSpaceError(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	s := f.open(t, Options{})
-	s.space = func(string) (sp wireSpace, err error) { return sp, errors.New("statfs failed") }
-	if _, err := s.Space(); err == nil || !strings.Contains(err.Error(), `share "test"`) {
+	fix := newFixture(t)
+	share := fix.open(t, &Options{})
+	share.space = func(string) (wireSpace, error) { return wireSpace{}, errors.New("statfs failed") }
+	if _, err := share.Space(); err == nil || !strings.Contains(err.Error(), `share "test"`) {
 		t.Errorf("Space = %v", err)
 	}
-	if _, err := statSpace(filepath.Join(f.base, "missing")); err == nil {
+	if _, err := statSpace(filepath.Join(fix.base, "missing")); err == nil {
 		t.Error("statSpace on a missing path succeeded")
+	}
+}
+
+// useShareLikeAClient calls every operation of the share on each of the files, again and again.
+func useShareLikeAClient(t *testing.T, share *Share, files []string) {
+	t.Helper()
+	for range 20 {
+		for _, name := range files {
+			if _, _, err := share.HeadDigest(name); err != nil {
+				t.Error(err)
+			}
+			if _, err := share.Stat(name); err != nil {
+				t.Error(err)
+			}
+		}
+		if _, err := share.List(""); err != nil {
+			t.Error(err)
+		}
+		if _, err := share.Space(); err != nil {
+			t.Error(err)
+		}
 	}
 }
 
 func TestConcurrentUse(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	for _, n := range []string{"a", "b", "c", "d/e"} {
-		f.write(t, n, n, epoch)
+	fix := newFixture(t)
+	files := []string{"a", "b", "c", "d/e"}
+	for _, name := range files {
+		fix.write(t, name, name, epoch())
 	}
-	s := f.open(t, Options{MTimePrecision: time.Second, DigestCacheSize: 2})
-	var wg sync.WaitGroup
+	share := fix.open(t, &Options{MTimePrecision: time.Second, DigestCacheSize: 2})
+	var group sync.WaitGroup
 	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for range 20 {
-				for _, n := range []string{"a", "b", "c", "d/e"} {
-					if _, _, err := s.HeadDigest(n); err != nil {
-						t.Error(err)
-					}
-					if _, err := s.Stat(n); err != nil {
-						t.Error(err)
-					}
-				}
-				if _, err := s.List(""); err != nil {
-					t.Error(err)
-				}
-				if _, err := s.Space(); err != nil {
-					t.Error(err)
-				}
-			}
-		}()
+		group.Go(func() { useShareLikeAClient(t, share, files) })
 	}
-	wg.Wait()
+	group.Wait()
 }
 
 func TestBackslashIsAnOrdinaryCharacter(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	f.write(t, `odd\name`, "content", epoch)
-	s := f.open(t, Options{})
-	infos, err := s.List("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(infos) != 1 || infos[0].Name != `odd\name` {
-		t.Fatalf("List = %+v, want the one file with a backslash in its name", infos)
-	}
-	file, err := s.OpenFile(`odd\name`)
-	if err != nil {
-		t.Fatalf("OpenFile: %v", err)
-	}
-	defer func() { _ = file.Close() }()
-	data, err := io.ReadAll(file)
-	if err != nil || string(data) != "content" {
-		t.Errorf("read = %q, %v", data, err)
+	fix := newFixture(t)
+	fix.write(t, `odd\name`, "content", epoch())
+	share := fix.open(t, &Options{})
+	requireListing(t, share, "", []string{`odd\name`})
+	if got := readFile(t, share, `odd\name`); got != "content" {
+		t.Errorf("read = %q", got)
 	}
 }
 
 func TestListHidesNamesThatAreNotUTF8(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	f.write(t, "d/real", "x", epoch)
-	s := f.open(t, Options{})
-	got, err := s.collect("d", fakeDir{names: []string{"bad\xff", "real"}})
+	fix := newFixture(t)
+	fix.write(t, "d/real", "x", epoch())
+	share := fix.open(t, &Options{})
+	got, err := share.collect("d", fakeDir{names: []string{"bad\xff", "real"}})
 	if err != nil {
 		t.Fatal(err)
 	}

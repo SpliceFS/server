@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/netip"
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +29,16 @@ const (
 	defaultLogLevel       = "info"
 	defaultLogFormat      = "text"
 	defaultExclude        = ".*"
+	// defaultLoginRateCount is the number of login attempts per defaultLoginRatePeriod.
+	defaultLoginRateCount  = 10
+	defaultLoginRatePeriod = time.Minute
+)
+
+// The range of a TCP port. Port 0 asks the system to choose one, which a server that
+// announces its address cannot allow.
+const (
+	minPort = 1
+	maxPort = math.MaxUint16
 )
 
 // Lower limits for values that have one.
@@ -89,25 +101,45 @@ func (r *Rate) UnmarshalText(text []byte) error {
 }
 
 func parseRate(text string) (Rate, error) {
-	count, unit, ok := strings.Cut(text, "/")
+	count, suffix, ok := strings.Cut(text, "/")
 	n, err := strconv.ParseUint(count, 10, 31)
-	per, knownUnit := rateUnits(unit)
+	per, knownUnit := periodOf(suffix)
 	if !ok || err != nil || !knownUnit {
-		return Rate{}, fmt.Errorf("invalid rate %q: use <count>/<s|m|h>, for example 10/m", text)
+		return Rate{}, fmt.Errorf("invalid rate %q: %w", text, ErrInvalidRate)
 	}
 	return Rate{Count: int(n), Per: per}, nil
 }
 
-func rateUnits(unit string) (time.Duration, bool) {
-	switch unit {
-	case "s":
-		return time.Second, true
-	case "m":
-		return time.Minute, true
-	case "h":
-		return time.Hour, true
+// rateUnit pairs the suffix of a rate with the period it stands for.
+type rateUnit struct {
+	suffix string
+	period time.Duration
+}
+
+// rateUnits lists the periods a rate may use, once for reading and writing. It is a
+// function so that no package variable holds a list that code could change.
+func rateUnits() []rateUnit {
+	return []rateUnit{{"s", time.Second}, {"m", time.Minute}, {"h", time.Hour}}
+}
+
+// periodOf returns the period a rate suffix stands for.
+func periodOf(suffix string) (time.Duration, bool) {
+	for _, unit := range rateUnits() {
+		if unit.suffix == suffix {
+			return unit.period, true
+		}
 	}
 	return 0, false
+}
+
+// suffixOf returns the rate suffix for a period.
+func suffixOf(period time.Duration) (string, bool) {
+	for _, unit := range rateUnits() {
+		if unit.period == period {
+			return unit.suffix, true
+		}
+	}
+	return "", false
 }
 
 // MarshalText renders the rate as String does, so that it is written the way it is read.
@@ -116,24 +148,22 @@ func (r Rate) MarshalText() ([]byte, error) { return []byte(r.String()), nil }
 // String renders the rate as <count>/<s|m|h>. A period that is not one second,
 // minute or hour is rendered as <count>/<duration>.
 func (r Rate) String() string {
-	switch r.Per {
-	case time.Second:
-		return fmt.Sprintf("%d/s", r.Count)
-	case time.Minute:
-		return fmt.Sprintf("%d/m", r.Count)
-	case time.Hour:
-		return fmt.Sprintf("%d/h", r.Count)
+	period := r.Per.String()
+	if suffix, known := suffixOf(r.Per); known {
+		period = suffix
 	}
-	return fmt.Sprintf("%d/%s", r.Count, r.Per)
+	return fmt.Sprintf("%d/%s", r.Count, period)
 }
 
 // rejectSecondDocument fails when dec has another YAML document to read.
+//
+//nolint:wrapcheck // decodeFile names the file; another prefix would change the message the administrator reads
 func rejectSecondDocument(dec *yaml.Decoder) error {
 	var next yaml.Node
 	err := dec.Decode(&next)
 	switch {
 	case err == nil:
-		return errors.New("more than one YAML document")
+		return ErrMultipleDocuments
 	case !errors.Is(err, io.EOF):
 		return err
 	}
@@ -156,6 +186,10 @@ func parseProxies(entries []string) ([]netip.Prefix, []error) {
 	return prefixes, problems
 }
 
+// parseProxy returns the error of net/netip as it is: it names the function and the entry,
+// and parseProxies adds the position in the list.
+//
+//nolint:wrapcheck // another prefix would change the message the administrator reads
 func parseProxy(entry string) (netip.Prefix, error) {
 	if strings.Contains(entry, "/") {
 		return netip.ParsePrefix(entry)
@@ -184,7 +218,7 @@ func applyLimitDefaults(ttl *units.Duration, rate *Rate, mtime *units.Duration) 
 		*ttl = units.Duration(defaultTokenTTL)
 	}
 	if *rate == (Rate{}) {
-		*rate = Rate{Count: 10, Per: time.Minute}
+		*rate = Rate{Count: defaultLoginRateCount, Per: defaultLoginRatePeriod}
 	}
 	if *mtime == 0 {
 		*mtime = units.Duration(defaultMTimePrecision)
@@ -192,102 +226,116 @@ func applyLimitDefaults(ttl *units.Duration, rate *Rate, mtime *units.Duration) 
 }
 
 // applyLogDefaults fills in the log keys that are absent.
-func applyLogDefaults(l *Log) {
-	if l.Level == "" {
-		l.Level = defaultLogLevel
+func applyLogDefaults(logConfig *Log) {
+	if logConfig.Level == "" {
+		logConfig.Level = defaultLogLevel
 	}
-	if l.Format == "" {
-		l.Format = defaultLogFormat
+	if logConfig.Format == "" {
+		logConfig.Format = defaultLogFormat
 	}
 }
 
 // normalizeBasePath returns the base path without its trailing slash, so that
 // "/" becomes "", the API at the root.
-func normalizeBasePath(p string) (string, error) {
-	if !strings.HasPrefix(p, "/") {
-		return p, fmt.Errorf("base_path: %q must start with \"/\"", p)
+func normalizeBasePath(basePath string) (string, error) {
+	if !strings.HasPrefix(basePath, "/") {
+		return basePath, fmt.Errorf("base_path: %q %w", basePath, ErrBasePathNoSlash)
 	}
-	return strings.TrimRight(p, "/"), nil
+	return strings.TrimRight(basePath, "/"), nil
 }
 
-// resolveTLS makes the certificate and key paths of l relative to dir.
-func resolveTLS(l *Listener, dir string) {
-	if l.TLS != nil {
-		l.TLS.CertFile = resolve(dir, l.TLS.CertFile)
-		l.TLS.KeyFile = resolve(dir, l.TLS.KeyFile)
+// resolveTLS makes the certificate and key paths of listener relative to dir.
+func resolveTLS(listener *Listener, dir string) {
+	if listener.TLS != nil {
+		listener.TLS.CertFile = resolve(dir, listener.TLS.CertFile)
+		listener.TLS.KeyFile = resolve(dir, listener.TLS.KeyFile)
 	}
 }
 
-func resolve(dir, p string) string {
-	if p == "" {
+func resolve(dir, target string) string {
+	if target == "" {
 		return ""
 	}
-	if !filepath.IsAbs(p) {
-		p = filepath.Join(dir, p)
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(dir, target)
 	}
-	return filepath.Clean(p)
+	return filepath.Clean(target)
 }
 
 // validateLog checks the log keys.
-func validateLog(l Log) []error {
-	problems := oneOf("log.level", l.Level, "debug", "info", "warn", "error")
-	return append(problems, oneOf("log.format", l.Format, "text", "json")...)
+func validateLog(logConfig Log) []error {
+	problems := oneOf("log.level", logConfig.Level, "debug", "info", "warn", "error")
+	return append(problems, oneOf("log.format", logConfig.Format, "text", "json")...)
 }
 
 // required reports an empty value.
 func required(key, value string) []error {
 	if value == "" {
-		return []error{fmt.Errorf("%s: must not be empty", key)}
+		return []error{fmt.Errorf("%s: %w", key, ErrEmpty)}
 	}
 	return nil
 }
 
 // oneOf reports a value that is not one of the allowed ones.
 func oneOf(key, value string, allowed ...string) []error {
-	for _, a := range allowed {
-		if value == a {
-			return nil
-		}
+	if slices.Contains(allowed, value) {
+		return nil
 	}
-	return []error{fmt.Errorf("%s: %q is not one of %s", key, value, strings.Join(allowed, ", "))}
+	return []error{fmt.Errorf("%s: %q %w %s", key, value, ErrNotOneOf, strings.Join(allowed, ", "))}
 }
 
 // validateAtLeast reports a duration that is unlimited or shorter than min.
 func validateAtLeast(key string, d units.Duration, floor time.Duration) []error {
 	if d.Unlimited() || d.Std() < floor {
-		return []error{fmt.Errorf("%s: %s is not allowed, use a finite duration of at least %s", key, d, units.Duration(floor))}
+		return []error{fmt.Errorf("%s: %s %w %s", key, d, ErrDurationTooShort, units.Duration(floor))}
 	}
 	return nil
 }
 
+// validateListen checks every listener and that no two share an address and port.
 func validateListen(listeners []Listener) []error {
 	if len(listeners) == 0 {
-		return []error{errors.New("listen: at least one entry is required")}
+		return []error{ErrNoListener}
 	}
 	var problems []error
 	seen := make(map[netip.AddrPort]int)
-	for i, l := range listeners {
-		key := fmt.Sprintf("listen[%d]", i)
-		validAddr := l.Address.IsValid()
-		validPort := l.Port >= 1 && l.Port <= 65535
-		if !validAddr {
-			problems = append(problems, fmt.Errorf("%s.address: must not be empty", key))
-		}
-		if !validPort {
-			problems = append(problems, fmt.Errorf("%s.port: %d is not between 1 and 65535", key, l.Port))
-		}
-		if validAddr && validPort {
-			ap := netip.AddrPortFrom(l.Address, uint16(l.Port)) //nolint:gosec // the port range was checked above
-			if first, dup := seen[ap]; dup {
-				problems = append(problems, fmt.Errorf("%s: %s is already listed in listen[%d]", key, ap, first))
-			} else {
-				seen[ap] = i
-			}
-		}
-		if l.TLS != nil && (l.TLS.CertFile == "") != (l.TLS.KeyFile == "") {
-			problems = append(problems, fmt.Errorf("%s.tls: cert_file and key_file must both be set or both be left out", key))
-		}
+	for i, listener := range listeners {
+		problems = append(problems, validateListener(i, listener, seen)...)
 	}
+	return problems
+}
+
+// validateListener checks the listener at index of the listen list. seen maps the address
+// and port of every earlier valid listener to its index.
+func validateListener(index int, listener Listener, seen map[netip.AddrPort]int) []error {
+	key := fmt.Sprintf("listen[%d]", index)
+	problems := validateBinding(key, index, listener, seen)
+	if listener.TLS != nil && (listener.TLS.CertFile == "") != (listener.TLS.KeyFile == "") {
+		problems = append(problems, fmt.Errorf("%s.tls: %w", key, ErrTLSPairIncomplete))
+	}
+	return problems
+}
+
+// validateBinding checks the address and port of a listener and records them in seen.
+func validateBinding(key string, index int, listener Listener, seen map[netip.AddrPort]int) []error {
+	var problems []error
+	validAddr := listener.Address.IsValid()
+	validPort := listener.Port >= minPort && listener.Port <= maxPort
+	if !validAddr {
+		problems = append(problems, fmt.Errorf("%s.address: %w", key, ErrEmpty))
+	}
+	if !validPort {
+		problems = append(problems, fmt.Errorf("%s.port: %d %w", key, listener.Port, ErrPortOutOfRange))
+	}
+	if !validAddr || !validPort {
+		return problems
+	}
+	port := uint16(listener.Port) //nolint:gosec // the port range was checked above
+	binding := netip.AddrPortFrom(listener.Address, port)
+	if first, dup := seen[binding]; dup {
+		return append(problems, fmt.Errorf("%s: %s %w listen[%d]", key, binding, ErrDuplicateListener, first))
+	}
+	seen[binding] = index
 	return problems
 }
 
@@ -295,7 +343,7 @@ func validateShare(name string, share Share) []error {
 	key := "shares." + name
 	var problems []error
 	if !namePattern.MatchString(name) {
-		problems = append(problems, fmt.Errorf("%s: name must match %s", key, namePattern))
+		problems = append(problems, fmt.Errorf("%s: name %w %s", key, ErrNamePattern, namePattern))
 	}
 	problems = append(problems, required(key+".path", share.Path)...)
 	for i, pattern := range share.Exclude {
@@ -304,7 +352,7 @@ func validateShare(name string, share Share) []error {
 		}
 	}
 	if share.MinAge < 0 || share.MinAge.Unlimited() {
-		problems = append(problems, fmt.Errorf("%s.min_age: %s is not allowed, use a finite duration of at least 0", key, share.MinAge))
+		problems = append(problems, fmt.Errorf("%s.min_age: %s %w 0", key, share.MinAge, ErrDurationTooShort))
 	}
 	return problems
 }
@@ -312,7 +360,7 @@ func validateShare(name string, share Share) []error {
 // validateExclude checks that pattern is a valid glob for a single name.
 func validateExclude(pattern string) error {
 	if strings.Contains(pattern, "/") {
-		return fmt.Errorf("%q must not contain \"/\"", pattern)
+		return fmt.Errorf("%q %w", pattern, ErrExcludeSlash)
 	}
 	if _, err := path.Match(pattern, ""); err != nil {
 		return fmt.Errorf("%q: %w", pattern, err)
@@ -324,7 +372,7 @@ func validateExclude(pattern string) error {
 func validateLimits(ttl units.Duration, rate Rate, mtime units.Duration) []error {
 	problems := validateAtLeast("auth.token_ttl", ttl, minTokenTTL)
 	if rate.Count < 1 {
-		problems = append(problems, fmt.Errorf("auth.login_rate: count %d is not at least 1", rate.Count))
+		problems = append(problems, fmt.Errorf("auth.login_rate: count %d %w", rate.Count, ErrCountBelowOne))
 	}
 	return append(problems, validateAtLeast("mtime_precision", mtime, minMTimePrecision)...)
 }

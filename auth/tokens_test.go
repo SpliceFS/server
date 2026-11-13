@@ -17,20 +17,20 @@ import (
 )
 
 // Test secrets, 32 bytes each.
-var (
-	secretA = []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	secretB = []byte("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+const (
+	secretA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	secretB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
 
-func b64(secret []byte) string { return base64.StdEncoding.EncodeToString(secret) }
+func b64(secret string) string { return base64.StdEncoding.EncodeToString([]byte(secret)) }
 
 func keysYAML(entries ...[2]string) string {
-	var b strings.Builder
-	b.WriteString("keys:\n")
-	for _, e := range entries {
-		b.WriteString("  - id: \"" + e[0] + "\"\n    secret: \"" + e[1] + "\"\n")
+	lines := make([]string, 0, 1+2*len(entries))
+	lines = append(lines, "keys:")
+	for _, entry := range entries {
+		lines = append(lines, `  - id: "`+entry[0]+`"`, `    secret: "`+entry[1]+`"`)
 	}
-	return b.String()
+	return strings.Join(lines, "\n") + "\n"
 }
 
 // testNode is the node id of the node under test; other nodes use otherNode.
@@ -39,16 +39,23 @@ const (
 	otherNode = "fedcba9876543210"
 )
 
-// discard is a logger for tests that do not look at the log.
-var discard = slog.New(slog.DiscardHandler)
+// discard returns a logger for tests that do not look at the log.
+func discard() *slog.Logger {
+	return slog.New(slog.DiscardHandler)
+}
 
 // newTestTokens writes the keys file of testNode into a new keys directory and returns
-// Tokens that use it, and the path of the file.
-func newTestTokens(t *testing.T, content string, clock *fakeClock) (*Tokens, string) {
+// Tokens that use it. keysPath gives the path of the file.
+func newTestTokens(t *testing.T, content string, clock *fakeClock) *Tokens {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, dir, testNode+".yaml", content)
-	return NewTokens(dir, testNode, 30*time.Minute, clock.Now, discard), filepath.Join(dir, testNode+".yaml")
+	return NewTokens(dir, testNode, 30*time.Minute, clock.Now, discard())
+}
+
+// keysPath returns the path of the keys file of testNode in the directory of tokens.
+func keysPath(tokens *Tokens) string {
+	return filepath.Join(tokens.dir, testNode+".yaml")
 }
 
 func twoKeys() string {
@@ -56,9 +63,9 @@ func twoKeys() string {
 }
 
 // forge builds a token from raw segments, signed with secret over them.
-func forge(secret []byte, header, payload string) string {
+func forge(secret, header, payload string) string {
 	input := header + "." + payload
-	return input + "." + tokenEncoding.EncodeToString(sign(secret, input))
+	return input + "." + tokenEncoding().EncodeToString(sign([]byte(secret), input))
 }
 
 func jsonSegment(t *testing.T, v any) string {
@@ -67,7 +74,7 @@ func jsonSegment(t *testing.T, v any) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return tokenEncoding.EncodeToString(data)
+	return tokenEncoding().EncodeToString(data)
 }
 
 type obj = map[string]any
@@ -75,7 +82,7 @@ type obj = map[string]any
 func TestTokensIssueAndVerify(t *testing.T) {
 	t.Parallel()
 	clock := newFakeClock()
-	tokens, _ := newTestTokens(t, twoKeys(), clock)
+	tokens := newTestTokens(t, twoKeys(), clock)
 	token, expires, err := tokens.Issue("alice", []string{"media", "docs"})
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +95,8 @@ func TestTokensIssueAndVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claims.User != "alice" || !reflect.DeepEqual(claims.Shares, []string{"media", "docs"}) || !claims.Expires.Equal(wantExpires) {
+	if claims.User != "alice" || !reflect.DeepEqual(claims.Shares, []string{"media", "docs"}) ||
+		!claims.Expires.Equal(wantExpires) {
 		t.Errorf("claims = %+v, want alice, [media docs], %v", claims, wantExpires)
 	}
 }
@@ -96,7 +104,7 @@ func TestTokensIssueAndVerify(t *testing.T) {
 func TestTokensIssueLayout(t *testing.T) {
 	t.Parallel()
 	clock := newFakeClock()
-	tokens, _ := newTestTokens(t, twoKeys(), clock)
+	tokens := newTestTokens(t, twoKeys(), clock)
 	token, _, err := tokens.Issue("alice", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -105,23 +113,24 @@ func TestTokensIssueLayout(t *testing.T) {
 	if len(parts) != 3 {
 		t.Fatalf("token has %d segments", len(parts))
 	}
-	header, err := tokenEncoding.DecodeString(parts[0])
+	header, err := tokenEncoding().DecodeString(parts[0])
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(header) != `{"alg":"HS256","typ":"JWT","kid":"new"}` {
 		t.Errorf("header = %s", header)
 	}
-	payload, err := tokenEncoding.DecodeString(parts[1])
+	payload, err := tokenEncoding().DecodeString(parts[1])
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := clock.Now().Unix()
-	wantPayload := `{"sub":"alice","shares":[],"iat":` + strconv.FormatInt(now, 10) + `,"exp":` + strconv.FormatInt(now+1800, 10) + `}`
+	nowSec := clock.Now().Unix()
+	wantPayload := `{"sub":"alice","shares":[],"iat":` + strconv.FormatInt(nowSec, 10) +
+		`,"exp":` + strconv.FormatInt(nowSec+1800, 10) + `}`
 	if string(payload) != wantPayload {
 		t.Errorf("payload = %s, want %s", payload, wantPayload)
 	}
-	if want := tokenEncoding.EncodeToString(sign(secretA, parts[0]+"."+parts[1])); parts[2] != want {
+	if want := tokenEncoding().EncodeToString(sign([]byte(secretA), parts[0]+"."+parts[1])); parts[2] != want {
 		t.Error("signature is not HMAC-SHA256 with the first key")
 	}
 }
@@ -129,10 +138,10 @@ func TestTokensIssueLayout(t *testing.T) {
 func TestTokensVerifyAnyKey(t *testing.T) {
 	t.Parallel()
 	clock := newFakeClock()
-	tokens, _ := newTestTokens(t, twoKeys(), clock)
-	now := clock.Now().Unix()
+	tokens := newTestTokens(t, twoKeys(), clock)
+	nowSec := clock.Now().Unix()
 	header := jsonSegment(t, obj{"alg": "HS256", "typ": "JWT", "kid": "old"})
-	payload := jsonSegment(t, obj{"sub": "bob", "shares": []string{"*"}, "iat": now, "exp": now + 60})
+	payload := jsonSegment(t, obj{"sub": "bob", "shares": []string{"*"}, "iat": nowSec, "exp": nowSec + 60})
 	claims, err := tokens.Verify(forge(secretB, header, payload))
 	if err != nil {
 		t.Fatal(err)
@@ -145,14 +154,14 @@ func TestTokensVerifyAnyKey(t *testing.T) {
 func TestTokensVerifyInvalid(t *testing.T) {
 	t.Parallel()
 	clock := newFakeClock()
-	tokens, _ := newTestTokens(t, twoKeys(), clock)
-	now := clock.Now().Unix()
+	tokens := newTestTokens(t, twoKeys(), clock)
+	nowSec := clock.Now().Unix()
 	goodHeader := jsonSegment(t, obj{"alg": "HS256", "typ": "JWT", "kid": "new"})
-	goodPayload := jsonSegment(t, obj{"sub": "alice", "shares": []string{"media"}, "iat": now, "exp": now + 60})
+	goodPayload := jsonSegment(t, obj{"sub": "alice", "shares": []string{"media"}, "iat": nowSec, "exp": nowSec + 60})
 	header := func(alg, kid string) string {
 		return jsonSegment(t, obj{"alg": alg, "typ": "JWT", "kid": kid})
 	}
-	notJSON := tokenEncoding.EncodeToString([]byte("not json"))
+	notJSON := tokenEncoding().EncodeToString([]byte("not json"))
 	valid := forge(secretA, goodHeader, goodPayload)
 	validParts := strings.Split(valid, ".")
 	swap := "A"
@@ -160,6 +169,7 @@ func TestTokensVerifyInvalid(t *testing.T) {
 		swap = "B"
 	}
 	flipped := validParts[0] + "." + validParts[1] + "." + swap + validParts[2][1:]
+	alteredPayload := jsonSegment(t, obj{"sub": "root", "shares": []string{"*"}, "iat": nowSec, "exp": nowSec + 60})
 	tests := []struct {
 		name  string
 		token string
@@ -183,15 +193,16 @@ func TestTokensVerifyInvalid(t *testing.T) {
 		{"short signature", validParts[0] + "." + validParts[1] + "." + validParts[2][:10]},
 		{"altered signature", flipped},
 		{"wrong secret", forge(secretB, goodHeader, goodPayload)},
-		{"payload altered after signing", validParts[0] + "." + jsonSegment(t, obj{"sub": "root", "shares": []string{"*"}, "iat": now, "exp": now + 60}) + "." + validParts[2]},
+		{"payload altered after signing", validParts[0] + "." + alteredPayload + "." + validParts[2]},
 		{"payload not base64", forge(secretA, goodHeader, "!!!")},
 		{"payload not JSON", forge(secretA, goodHeader, notJSON)},
 		{"payload wrong type", forge(secretA, goodHeader, jsonSegment(t, obj{"sub": 7}))},
-		{"no sub", forge(secretA, goodHeader, jsonSegment(t, obj{"shares": []string{}, "iat": now, "exp": now + 60}))},
-		{"empty sub", forge(secretA, goodHeader, jsonSegment(t, obj{"sub": "", "iat": now, "exp": now + 60}))},
-		{"no exp", forge(secretA, goodHeader, jsonSegment(t, obj{"sub": "a", "iat": now}))},
-		{"no iat", forge(secretA, goodHeader, jsonSegment(t, obj{"sub": "a", "exp": now + 60}))},
-		{"issued in the future", forge(secretA, goodHeader, jsonSegment(t, obj{"sub": "a", "iat": now + 31, "exp": now + 600}))},
+		{"no sub", forge(secretA, goodHeader, jsonSegment(t, obj{"shares": []string{}, "iat": nowSec, "exp": nowSec + 60}))},
+		{"empty sub", forge(secretA, goodHeader, jsonSegment(t, obj{"sub": "", "iat": nowSec, "exp": nowSec + 60}))},
+		{"no exp", forge(secretA, goodHeader, jsonSegment(t, obj{"sub": "a", "iat": nowSec}))},
+		{"no iat", forge(secretA, goodHeader, jsonSegment(t, obj{"sub": "a", "exp": nowSec + 60}))},
+		{"issued in the future", forge(secretA, goodHeader,
+			jsonSegment(t, obj{"sub": "a", "iat": nowSec + 31, "exp": nowSec + 600}))},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -213,8 +224,8 @@ func TestTokensVerifyInvalid(t *testing.T) {
 func TestTokensVerifyTimeBounds(t *testing.T) {
 	t.Parallel()
 	clock := newFakeClock()
-	tokens, _ := newTestTokens(t, twoKeys(), clock)
-	now := clock.Now().Unix()
+	tokens := newTestTokens(t, twoKeys(), clock)
+	nowSec := clock.Now().Unix()
 	header := jsonSegment(t, obj{"alg": "HS256", "typ": "JWT", "kid": "new"})
 	mint := func(iat, exp int64) string {
 		return forge(secretA, header, jsonSegment(t, obj{"sub": "a", "shares": []string{}, "iat": iat, "exp": exp}))
@@ -225,12 +236,12 @@ func TestTokensVerifyTimeBounds(t *testing.T) {
 		token string
 		want  error
 	}{
-		{"expires now", mint(now-60, now), nil},
-		{"expired within leeway", mint(now-600, now-leeway), nil},
-		{"expired beyond leeway", mint(now-600, now-leeway-1), ErrExpiredToken},
-		{"expired long ago", mint(now-86400, now-3600), ErrExpiredToken},
-		{"issued within leeway", mint(now+leeway, now+600), nil},
-		{"issued beyond leeway", mint(now+leeway+1, now+600), ErrInvalidToken},
+		{"expires now", mint(nowSec-60, nowSec), nil},
+		{"expired within leeway", mint(nowSec-600, nowSec-leeway), nil},
+		{"expired beyond leeway", mint(nowSec-600, nowSec-leeway-1), ErrExpiredToken},
+		{"expired long ago", mint(nowSec-86400, nowSec-3600), ErrExpiredToken},
+		{"issued within leeway", mint(nowSec+leeway, nowSec+600), nil},
+		{"issued beyond leeway", mint(nowSec+leeway+1, nowSec+600), ErrInvalidToken},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -246,7 +257,7 @@ func TestTokensVerifyTimeBounds(t *testing.T) {
 func TestTokensVerifyExpiryFollowsClock(t *testing.T) {
 	t.Parallel()
 	clock := newFakeClock()
-	tokens, _ := newTestTokens(t, twoKeys(), clock)
+	tokens := newTestTokens(t, twoKeys(), clock)
 	token, _, err := tokens.Issue("alice", []string{"media"})
 	if err != nil {
 		t.Fatal(err)
@@ -296,7 +307,7 @@ func TestTokensKeysValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			tokens, _ := newTestTokens(t, tt.content, newFakeClock())
+			tokens := newTestTokens(t, tt.content, newFakeClock())
 			if _, _, err := tokens.Issue("alice", nil); err == nil {
 				t.Fatal("Issue: want error")
 			} else if strings.Contains(err.Error(), good) {
@@ -313,78 +324,88 @@ func TestTokensKeysValidation(t *testing.T) {
 
 func TestTokensOwnFileMissing(t *testing.T) {
 	t.Parallel()
-	tokens := NewTokens(t.TempDir(), testNode, time.Minute, newFakeClock().Now, discard)
+	tokens := NewTokens(t.TempDir(), testNode, time.Minute, newFakeClock().Now, discard())
 	if _, _, err := tokens.Issue("alice", nil); err == nil {
 		t.Error("want error")
 	}
 }
 
-func TestTokensReloadsOnlyWhenFileChanged(t *testing.T) {
-	t.Parallel()
-	clock := newFakeClock()
-	tokens, path := newTestTokens(t, keysYAML([2]string{"one", b64(secretA)}), clock)
-	token, _, err := tokens.Issue("alice", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+// reloadFixture is Tokens over a keys file with one key, "one", and a token signed by it.
+// The file is read once, so the later steps of a test show when Tokens reads it again.
+type reloadFixture struct {
+	tokens  *Tokens
+	path    string
+	token   string
+	modTime time.Time
+	size    int
+}
+
+func newReloadFixture(t *testing.T) reloadFixture {
+	t.Helper()
+	tokens := newTestTokens(t, keysYAML([2]string{"one", b64(secretA)}), newFakeClock())
+	path := keysPath(tokens)
+	token := mustIssue(t, tokens)
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return reloadFixture{tokens: tokens, path: path, token: token, modTime: info.ModTime(), size: int(info.Size())}
+}
 
-	// Same size and modification time: the cached keys are kept, so the new file is unseen.
-	replacement := keysYAML([2]string{"two", b64(secretA)})
-	if len(replacement) != int(info.Size()) {
-		t.Fatalf("test setup: replacement is %d bytes, want %d", len(replacement), info.Size())
-	}
-	writeFile(t, filepath.Dir(path), filepath.Base(path), replacement)
-	if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+// replace writes content over the keys file and sets its modification time to when.
+func (fixture reloadFixture) replace(t *testing.T, content string, when time.Time) {
+	t.Helper()
+	writeFile(t, filepath.Dir(fixture.path), filepath.Base(fixture.path), content)
+	if err := os.Chtimes(fixture.path, when, when); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tokens.Verify(token); err != nil {
+}
+
+func TestTokensKeepCachedKeysWhenSizeAndTimeAreSame(t *testing.T) {
+	t.Parallel()
+	fixture := newReloadFixture(t)
+	replacement := keysYAML([2]string{"two", b64(secretA)})
+	if len(replacement) != fixture.size {
+		t.Fatalf("test setup: replacement is %d bytes, want %d", len(replacement), fixture.size)
+	}
+	fixture.replace(t, replacement, fixture.modTime)
+	if _, err := fixture.tokens.Verify(fixture.token); err != nil {
 		t.Errorf("cached keys not used: %v", err)
 	}
+}
 
-	// Same size, new modification time: reloaded.
-	later := info.ModTime().Add(time.Hour)
-	if err := os.Chtimes(path, later, later); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tokens.Verify(token); !errors.Is(err, ErrInvalidToken) {
+func TestTokensReloadWhenModificationTimeChanges(t *testing.T) {
+	t.Parallel()
+	fixture := newReloadFixture(t)
+	fixture.replace(t, keysYAML([2]string{"two", b64(secretA)}), fixture.modTime.Add(time.Hour))
+	if _, err := fixture.tokens.Verify(fixture.token); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("after mtime change: err = %v, want ErrInvalidToken (key one removed)", err)
 	}
-	fresh, _, err := tokens.Issue("alice", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tokens.Verify(fresh); err != nil {
+	fresh := mustIssue(t, fixture.tokens)
+	if _, err := fixture.tokens.Verify(fresh); err != nil {
 		t.Errorf("token signed with the reloaded key: %v", err)
 	}
+}
 
-	// New size, same modification time: reloaded.
-	writeFile(t, filepath.Dir(path), filepath.Base(path), keysYAML([2]string{"three", b64(secretB)}, [2]string{"two", b64(secretA)}))
-	if err := os.Chtimes(path, later, later); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tokens.Verify(fresh); err != nil {
+func TestTokensReloadWhenSizeChanges(t *testing.T) {
+	t.Parallel()
+	fixture := newReloadFixture(t)
+	fixture.replace(t, keysYAML([2]string{"three", b64(secretB)}, [2]string{"one", b64(secretA)}), fixture.modTime)
+	if _, err := fixture.tokens.Verify(fixture.token); err != nil {
 		t.Errorf("after size change the old key must still verify: %v", err)
 	}
-	third, _, err := tokens.Issue("alice", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if header := decodeHeader(t, third); header.Kid != "three" {
+	if header := decodeHeader(t, mustIssue(t, fixture.tokens)); header.Kid != "three" {
 		t.Errorf("kid = %q, want the new first key", header.Kid)
 	}
 }
 
 func decodeHeader(t *testing.T, token string) tokenHeader {
 	t.Helper()
-	var h tokenHeader
-	if err := decodeSegment(strings.Split(token, ".")[0], &h); err != nil {
+	var header tokenHeader
+	if err := decodeSegment(strings.Split(token, ".")[0], &header); err != nil {
 		t.Fatal(err)
 	}
-	return h
+	return header
 }
 
 func TestTokensBadFileKeepsLastGoodContent(t *testing.T) {
@@ -395,39 +416,46 @@ func TestTokensBadFileKeepsLastGoodContent(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			tokens, path := newTestTokens(t, keysYAML([2]string{"one", b64(secretA)}), newFakeClock())
-			token, _, err := tokens.Issue("alice", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			writeFile(t, filepath.Dir(path), filepath.Base(path), bad)
-			if _, err := tokens.Verify(token); err != nil {
-				t.Errorf("Verify after the file broke: %v", err)
-			}
-			if _, _, err := tokens.Issue("alice", nil); err != nil {
-				t.Errorf("Issue after the file broke: %v", err)
-			}
-			writeFile(t, filepath.Dir(path), filepath.Base(path), keysYAML([2]string{"two", b64(secretB)}))
-			if _, err := tokens.Verify(token); !errors.Is(err, ErrInvalidToken) {
-				t.Errorf("after the file is fixed the new content must apply: %v", err)
-			}
-			if _, _, err := tokens.Issue("alice", nil); err != nil {
-				t.Errorf("Issue after the file is fixed: %v", err)
-			}
+			checkBadFileKeepsLastGoodContent(t, bad)
 		})
+	}
+}
+
+// checkBadFileKeepsLastGoodContent breaks the keys file with bad and checks that the keys of
+// the last good content stay in use, and that the file applies again once it is fixed.
+func checkBadFileKeepsLastGoodContent(t *testing.T, bad string) {
+	t.Helper()
+	tokens := newTestTokens(t, keysYAML([2]string{"one", b64(secretA)}), newFakeClock())
+	path := keysPath(tokens)
+	token := mustIssue(t, tokens)
+	writeFile(t, filepath.Dir(path), filepath.Base(path), bad)
+	if _, err := tokens.Verify(token); err != nil {
+		t.Errorf("Verify after the file broke: %v", err)
+	}
+	if _, _, err := tokens.Issue("alice", nil); err != nil {
+		t.Errorf("Issue after the file broke: %v", err)
+	}
+	writeFile(t, filepath.Dir(path), filepath.Base(path), keysYAML([2]string{"two", b64(secretB)}))
+	if _, err := tokens.Verify(token); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("after the file is fixed the new content must apply: %v", err)
+	}
+	if _, _, err := tokens.Issue("alice", nil); err != nil {
+		t.Errorf("Issue after the file is fixed: %v", err)
 	}
 }
 
 func TestTokensIssueEncodeFailure(t *testing.T) {
 	t.Parallel()
 	for failAt := range 2 {
-		tokens, _ := newTestTokens(t, twoKeys(), newFakeClock())
+		tokens := newTestTokens(t, twoKeys(), newFakeClock())
 		calls := 0
-		tokens.marshal = func(v any) ([]byte, error) {
-			if calls++; calls-1 == failAt {
+		tokens.marshal = func(value any) ([]byte, error) {
+			call := calls
+			calls++
+			if call == failAt {
 				return nil, errors.New("marshal failed")
 			}
-			return json.Marshal(v)
+			return json.Marshal(value)
 		}
 		if _, _, err := tokens.Issue("alice", nil); err == nil {
 			t.Errorf("failAt %d: want error", failAt)
@@ -437,12 +465,10 @@ func TestTokensIssueEncodeFailure(t *testing.T) {
 
 func TestTokensConcurrent(t *testing.T) {
 	t.Parallel()
-	tokens, _ := newTestTokens(t, twoKeys(), newFakeClock())
+	tokens := newTestTokens(t, twoKeys(), newFakeClock())
 	var wg sync.WaitGroup
 	for range 20 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			token, _, err := tokens.Issue("alice", []string{"media"})
 			if err != nil {
 				t.Error(err)
@@ -451,7 +477,7 @@ func TestTokensConcurrent(t *testing.T) {
 			if _, err := tokens.Verify(token); err != nil {
 				t.Error(err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }
@@ -467,19 +493,19 @@ func TestTokensTwoNodesShareKeys(t *testing.T) {
 	// Two shared folders stand for two servers; the sync tool is a copy of one file.
 	dirA, dirB := t.TempDir(), t.TempDir()
 	clock := newFakeClock()
-	a := NewTokens(dirA, testNode, time.Minute, clock.Now, discard)
-	b := NewTokens(dirB, otherNode, time.Minute, clock.Now, discard)
-	for _, tokens := range []*Tokens{a, b} {
+	tokensA := NewTokens(dirA, testNode, time.Minute, clock.Now, discard())
+	tokensB := NewTokens(dirB, otherNode, time.Minute, clock.Now, discard())
+	for _, tokens := range []*Tokens{tokensA, tokensB} {
 		if err := tokens.EnsureOwnKey(); err != nil {
 			t.Fatal(err)
 		}
 	}
-	token := mustIssue(t, a)
-	if _, err := b.Verify(token); !errors.Is(err, ErrInvalidToken) {
+	token := mustIssue(t, tokensA)
+	if _, err := tokensB.Verify(token); !errors.Is(err, ErrInvalidToken) {
 		t.Fatalf("before the key file arrives: %v", err)
 	}
 	copyFile(t, filepath.Join(dirA, testNode+".yaml"), filepath.Join(dirB, testNode+".yaml"))
-	if _, err := b.Verify(token); err != nil {
+	if _, err := tokensB.Verify(token); err != nil {
 		t.Errorf("after the key file arrives: %v", err)
 	}
 	if want := []string{testNode + ".yaml", otherNode + ".yaml"}; !reflect.DeepEqual(dirNames(t, dirB), want) {
@@ -490,13 +516,13 @@ func TestTokensTwoNodesShareKeys(t *testing.T) {
 	}
 }
 
-func copyFile(t *testing.T, from, to string) {
+func copyFile(t *testing.T, source, target string) {
 	t.Helper()
-	data, err := os.ReadFile(from)
+	data, err := os.ReadFile(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(to, data, 0o600); err != nil {
+	if err := os.WriteFile(target, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -516,7 +542,7 @@ func dirNames(t *testing.T, dir string) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var names []string
+	names := make([]string, 0, len(items))
 	for _, item := range items {
 		names = append(names, item.Name())
 	}
@@ -526,7 +552,7 @@ func dirNames(t *testing.T, dir string) []string {
 func TestEnsureOwnKeyCreatesTheFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	tokens := NewTokens(dir, testNode, time.Minute, newFakeClock().Now, discard)
+	tokens := NewTokens(dir, testNode, time.Minute, newFakeClock().Now, discard())
 	if err := tokens.EnsureOwnKey(); err != nil {
 		t.Fatal(err)
 	}
@@ -535,28 +561,43 @@ func TestEnsureOwnKeyCreatesTheFile(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("key file: %v, %v", info, err)
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keys, err := parseKeys(data)
+	keys, err := parseKeys(mustReadFile(t, path))
 	if err != nil || len(keys) != 1 || keys[0].id != testNode+"-1" || len(keys[0].secret) != 32 {
 		t.Fatalf("keys = %+v, %v", keys, err)
 	}
 	if header := decodeHeader(t, mustIssue(t, tokens)); header.Kid != testNode+"-1" {
 		t.Errorf("kid = %q", header.Kid)
 	}
+}
+
+func TestEnsureOwnKeyKeepsTheFileOnASecondStart(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tokens := NewTokens(dir, testNode, time.Minute, newFakeClock().Now, discard())
+	if err := tokens.EnsureOwnKey(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, testNode+".yaml")
+	data := mustReadFile(t, path)
 	// A second start keeps the file, because tokens signed with its key may be out.
 	if err := tokens.EnsureOwnKey(); err != nil {
 		t.Fatal(err)
 	}
-	again, err := os.ReadFile(path)
-	if err != nil || !bytes.Equal(again, data) {
-		t.Errorf("the key file changed on the second start: %v", err)
+	if !bytes.Equal(mustReadFile(t, path), data) {
+		t.Error("the key file changed on the second start")
 	}
 	if left := dirNames(t, dir); len(left) != 1 {
 		t.Errorf("temporary files left behind: %v", left)
 	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func TestEnsureOwnKeyFailures(t *testing.T) {
@@ -567,14 +608,17 @@ func TestEnsureOwnKeyFailures(t *testing.T) {
 		want  string
 	}{
 		{"invalid file is not replaced", func(t *testing.T, dir string) {
+			t.Helper()
 			writeFile(t, dir, testNode+".yaml", "keys: []\n")
 		}, "no keys"},
 		{"unreadable file", func(t *testing.T, dir string) {
+			t.Helper()
 			if err := os.Mkdir(filepath.Join(dir, testNode+".yaml"), 0o700); err != nil {
 				t.Fatal(err)
 			}
 		}, "read signing key file"},
 		{"folder is missing", func(t *testing.T, dir string) {
+			t.Helper()
 			if err := os.Remove(dir); err != nil {
 				t.Fatal(err)
 			}
@@ -585,7 +629,7 @@ func TestEnsureOwnKeyFailures(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
 			tt.setup(t, dir)
-			tokens := NewTokens(dir, testNode, time.Minute, newFakeClock().Now, discard)
+			tokens := NewTokens(dir, testNode, time.Minute, newFakeClock().Now, discard())
 			err := tokens.EnsureOwnKey()
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("err = %v, want %q", err, tt.want)
@@ -596,7 +640,7 @@ func TestEnsureOwnKeyFailures(t *testing.T) {
 
 func TestEnsureOwnKeyRandomFailure(t *testing.T) {
 	t.Parallel()
-	tokens := NewTokens(t.TempDir(), testNode, time.Minute, newFakeClock().Now, discard)
+	tokens := NewTokens(t.TempDir(), testNode, time.Minute, newFakeClock().Now, discard())
 	tokens.random = strings.NewReader("short")
 	if err := tokens.EnsureOwnKey(); err == nil {
 		t.Error("want error")
@@ -646,7 +690,8 @@ func TestTokensDuplicateKeyID(t *testing.T) {
 	writeFile(t, dir, otherNode+".yaml", keysYAML([2]string{"shared", b64(secretB)}, [2]string{"only", b64(secretB)}))
 	tokens := NewTokens(dir, otherNode, time.Minute, newFakeClock().Now, log)
 	header := jsonSegment(t, obj{"alg": "HS256", "kid": "shared"})
-	payload := jsonSegment(t, obj{"sub": "a", "shares": []string{}, "iat": newFakeClock().Now().Unix(), "exp": newFakeClock().Now().Unix() + 60})
+	nowSec := newFakeClock().Now().Unix()
+	payload := jsonSegment(t, obj{"sub": "a", "shares": []string{}, "iat": nowSec, "exp": nowSec + 60})
 	if _, err := tokens.Verify(forge(secretA, header, payload)); err != nil {
 		t.Errorf("the first file's key: %v", err)
 	}
@@ -682,8 +727,9 @@ func TestTokensOtherFileBreaksAndRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	header := jsonSegment(t, obj{"alg": "HS256", "kid": "theirs"})
-	now := newFakeClock().Now().Unix()
-	token := forge(secretB, header, jsonSegment(t, obj{"sub": "x", "shares": []string{}, "iat": now, "exp": now + 60}))
+	nowSec := newFakeClock().Now().Unix()
+	payload := jsonSegment(t, obj{"sub": "x", "shares": []string{}, "iat": nowSec, "exp": nowSec + 60})
+	token := forge(secretB, header, payload)
 
 	// A file that is half written when the sync tool copies it is ignored.
 	writeFile(t, dir, otherNode+".yaml", "keys:\n  - id: \"theirs\"\n  ")
@@ -720,7 +766,7 @@ func TestTokensSignWithFirstKeyOfOwnFileOnly(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, otherNode+".yaml", keysYAML([2]string{"a-first", b64(secretB)}))
 	writeFile(t, dir, testNode+".yaml", twoKeys())
-	tokens := NewTokens(dir, testNode, time.Minute, newFakeClock().Now, discard)
+	tokens := NewTokens(dir, testNode, time.Minute, newFakeClock().Now, discard())
 	if header := decodeHeader(t, mustIssue(t, tokens)); header.Kid != "new" {
 		t.Errorf("kid = %q, want the first key of this node's own file", header.Kid)
 	}

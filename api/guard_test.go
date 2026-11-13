@@ -9,7 +9,7 @@ import (
 
 func TestTokenRequired(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
+	fixture := newEnv(t)
 	targets := []string{
 		"/api/v1/nodes", "/api/v1/tree/", "/api/v1/tree/media", "/api/v1/tree/media/sub/",
 		"/api/v1/file/media/blob.zzz", "/api/v1/space/media", "/api/v1/space/ghost",
@@ -28,15 +28,15 @@ func TestTokenRequired(t *testing.T) {
 		{"expired", "Bearer " + tokenExpired, "token expired"},
 	}
 	for _, target := range targets {
-		for _, h := range headers {
-			t.Run(h.name+" "+target, func(t *testing.T) {
+		for _, authCase := range headers {
+			t.Run(authCase.name+" "+target, func(t *testing.T) {
 				t.Parallel()
 				header := map[string]string{}
-				if h.value != "" {
-					header["Authorization"] = h.value
+				if authCase.value != "" {
+					header["Authorization"] = authCase.value
 				}
-				resp := e.do(request{target: target, header: header})
-				wantError(t, resp, http.StatusUnauthorized, h.status)
+				resp := fixture.do(&request{target: target, header: header})
+				wantError(t, resp, http.StatusUnauthorized, authCase.status)
 				wantHeader(t, resp, "WWW-Authenticate", "Bearer")
 				wantHeader(t, resp, "Cache-Control", "")
 			})
@@ -46,8 +46,8 @@ func TestTokenRequired(t *testing.T) {
 
 func TestBearerSchemeIsCaseInsensitive(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
-	resp := e.do(request{target: "/api/v1/nodes", header: map[string]string{"Authorization": "bEaReR " + tokenAll}})
+	fixture := newEnv(t)
+	resp := fixture.do(&request{target: "/api/v1/nodes", header: map[string]string{"Authorization": "bEaReR " + tokenAll}})
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d", resp.StatusCode)
 	}
@@ -55,22 +55,22 @@ func TestBearerSchemeIsCaseInsensitive(t *testing.T) {
 
 func TestVerifyFailureIsInternalError(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
-	resp := e.get("/api/v1/nodes", tokenBroken)
+	fixture := newEnv(t)
+	resp := fixture.get("/api/v1/nodes", tokenBroken)
 	wantError(t, resp, http.StatusInternalServerError, "internal error")
 	wantHeader(t, resp, "WWW-Authenticate", "")
-	records := e.logged("request failed")
+	records := fixture.logged("request failed")
 	if len(records) != 1 || records[0]["level"] != "ERROR" {
-		t.Fatalf("log = %v", e.logRecords())
+		t.Fatalf("log = %v", fixture.logRecords())
 	}
-	if got, _ := records[0]["error"].(string); got != errBroken.Error() {
+	if got, ok := records[0]["error"].(string); !ok || got != errBroken.Error() {
 		t.Errorf("logged error = %q, want %q", got, errBroken)
 	}
 }
 
 func TestShareAccess(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
+	fixture := newEnv(t)
 	tests := []struct {
 		name   string
 		token  string
@@ -87,30 +87,42 @@ func TestShareAccess(t *testing.T) {
 	}
 	for _, tt := range tests {
 		for _, route := range []string{"/api/v1/space/", "/api/v1/tree/", "/api/v1/file/"} {
-			target := route + tt.share
-			if route != "/api/v1/space/" {
-				target += "/"
-			}
+			target := shareTarget(route, tt.share)
 			t.Run(tt.name+" "+route, func(t *testing.T) {
 				t.Parallel()
-				resp := e.get(target, tt.token)
-				if tt.msg == "" {
-					if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
-						t.Errorf("status = %d", resp.StatusCode)
-					}
-					return
-				}
-				wantError(t, resp, tt.status, tt.msg)
-				wantHeader(t, resp, "Cache-Control", "private, no-cache")
+				wantShareAnswer(t, fixture.get(target, tt.token), tt.status, tt.msg)
 			})
 		}
 	}
 }
 
+// shareTarget is the URL of a share below a route. Only the space route has no trailing
+// slash after the share name.
+func shareTarget(route, shareName string) string {
+	if route == "/api/v1/space/" {
+		return route + shareName
+	}
+	return route + shareName + "/"
+}
+
+// wantShareAnswer checks the answer to a request for a share. An empty message means the
+// request is allowed, so the answer must not be a refusal of the token.
+func wantShareAnswer(t *testing.T, resp response, status int, message string) {
+	t.Helper()
+	if message == "" {
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
+			t.Errorf("status = %d", resp.StatusCode)
+		}
+		return
+	}
+	wantError(t, resp, status, message)
+	wantHeader(t, resp, "Cache-Control", "private, no-cache")
+}
+
 func TestNodes(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
-	resp := e.get("/api/v1/nodes", tokenNone)
+	fixture := newEnv(t)
+	resp := fixture.get("/api/v1/nodes", tokenNone)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
@@ -124,18 +136,18 @@ func TestNodes(t *testing.T) {
 
 func TestNodesError(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
-	e.nodes.err = errBroken
-	wantError(t, e.get("/api/v1/nodes", tokenAll), http.StatusInternalServerError, "internal error")
-	if len(e.logged("request failed")) != 1 {
-		t.Errorf("log = %v", e.logRecords())
+	fixture := newEnv(t)
+	fixture.nodes.err = errBroken
+	wantError(t, fixture.get("/api/v1/nodes", tokenAll), http.StatusInternalServerError, "internal error")
+	if len(fixture.logged("request failed")) != 1 {
+		t.Errorf("log = %v", fixture.logRecords())
 	}
 }
 
 func TestSpace(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
-	resp := e.get("/api/v1/space/media", tokenMedia)
+	fixture := newEnv(t)
+	resp := fixture.get("/api/v1/space/media", tokenMedia)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
@@ -144,6 +156,6 @@ func TestSpace(t *testing.T) {
 	if sp != (wire.Space{Total: 1000, Free: 400}) {
 		t.Errorf("space = %+v", sp)
 	}
-	e.media.errs["space"] = errBroken
-	wantError(t, e.get("/api/v1/space/media", tokenMedia), http.StatusInternalServerError, "internal error")
+	fixture.media.errs["space"] = errBroken
+	wantError(t, fixture.get("/api/v1/space/media", tokenMedia), http.StatusInternalServerError, "internal error")
 }

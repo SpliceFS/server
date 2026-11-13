@@ -5,6 +5,7 @@ package datadir
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,7 @@ const tempPrefix = ".tmp-"
 func WriteAtomic(path string, data []byte, mode os.FileMode) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), tempPrefix+"*")
 	if err != nil {
-		return err
+		return fmt.Errorf("create temporary file: %w", err)
 	}
 	err = writeTemp(tmp, data, mode)
 	if err == nil {

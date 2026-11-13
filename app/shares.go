@@ -16,14 +16,15 @@ type shareAdapter struct {
 	*share.Share
 }
 
-// Open opens a file of the share.
-func (a shareAdapter) Open(name string) (api.File, error) {
-	f, err := a.OpenFile(name)
+// Open opens a file of the share. The interface result is the one api.Share declares.
+func (a shareAdapter) Open(name string) (api.File, error) { //nolint:ireturn // implements api.Share
+	file, err := a.OpenFile(name)
 	if err != nil {
-		// Returning f itself would wrap a nil pointer in a non-nil interface.
-		return nil, err
+		// Returning file itself would wrap a nil pointer in a non-nil interface. The api
+		// package finds the share errors with errors.Is, so the wrap does not hide them.
+		return nil, fmt.Errorf("open share file: %w", err)
 	}
-	return f, nil
+	return file, nil
 }
 
 // shareSet is the open shares of a configuration.
@@ -37,7 +38,7 @@ func openShares(cfg *config.Config) (*shareSet, error) {
 	set := &shareSet{byName: make(map[string]api.Share, len(cfg.Shares))}
 	for _, name := range cfg.ShareNames() {
 		settings := cfg.Shares[name]
-		s, err := share.Open(share.Options{
+		opened, err := share.Open(share.Options{
 			Name:           name,
 			Path:           settings.Path,
 			Exclude:        settings.Exclude,
@@ -48,8 +49,8 @@ func openShares(cfg *config.Config) (*shareSet, error) {
 		if err != nil {
 			return nil, errors.Join(err, set.Close())
 		}
-		set.byName[name] = shareAdapter{s}
-		set.closers = append(set.closers, s)
+		set.byName[name] = shareAdapter{opened}
+		set.closers = append(set.closers, opened)
 	}
 	return set, nil
 }

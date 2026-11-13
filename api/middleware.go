@@ -3,10 +3,12 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/netip"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 )
@@ -34,21 +36,27 @@ func noSniff(next http.Handler) http.Handler {
 // standard way to abort a response and is passed on to the server untouched.
 func recoverPanics(log *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			value := recover()
-			if value == nil {
-				return
-			}
-			if err, ok := value.(error); ok && errors.Is(err, http.ErrAbortHandler) {
-				panic(value)
-			}
-			log.ErrorContext(r.Context(), "panic in handler", "panic", value,
-				"method", r.Method, "path", r.URL.Path, "client", clientAddr(r.Context()),
-				"stack", string(debug.Stack()))
-			writeError(w, http.StatusInternalServerError, internalErrorMsg)
-		}()
+		// recover only works when the deferred function itself calls it, so the closure
+		// reads the panic value and hands it on.
+		defer func() { answerPanic(log, w, r, recover()) }()
 		next.ServeHTTP(w, r)
 	})
+}
+
+// answerPanic logs value, the value of a panic, and answers 500. A nil value means that
+// there was no panic.
+func answerPanic(log *slog.Logger, w http.ResponseWriter, r *http.Request, value any) {
+	if value == nil {
+		return
+	}
+	if err, ok := value.(error); ok && errors.Is(err, http.ErrAbortHandler) {
+		panic(value)
+	}
+	log.ErrorContext(r.Context(), "panic in handler", slog.Any("panic", value),
+		slog.String("method", r.Method), slog.String("path", r.URL.Path),
+		slog.String("client", clientAddr(r.Context())),
+		slog.String("stack", string(debug.Stack())))
+	writeError(w, http.StatusInternalServerError, internalErrorMsg)
 }
 
 // accessEntry is what the access log learns while a request is handled.
@@ -66,6 +74,7 @@ func setAccessUser(ctx context.Context, user string) {
 // statusRecorder remembers the status and the size of a response.
 type statusRecorder struct {
 	http.ResponseWriter
+
 	status int
 	bytes  int64
 }
@@ -85,7 +94,10 @@ func (r *statusRecorder) Write(p []byte) (int, error) {
 	}
 	n, err := r.ResponseWriter.Write(p)
 	r.bytes += int64(n)
-	return n, err
+	if err != nil {
+		return n, fmt.Errorf("write response body: %w", err)
+	}
+	return n, nil
 }
 
 // Unwrap lets http.ResponseController reach the underlying writer.
@@ -130,7 +142,10 @@ func resolveClient(trusted []netip.Prefix, next http.Handler) http.Handler {
 
 // clientAddr returns the client address that resolveClient stored in ctx.
 func clientAddr(ctx context.Context) string {
-	addr, _ := ctx.Value(clientKey).(string)
+	addr, ok := ctx.Value(clientKey).(string)
+	if !ok {
+		return ""
+	}
 	return addr
 }
 
@@ -167,8 +182,8 @@ func forwardedClient(values []string, trusted []netip.Prefix, remote netip.Addr)
 			entries = append(entries, strings.TrimSpace(entry))
 		}
 	}
-	for i := len(entries) - 1; i >= 0; i-- {
-		addr, err := netip.ParseAddr(entries[i])
+	for _, entry := range slices.Backward(entries) {
+		addr, err := netip.ParseAddr(entry)
 		if err != nil {
 			return remote
 		}

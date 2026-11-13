@@ -16,9 +16,9 @@ import (
 )
 
 func trusted(prefixes ...string) []netip.Prefix {
-	var out []netip.Prefix
-	for _, p := range prefixes {
-		out = append(out, netip.MustParsePrefix(p))
+	out := make([]netip.Prefix, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		out = append(out, netip.MustParsePrefix(prefix))
 	}
 	return out
 }
@@ -36,7 +36,11 @@ func TestClientAddress(t *testing.T) {
 		{"direct client ignores header", "198.51.100.7:5000", []string{"203.0.113.9"}, "198.51.100.7"},
 		{"trusted proxy, one entry", "192.0.2.1:80", []string{"203.0.113.9"}, "203.0.113.9"},
 		{"rightmost untrusted entry", "192.0.2.1:80", []string{"10.0.0.1, 203.0.113.9, 192.0.2.77"}, "203.0.113.9"},
-		{"client cannot pick an address left of the proxies", "192.0.2.1:80", []string{"1.2.3.4, 203.0.113.9"}, "203.0.113.9"},
+		{
+			"client cannot pick an address left of the proxies", "192.0.2.1:80",
+			[]string{"1.2.3.4, 203.0.113.9"},
+			"203.0.113.9",
+		},
 		{"spaces", "192.0.2.1:80", []string{" 203.0.113.9 ,  192.0.2.4 "}, "203.0.113.9"},
 		{"several header lines", "192.0.2.1:80", []string{"1.2.3.4", "203.0.113.9, 192.0.2.4"}, "203.0.113.9"},
 		{"no header", "192.0.2.1:80", nil, "192.0.2.1"},
@@ -86,7 +90,8 @@ func TestResolveClientStoresAddress(t *testing.T) {
 func TestNoSniff(t *testing.T) {
 	t.Parallel()
 	rec := httptest.NewRecorder()
-	noSniff(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), "GET", "/", nil))
+	handler := noSniff(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), "GET", "/", nil))
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("X-Content-Type-Options = %q", got)
 	}
@@ -94,23 +99,24 @@ func TestNoSniff(t *testing.T) {
 
 func TestRecoverPanics(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
-	logger := slog.New(slog.NewJSONHandler(e.logs, nil))
+	fixture := newEnv(t)
+	logger := slog.New(slog.NewJSONHandler(fixture.logs, nil))
 	h := noSniff(recoverPanics(logger, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic("kaboom: secret detail")
 	})))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), "GET", "/boom", nil))
 	wantError(t, response{rec.Result()}, http.StatusInternalServerError, "internal error")
-	records := e.logged("panic in handler")
+	records := fixture.logged("panic in handler")
 	if len(records) != 1 {
-		t.Fatalf("log = %s", e.logs)
+		t.Fatalf("log = %s", fixture.logs)
 	}
-	r := records[0]
-	if r["level"] != "ERROR" || r["panic"] != "kaboom: secret detail" || r["path"] != "/boom" || r["method"] != "GET" {
-		t.Errorf("record = %v", r)
+	record := records[0]
+	if record["level"] != "ERROR" || record["panic"] != "kaboom: secret detail" ||
+		record["path"] != "/boom" || record["method"] != "GET" {
+		t.Errorf("record = %v", record)
 	}
-	if stack, _ := r["stack"].(string); !strings.Contains(stack, "TestRecoverPanics") {
+	if stack, ok := record["stack"].(string); !ok || !strings.Contains(stack, "TestRecoverPanics") {
 		t.Errorf("stack = %q", stack)
 	}
 }
@@ -129,15 +135,16 @@ func TestRecoverPanicsWithErrorValue(t *testing.T) {
 
 func TestRecoverPanicsPassesAbortOn(t *testing.T) {
 	t.Parallel()
-	h := recoverPanics(slog.New(slog.DiscardHandler), http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	handler := recoverPanics(slog.New(slog.DiscardHandler), http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic(http.ErrAbortHandler)
 	}))
 	defer func() {
-		if err, _ := recover().(error); !errors.Is(err, http.ErrAbortHandler) {
-			t.Errorf("recovered %v, want http.ErrAbortHandler", err)
+		recovered := recover()
+		if err, ok := recovered.(error); !ok || !errors.Is(err, http.ErrAbortHandler) {
+			t.Errorf("recovered %v, want http.ErrAbortHandler", recovered)
 		}
 	}()
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), "GET", "/", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), "GET", "/", nil))
 	t.Error("no panic")
 }
 
@@ -155,7 +162,7 @@ func TestRecoverPanicsLeavesNormalRequestsAlone(t *testing.T) {
 
 // steppingClock returns a time that is step later on every call.
 func steppingClock(step time.Duration) func() time.Time {
-	now := testTime
+	now := testTime()
 	return func() time.Time {
 		now = now.Add(step)
 		return now
@@ -173,11 +180,11 @@ func TestLogAccess(t *testing.T) {
 	}{
 		{"explicit status", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
-			_, _ = io.WriteString(w, "12345")
+			mustWrite(w, "12345")
 		}, 404, 5, ""},
 		{"implicit status", func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = io.WriteString(w, "abc")
-			_, _ = io.WriteString(w, "de")
+			mustWrite(w, "abc")
+			mustWrite(w, "de")
 		}, 200, 5, ""},
 		{"no body", func(http.ResponseWriter, *http.Request) {}, 200, 0, ""},
 		{"first status wins", func(w http.ResponseWriter, _ *http.Request) {
@@ -191,34 +198,54 @@ func TestLogAccess(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			e := newEnv(t)
-			logger := slog.New(slog.NewJSONHandler(e.logs, nil))
-			h := resolveClient(nil, logAccess(logger, steppingClock(250*time.Millisecond), tt.handler))
-			r := httptest.NewRequestWithContext(context.Background(), "GET", "/api/v1/x?token=abc", nil)
-			r.RemoteAddr = "198.51.100.7:99"
-			r.Header.Set("Authorization", "Bearer secret-token")
-			h.ServeHTTP(httptest.NewRecorder(), r)
-			records := e.logged("request")
+			fixture := newEnv(t)
+			logger := slog.New(slog.NewJSONHandler(fixture.logs, nil))
+			handler := resolveClient(nil, logAccess(logger, steppingClock(250*time.Millisecond), tt.handler))
+			req := httptest.NewRequestWithContext(context.Background(), "GET", "/api/v1/x?token=abc", nil)
+			req.RemoteAddr = "198.51.100.7:99"
+			req.Header.Set("Authorization", "Bearer secret-token")
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+			records := fixture.logged("request")
 			if len(records) != 1 {
-				t.Fatalf("log = %s", e.logs)
+				t.Fatalf("log = %s", fixture.logs)
 			}
-			rec := records[0]
-			want := map[string]any{
-				"level": "INFO", "method": "GET", "path": "/api/v1/x", "status": tt.status,
-				"bytes": tt.bytes, "duration": float64(250 * time.Millisecond), "client": "198.51.100.7",
-			}
-			for k, v := range want {
-				if rec[k] != v {
-					t.Errorf("%s = %v, want %v", k, rec[k], v)
-				}
-			}
-			if user, ok := rec["user"]; (tt.user == "") == ok || (ok && user != tt.user) {
-				t.Errorf("user = %v, want %q", user, tt.user)
-			}
-			if out := e.logs.String(); strings.Contains(out, "secret-token") || strings.Contains(out, "abc") {
+			wantAccessRecord(t, records[0], tt.status, tt.bytes)
+			wantAccessUser(t, records[0], tt.user)
+			if out := fixture.logs.String(); strings.Contains(out, "secret-token") || strings.Contains(out, "abc") {
 				t.Errorf("log leaks request data: %s", out)
 			}
 		})
+	}
+}
+
+// wantAccessRecord checks the fields of an access log record that every request has.
+func wantAccessRecord(t *testing.T, record map[string]any, status, size float64) {
+	t.Helper()
+	want := map[string]any{
+		"level": "INFO", "method": "GET", "path": "/api/v1/x", "status": status,
+		"bytes": size, "duration": float64(250 * time.Millisecond), "client": "198.51.100.7",
+	}
+	for key, value := range want {
+		if record[key] != value {
+			t.Errorf("%s = %v, want %v", key, record[key], value)
+		}
+	}
+}
+
+// wantAccessUser checks that the record names user, or has no user field if user is empty.
+func wantAccessUser(t *testing.T, record map[string]any, user string) {
+	t.Helper()
+	got, present := record["user"]
+	if (user == "") == present || (present && got != user) {
+		t.Errorf("user = %v, want %q", got, user)
+	}
+}
+
+// mustWrite writes text to w. A recorder never refuses a write, so an error means the
+// test is broken.
+func mustWrite(w io.Writer, text string) {
+	if _, err := io.WriteString(w, text); err != nil {
+		panic(err)
 	}
 }
 
@@ -229,12 +256,12 @@ func TestSetAccessUserWithoutLog(t *testing.T) {
 
 func TestAccessLogOfPanickingRequestShowsStatus500(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t, func(o *Options) { o.Shares["media"] = panicShare{} })
-	resp := e.get("/api/v1/space/media", tokenAll)
+	fixture := newEnv(t, func(o *Options) { o.Shares["media"] = panicShare{} })
+	resp := fixture.get("/api/v1/space/media", tokenAll)
 	wantError(t, resp, http.StatusInternalServerError, "internal error")
-	records := e.logged("request")
+	records := fixture.logged("request")
 	if len(records) != 1 || records[0]["status"] != float64(500) {
-		t.Errorf("log = %s", e.logs)
+		t.Errorf("log = %s", fixture.logs)
 	}
 }
 
@@ -268,9 +295,10 @@ func TestStatusRecorderPassesWriteErrors(t *testing.T) {
 // failingWriter is a ResponseWriter whose body writes fail.
 type failingWriter struct {
 	http.ResponseWriter
+
 	err error
 }
 
-func (w failingWriter) Header() http.Header       { return http.Header{} }
-func (w failingWriter) WriteHeader(int)           {}
+func (failingWriter) Header() http.Header         { return http.Header{} }
+func (failingWriter) WriteHeader(int)             {}
 func (w failingWriter) Write([]byte) (int, error) { return 0, w.err }

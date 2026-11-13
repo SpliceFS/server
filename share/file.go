@@ -20,17 +20,24 @@ type File struct {
 
 // Read implements io.Reader.
 func (f *File) Read(p []byte) (int, error) {
-	return f.f.Read(p)
+	return f.f.Read(p) //nolint:wrapcheck // io.Reader callers compare the error with io.EOF, so it must not be wrapped
 }
 
 // Seek implements io.Seeker.
 func (f *File) Seek(offset int64, whence int) (int64, error) {
-	return f.f.Seek(offset, whence)
+	position, err := f.f.Seek(offset, whence)
+	if err != nil {
+		return 0, fmt.Errorf("share file %q: seek: %w", f.info.Name, err)
+	}
+	return position, nil
 }
 
 // Close implements io.Closer.
 func (f *File) Close() error {
-	return f.f.Close()
+	if err := f.f.Close(); err != nil {
+		return fmt.Errorf("share file %q: close: %w", f.info.Name, err)
+	}
+	return nil
 }
 
 // Info describes the file that was opened.
@@ -47,9 +54,9 @@ func ETag(size int64, mtime time.Time) string {
 
 // headDigest returns the hex SHA-256 of the first wire.HeadDigestBytes bytes of r.
 func headDigest(r io.Reader) (string, error) {
-	h := sha256.New()
-	if _, err := io.Copy(h, io.LimitReader(r, wire.HeadDigestBytes)); err != nil {
-		return "", err
+	hash := sha256.New()
+	if _, err := io.Copy(hash, io.LimitReader(r, wire.HeadDigestBytes)); err != nil {
+		return "", fmt.Errorf("hash head: %w", err)
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }

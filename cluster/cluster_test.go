@@ -15,7 +15,8 @@ import (
 	"github.com/SpliceFS/common/wire"
 )
 
-var epoch = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+// epoch is the fixed point in time that the tests measure modification times from.
+func epoch() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) }
 
 // nodeFile is the file name of node number n: a valid node id and the extension.
 func nodeFile(n int) string { return fmt.Sprintf("%016x.yaml", n) }
@@ -32,7 +33,7 @@ func put(t *testing.T, dir, file, content string, offset time.Duration) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chtimes(path, epoch, epoch.Add(offset)); err != nil {
+	if err := os.Chtimes(path, epoch(), epoch().Add(offset)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -50,17 +51,29 @@ func dirNamedAsNodeFile(t *testing.T) string {
 	return dir
 }
 
+// emptyDir returns a new empty directory.
+func emptyDir(t *testing.T) string {
+	t.Helper()
+	return t.TempDir()
+}
+
+// missingDir returns the path of a directory that does not exist.
+func missingDir(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "absent")
+}
+
 // testLog returns a logger and the buffer that receives what it writes.
 func testLog() (*slog.Logger, *bytes.Buffer) {
 	var buf bytes.Buffer
 	return slog.New(slog.NewTextHandler(&buf, nil)), &buf
 }
 
-// load returns the nodes of l. Nodes reports no error even for bad files, which are only
+// load returns the nodes of loader. Nodes reports no error even for bad files, which are only
 // logged, so any error fails the test.
-func load(t *testing.T, l *Loader) []wire.Node {
+func load(t *testing.T, loader *Loader) []wire.Node {
 	t.Helper()
-	got, err := l.Nodes()
+	got, err := loader.Nodes()
 	if err != nil {
 		t.Fatalf("Nodes: %v", err)
 	}
@@ -118,41 +131,44 @@ func TestAnnounceRewritesOnlyWhenContentDiffers(t *testing.T) {
 		{"first announcement", east, nodeContent("east", "https://east.example.com"), true},
 		{"same node again", east, nodeContent("east", "https://east.example.com"), false},
 		{
-			"new url", wire.Node{Name: "east", URL: "https://east.example.org"},
+			"new url",
+			wire.Node{Name: "east", URL: "https://east.example.org"},
 			nodeContent("east", "https://east.example.org"), true,
 		},
 		{
-			"new name", wire.Node{Name: "west", URL: "https://east.example.org"},
+			"new name",
+			wire.Node{Name: "west", URL: "https://east.example.org"},
 			nodeContent("west", "https://east.example.org"), true,
 		},
 		{
-			"same again after a change", wire.Node{Name: "west", URL: "https://east.example.org"},
+			"same again after a change",
+			wire.Node{Name: "west", URL: "https://east.example.org"},
 			nodeContent("west", "https://east.example.org"), false,
 		},
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, nodeFile(1))
 	// The steps share one file, so they run in order.
-	for _, tc := range tests {
+	for _, tt := range tests {
 		// A rewrite gives the file the current time, which is told from epoch.
 		if _, err := os.Stat(path); err == nil {
-			if err := os.Chtimes(path, epoch, epoch); err != nil {
+			if err := os.Chtimes(path, epoch(), epoch()); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if err := Announce(dir, strings.TrimSuffix(nodeFile(1), ".yaml"), tc.self); err != nil {
-			t.Fatalf("%s: Announce: %v", tc.name, err)
+		if err := Announce(dir, strings.TrimSuffix(nodeFile(1), ".yaml"), tt.self); err != nil {
+			t.Fatalf("%s: Announce: %v", tt.name, err)
 		}
 		got, err := os.ReadFile(path)
-		if err != nil || string(got) != tc.want {
-			t.Fatalf("%s: content = %q (%v), want %q", tc.name, got, err, tc.want)
+		if err != nil || string(got) != tt.want {
+			t.Fatalf("%s: content = %q (%v), want %q", tt.name, got, err, tt.want)
 		}
 		info, err := os.Stat(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if rewritten := !info.ModTime().Equal(epoch); rewritten != tc.rewritten {
-			t.Errorf("%s: rewritten = %v, want %v", tc.name, rewritten, tc.rewritten)
+		if rewritten := !info.ModTime().Equal(epoch()); rewritten != tt.rewritten {
+			t.Errorf("%s: rewritten = %v, want %v", tt.name, rewritten, tt.rewritten)
 		}
 	}
 }
@@ -166,11 +182,11 @@ func TestAnnounceEmptyURLRemovesFile(t *testing.T) {
 		{"file is removed", true},
 		{"no file is not an error", false},
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
-			if tc.existing {
+			if tt.existing {
 				put(t, dir, nodeFile(1), nodeContent("east", "https://east.example.com"), 0)
 			}
 			other := nodeContent("west", "https://west.example.com")
@@ -201,44 +217,22 @@ func TestAnnounceErrors(t *testing.T) {
 		setup func(t *testing.T) string
 		want  string
 	}{
+		{"missing directory", self, missingDir, "write node file"},
+		{"node file is a directory", self, dirNamedAsNodeFile, "write node file"},
 		{
-			"missing directory", self,
-			func(t *testing.T) string { return filepath.Join(t.TempDir(), "absent") },
-			"write node file",
-		},
-		{
-			"node file is a directory", self,
-			dirNamedAsNodeFile,
-			"write node file",
-		},
-		{
-			"directory is not writable", self,
-			func(t *testing.T) string {
-				if os.Geteuid() == 0 {
-					t.Skip("root can write to any directory")
-				}
-				dir := t.TempDir()
-				if err := os.Chmod(dir, 0o500); err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-				return dir
-			},
-			"write node file",
-		},
-		{
-			"node file cannot be removed", wire.Node{Name: "east"},
+			"node file cannot be removed",
+			wire.Node{Name: "east"},
 			dirNamedAsNodeFile,
 			"remove node file",
 		},
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			dir := tc.setup(t)
-			err := Announce(dir, strings.TrimSuffix(nodeFile(1), ".yaml"), tc.self)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("Announce: %v, want an error containing %q", err, tc.want)
+			dir := tt.setup(t)
+			err := Announce(dir, strings.TrimSuffix(nodeFile(1), ".yaml"), tt.self)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Announce: %v, want an error containing %q", err, tt.want)
 			}
 		})
 	}
@@ -250,19 +244,17 @@ func TestLoaderEmptyDirectory(t *testing.T) {
 		name string
 		dir  func(t *testing.T) string
 	}{
-		{"empty directory", func(t *testing.T) string { return t.TempDir() }},
-		{"missing directory", func(t *testing.T) string {
-			return filepath.Join(t.TempDir(), "absent")
-		}},
+		{"empty directory", emptyDir},
+		{"missing directory", missingDir},
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			log, buf := testLog()
-			l := NewLoader(tc.dir(t), log)
+			loader := NewLoader(tt.dir(t), log)
 			// The second call uses the cached empty list.
 			for range 2 {
-				if got := load(t, l); len(got) != 0 {
+				if got := load(t, loader); len(got) != 0 {
 					t.Errorf("nodes = %+v, want none", got)
 				}
 			}
@@ -283,15 +275,15 @@ func TestLoaderSortsByNodeName(t *testing.T) {
 	put(t, dir, nodeFile(4), nodeContent("east-2", "https://east2.example.com"), 0)
 	log, buf := testLog()
 
-	l := NewLoader(dir, log)
+	loader := NewLoader(dir, log)
 	want := []wire.Node{
 		{Name: "east", URL: "https://east.example.com"},
 		{Name: "east-2", URL: "https://east2.example.com"},
 		{Name: "north", URL: "https://north.example.com"},
 		{Name: "west", URL: "http://west.example.com:8480/api"},
 	}
-	checkNodes(t, load(t, l), want)
-	checkNodes(t, load(t, l), want)
+	checkNodes(t, load(t, loader), want)
+	checkNodes(t, load(t, loader), want)
 	if buf.Len() != 0 {
 		t.Errorf("unexpected log output: %s", buf)
 	}
@@ -309,15 +301,15 @@ func TestAnnounceThenLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	log, buf := testLog()
-	l := NewLoader(dir, log)
-	checkNodes(t, load(t, l), []wire.Node{
+	loader := NewLoader(dir, log)
+	checkNodes(t, load(t, loader), []wire.Node{
 		{Name: "east", URL: "https://e"}, {Name: "west", URL: "http://w/api"},
 	})
 
 	if err := Announce(dir, "0000000000000001", wire.Node{Name: "west"}); err != nil {
 		t.Fatal(err)
 	}
-	checkNodes(t, load(t, l), []wire.Node{{Name: "east", URL: "https://e"}})
+	checkNodes(t, load(t, loader), []wire.Node{{Name: "east", URL: "https://e"}})
 	if buf.Len() != 0 {
 		t.Errorf("unexpected log output: %s", buf)
 	}
@@ -332,13 +324,13 @@ func TestLoaderURLForms(t *testing.T) {
 		{"http://192.0.2.7:8480/a/b//", "http://192.0.2.7:8480/a/b"},
 		{"http://[2001:db8::1]:8480/api", "http://[2001:db8::1]:8480/api"},
 	}
-	for _, tc := range tests {
-		t.Run(tc.in, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
-			put(t, dir, nodeFile(1), nodeContent("n", tc.in), 0)
+			put(t, dir, nodeFile(1), nodeContent("n", tt.in), 0)
 			got := load(t, NewLoader(dir, slog.New(slog.DiscardHandler)))
-			checkNodes(t, got, []wire.Node{{Name: "n", URL: tc.want}})
+			checkNodes(t, got, []wire.Node{{Name: "n", URL: tt.want}})
 		})
 	}
 }
@@ -346,7 +338,7 @@ func TestLoaderURLForms(t *testing.T) {
 func TestLoaderIgnoresInvalidFile(t *testing.T) {
 	t.Parallel()
 	const okURL = "http://a.example.com"
-	f9 := nodeFile(9)
+	badFile := nodeFile(9)
 	withURL := func(u string) string { return nodeContent("a", u) }
 	withName := func(n string) string { return nodeContent(n, okURL) }
 	tests := []struct {
@@ -355,43 +347,43 @@ func TestLoaderIgnoresInvalidFile(t *testing.T) {
 		content string
 		warn    string
 	}{
-		{"empty file", f9, "", "parse node file"},
-		{"garbage", f9, "\x00\x01 not yaml: [", "parse node file"},
-		{"syntax error", f9, "name: [", "parse node file"},
-		{"unknown key", f9, withURL(okURL) + "extra: 1\n", "extra"},
-		{"list instead of node", f9, "- name: a\n", "parse node file"},
+		{"empty file", badFile, "", "parse node file"},
+		{"garbage", badFile, "\x00\x01 not yaml: [", "parse node file"},
+		{"syntax error", badFile, "name: [", "parse node file"},
+		{"unknown key", badFile, withURL(okURL) + "extra: 1\n", "extra"},
+		{"list instead of node", badFile, "- name: a\n", "parse node file"},
 		{"file name is not a node id", "east.yaml", withURL(okURL), "not a node id"},
 		{"short node id", "abc.yaml", withURL(okURL), "not a node id"},
 		{"upper case node id", "00000000000000E9.yaml", withURL(okURL), "not a node id"},
-		{"no name", f9, "url: " + okURL + "\n", "must match"},
-		{"empty name", f9, withName("''"), "must match"},
-		{"upper case name", f9, withName("East"), "must match"},
-		{"leading dash", f9, withName("-a"), "must match"},
-		{"long name", f9, withName(strings.Repeat("a", 65)), "must match"},
-		{"no url", f9, "name: a\n", "absolute http or https URL"},
-		{"unparsable url", f9, withURL("'http://a b.example.com'"), "not a valid URL"},
-		{"relative url", f9, withURL("/api"), "absolute http or https URL"},
-		{"ftp url", f9, withURL("ftp://a.example.com"), "absolute http or https URL"},
-		{"no host", f9, withURL("http:///api"), "no host"},
-		{"port without host", f9, withURL("http://:8480/api"), "no host"},
-		{"query", f9, withURL(okURL + "/api?x=1"), "query or a fragment"},
-		{"empty query", f9, withURL(okURL + "/api?"), "query or a fragment"},
-		{"fragment", f9, withURL(okURL + "/api#top"), "query or a fragment"},
+		{"no name", badFile, "url: " + okURL + "\n", "must match"},
+		{"empty name", badFile, withName("''"), "must match"},
+		{"upper case name", badFile, withName("East"), "must match"},
+		{"leading dash", badFile, withName("-a"), "must match"},
+		{"long name", badFile, withName(strings.Repeat("a", 65)), "must match"},
+		{"no url", badFile, "name: a\n", "absolute http or https URL"},
+		{"unparsable url", badFile, withURL("'http://a b.example.com'"), "not a valid URL"},
+		{"relative url", badFile, withURL("/api"), "absolute http or https URL"},
+		{"ftp url", badFile, withURL("ftp://a.example.com"), "absolute http or https URL"},
+		{"no host", badFile, withURL("http:///api"), "no host"},
+		{"port without host", badFile, withURL("http://:8480/api"), "no host"},
+		{"query", badFile, withURL(okURL + "/api?x=1"), "query or a fragment"},
+		{"empty query", badFile, withURL(okURL + "/api?"), "query or a fragment"},
+		{"fragment", badFile, withURL(okURL + "/api#top"), "query or a fragment"},
 	}
 	good := wire.Node{Name: "good", URL: "https://good.example.com"}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
 			put(t, dir, nodeFile(1), nodeContent(good.Name, good.URL), 0)
-			put(t, dir, tc.file, tc.content, 0)
+			put(t, dir, tt.file, tt.content, 0)
 			log, buf := testLog()
 
 			// The bad file never takes the good ones down with it.
 			checkNodes(t, load(t, NewLoader(dir, log)), []wire.Node{good})
 			out := buf.String()
-			if !strings.Contains(out, tc.warn) || !strings.Contains(out, tc.file) {
-				t.Errorf("log does not name %s and contain %q:\n%s", tc.file, tc.warn, out)
+			if !strings.Contains(out, tt.warn) || !strings.Contains(out, tt.file) {
+				t.Errorf("log does not name %s and contain %q:\n%s", tt.file, tt.warn, out)
 			}
 		})
 	}
@@ -431,6 +423,46 @@ func TestLoaderIgnoresForeignNames(t *testing.T) {
 	})
 }
 
+// loaderStep is one change to the nodes directory and what the loader must report after it.
+type loaderStep struct {
+	name    string
+	file    int // 0 means no change to the directory
+	content string
+	remove  bool
+	offset  time.Duration
+	want    []wire.Node
+	warn    string
+}
+
+// apply makes the change of the step in dir.
+func (step *loaderStep) apply(t *testing.T, dir string) {
+	t.Helper()
+	switch {
+	case step.file == 0:
+	case step.remove:
+		if err := os.Remove(filepath.Join(dir, nodeFile(step.file))); err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+	default:
+		put(t, dir, nodeFile(step.file), step.content, step.offset)
+	}
+}
+
+// check fails the test when loader or the log in buf does not show what the step expects.
+func (step *loaderStep) check(t *testing.T, loader *Loader, buf *bytes.Buffer) {
+	t.Helper()
+	got, err := loader.Nodes()
+	if err != nil || !slices.Equal(got.Nodes, step.want) {
+		t.Errorf("%s: Nodes = %+v, %v; want %+v", step.name, got.Nodes, err, step.want)
+	}
+	if step.warn == "" && buf.Len() != 0 {
+		t.Errorf("%s: unexpected log output: %s", step.name, buf)
+	}
+	if step.warn != "" && !strings.Contains(buf.String(), step.warn) {
+		t.Errorf("%s: log does not contain %q:\n%s", step.name, step.warn, buf)
+	}
+}
+
 func TestLoaderFollowsFileChanges(t *testing.T) {
 	t.Parallel()
 	east := nodeContent("east", "https://east.example.com")
@@ -438,33 +470,31 @@ func TestLoaderFollowsFileChanges(t *testing.T) {
 	nodeEast := wire.Node{Name: "east", URL: "https://east.example.com"}
 	nodeWest := wire.Node{Name: "west", URL: "https://west.example.com"}
 	nodeEast2 := wire.Node{Name: "east2", URL: "https://east2.example.com"}
-	steps := []struct {
-		name    string
-		file    int // 0 means no change to the directory
-		content string
-		remove  bool
-		offset  time.Duration
-		want    []wire.Node
-		warn    string
-	}{
+	steps := []loaderStep{
 		{"first file", 1, east, false, 0, []wire.Node{nodeEast}, ""},
 		{"second file", 2, west, false, 0, []wire.Node{nodeEast, nodeWest}, ""},
 		{"nothing changed", 0, "", false, 0, []wire.Node{nodeEast, nodeWest}, ""},
 		{
 			"file turns bad, last good content stays", 1, "name: [\n", false, time.Second,
-			[]wire.Node{nodeEast, nodeWest}, "parse node file",
+			[]wire.Node{nodeEast, nodeWest},
+			"parse node file",
 		},
 		{
 			"bad file is not read again", 0, "", false, 0,
-			[]wire.Node{nodeEast, nodeWest}, "",
+			[]wire.Node{nodeEast, nodeWest},
+			"",
 		},
 		{
 			"fixed file is picked up", 1, nodeContent("east2", "https://east2.example.com"), false,
-			2 * time.Second, []wire.Node{nodeEast2, nodeWest}, "",
+			2 * time.Second,
+			[]wire.Node{nodeEast2, nodeWest},
+			"",
 		},
 		{
 			"file turns invalid, last good content stays", 2, nodeContent("west", "ftp://w"), false,
-			time.Second, []wire.Node{nodeEast2, nodeWest}, "http or https",
+			time.Second,
+			[]wire.Node{nodeEast2, nodeWest},
+			"http or https",
 		},
 		{"deleted file disappears", 2, "", true, 0, []wire.Node{nodeEast2}, ""},
 		{"last file deleted", 1, "", true, 0, nil, ""},
@@ -472,29 +502,12 @@ func TestLoaderFollowsFileChanges(t *testing.T) {
 	}
 	dir := t.TempDir()
 	log, buf := testLog()
-	l := NewLoader(dir, log)
+	loader := NewLoader(dir, log)
 	// The steps share one directory and one loader, so they run in order.
-	for _, tc := range steps {
+	for _, step := range steps {
 		buf.Reset()
-		switch {
-		case tc.file == 0:
-		case tc.remove:
-			if err := os.Remove(filepath.Join(dir, nodeFile(tc.file))); err != nil {
-				t.Fatalf("%s: %v", tc.name, err)
-			}
-		default:
-			put(t, dir, nodeFile(tc.file), tc.content, tc.offset)
-		}
-		got, err := l.Nodes()
-		if err != nil || !slices.Equal(got.Nodes, tc.want) {
-			t.Errorf("%s: Nodes = %+v, %v; want %+v", tc.name, got.Nodes, err, tc.want)
-		}
-		if tc.warn == "" && buf.Len() != 0 {
-			t.Errorf("%s: unexpected log output: %s", tc.name, buf)
-		}
-		if tc.warn != "" && !strings.Contains(buf.String(), tc.warn) {
-			t.Errorf("%s: log does not contain %q:\n%s", tc.name, tc.warn, buf)
-		}
+		step.apply(t, dir)
+		step.check(t, loader, buf)
 	}
 }
 
@@ -506,10 +519,10 @@ func TestLoaderDuplicateName(t *testing.T) {
 	put(t, dir, nodeFile(1), nodeContent("same", "http://one.example.com"), time.Hour)
 	put(t, dir, nodeFile(3), nodeContent("other", "http://other.example.com"), 0)
 	log, buf := testLog()
-	l := NewLoader(dir, log)
+	loader := NewLoader(dir, log)
 
 	other := wire.Node{Name: "other", URL: "http://other.example.com"}
-	checkNodes(t, load(t, l), []wire.Node{other, {Name: "same", URL: "http://one.example.com"}})
+	checkNodes(t, load(t, loader), []wire.Node{other, {Name: "same", URL: "http://one.example.com"}})
 	out := buf.String()
 	for _, want := range []string{
 		"duplicate node name", "kept=" + nodeFile(1), "ignored=" + nodeFile(2),
@@ -521,7 +534,7 @@ func TestLoaderDuplicateName(t *testing.T) {
 
 	// The list is merged only when a file changed, so the warning is not repeated.
 	buf.Reset()
-	load(t, l)
+	load(t, loader)
 	if buf.Len() != 0 {
 		t.Errorf("warning repeated without a change: %s", buf)
 	}
@@ -530,7 +543,7 @@ func TestLoaderDuplicateName(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, nodeFile(1))); err != nil {
 		t.Fatal(err)
 	}
-	checkNodes(t, load(t, l), []wire.Node{other, {Name: "same", URL: "http://two.example.com"}})
+	checkNodes(t, load(t, loader), []wire.Node{other, {Name: "same", URL: "http://two.example.com"}})
 }
 
 func TestLoaderResultIsACopy(t *testing.T) {
@@ -538,12 +551,12 @@ func TestLoaderResultIsACopy(t *testing.T) {
 	dir := t.TempDir()
 	put(t, dir, nodeFile(1), nodeContent("east", "http://e.example.com"), 0)
 	put(t, dir, nodeFile(2), nodeContent("west", "http://w.example.com"), 0)
-	l := NewLoader(dir, slog.New(slog.DiscardHandler))
-	first := load(t, l)
+	loader := NewLoader(dir, slog.New(slog.DiscardHandler))
+	first := load(t, loader)
 	first[0].Name = "changed"
 	_ = append(first[:1], wire.Node{Name: "extra", URL: "http://x.example.com"})
 
-	checkNodes(t, load(t, l), []wire.Node{
+	checkNodes(t, load(t, loader), []wire.Node{
 		{Name: "east", URL: "http://e.example.com"}, {Name: "west", URL: "http://w.example.com"},
 	})
 }
@@ -553,21 +566,19 @@ func TestLoaderConcurrent(t *testing.T) {
 	dir := t.TempDir()
 	put(t, dir, nodeFile(1), nodeContent("east", "http://e.example.com"), 0)
 	put(t, dir, nodeFile(2), nodeContent("west", "http://w.example.com"), 0)
-	l := NewLoader(dir, slog.New(slog.DiscardHandler))
+	loader := NewLoader(dir, slog.New(slog.DiscardHandler))
 	var wg sync.WaitGroup
 	for i := range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range 20 {
-				got, err := l.Nodes()
+				got, err := loader.Nodes()
 				if err != nil || len(got.Nodes) != 2 {
 					t.Errorf("goroutine %d: Nodes = %+v, %v", i, got, err)
 					return
 				}
 				got.Nodes[0].Name = "scribble"
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }

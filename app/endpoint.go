@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"sync/atomic"
 )
@@ -11,10 +12,11 @@ import (
 // address stays configured, so that a reload can change the certificate or switch between
 // TLS and plain HTTP without closing the port.
 type endpoint struct {
-	net.Listener                            // the TCP listener
-	address      string                     // as configured; what a reload compares
-	tlsConfig    atomic.Pointer[tls.Config] // nil serves plain HTTP
-	retired      atomic.Bool
+	net.Listener // the TCP listener
+
+	address   string                     // as configured; what a reload compares
+	tlsConfig atomic.Pointer[tls.Config] // nil serves plain HTTP
+	retired   atomic.Bool
 }
 
 // openEndpoint binds address and serves TLS with tlsConfig, or plain HTTP when it is nil.
@@ -22,7 +24,7 @@ func openEndpoint(ctx context.Context, address string, tlsConfig *tls.Config) (*
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", address)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open listener: %w", err)
 	}
 	e := &endpoint{Listener: ln, address: address}
 	e.tlsConfig.Store(tlsConfig)
@@ -34,7 +36,10 @@ func openEndpoint(ctx context.Context, address string, tlsConfig *tls.Config) (*
 func (e *endpoint) Accept() (net.Conn, error) {
 	conn, err := e.Listener.Accept()
 	if err != nil {
-		return nil, err
+		// http.Server tells a temporary failure from a fatal one with a plain type assertion
+		// on this error, not errors.As, so wrapping it would end the retry of temporary
+		// failures.
+		return nil, err //nolint:wrapcheck // see the comment above
 	}
 	if cfg := e.tlsConfig.Load(); cfg != nil {
 		return tls.Server(conn, cfg), nil
@@ -52,7 +57,10 @@ func (e *endpoint) setTLS(cfg *tls.Config) {
 // that sees Accept fail can tell this from a failure.
 func (e *endpoint) retire() error {
 	e.retired.Store(true)
-	return e.Close()
+	if err := e.Close(); err != nil {
+		return fmt.Errorf("close listener: %w", err)
+	}
+	return nil
 }
 
 // isRetired reports whether retire has been called.
