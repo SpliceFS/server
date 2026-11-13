@@ -1,0 +1,46 @@
+name: "@NAME@"
+version: "@VERSION@"
+origin: "net/splicefs-server"
+comment: "Server of the SpliceFS read-only multi-source filesystem"
+desc: <<EOD
+The SpliceFS server. A SpliceFS client mounts the folders of a cluster of these
+servers as one folder and reads each file from several servers at once.
+Installing the package starts the server with nothing shared.
+
+WWW: https://splicefs.org
+EOD
+maintainer: "anthony@splicefs.org"
+www: "https://splicefs.org"
+abi: "@ABI@"
+prefix: "/usr/local"
+licenselogic: "single"
+licenses: ["MIT"]
+categories: ["net"]
+scripts: {
+  pre-install: <<EOD
+# The server runs as its own user, which owns nothing but its data folder.
+if ! pw groupshow splicefs >/dev/null 2>&1; then
+    pw groupadd splicefs
+fi
+if ! pw usershow splicefs >/dev/null 2>&1; then
+    pw useradd splicefs -g splicefs -d /nonexistent -s /usr/sbin/nologin -c "SpliceFS server"
+fi
+EOD
+  pre-deinstall: <<EOD
+service splicefsd onestop >/dev/null 2>&1 || true
+EOD
+}
+messages: [
+  {
+    type: "install"
+    message: <<EOD
+The SpliceFS server starts when the system boots. To start it now:
+
+    service @PROGRAM@ start
+
+pkg stops every program an install script starts, so the package cannot do this
+for you. To keep the server from starting at boot, put @PROGRAM@_enable="NO" in
+/etc/rc.conf.
+EOD
+  }
+]

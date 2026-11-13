@@ -83,6 +83,19 @@ package:
 	$(PACKAGE_RUN) -v "$(CURDIR)/dist/keys":/keys:ro $(APK_IMAGE) \
 		sh -c 'cd /src && scripts/package-apk.sh /out'
 
+# FreeBSD packages in ./dist/freebsd, one per FreeBSD release and CPU type. FreeBSD cannot run
+# in a container, so each release in packaging/freebsd/images runs as a virtual machine (QEMU
+# inside the Go container), where pkg(8) builds the packages, installs the one for the
+# machine and checks that the service runs. FREEBSD=15.1 limits the run to one release.
+FREEBSD ?=
+.PHONY: package-freebsd
+package-freebsd:
+	mkdir -p dist
+	$(PACKAGE_RUN) $(LINUX_IMAGE) sh -c 'cp -r /src /tmp/w && cd /tmp/w && \
+		scripts/package-binaries.sh /out'
+	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) LINUX_IMAGE=$(LINUX_IMAGE) \
+		FREEBSD=$(FREEBSD) scripts/package-freebsd.sh dist
+
 # The table of how a git tag becomes each package version. It needs no Docker, so it is part
 # of check and runs on every system.
 package-lib-test:
