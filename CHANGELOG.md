@@ -51,6 +51,10 @@ notable ones.
   `~/.splicefs/var/server` for the state. `--config DIR` and `--state DIR` override the
   defaults on every system.
 - Trunk development: one branch, `main`, and one version per change.
+- `make service-test`: on every supported system the package is installed under that system's
+  real service manager (systemd or OpenRC as process 1 of a container) and the service must
+  start by itself, come back after a reboot and stop when the package is removed. CI also
+  installs the package on the runner itself (`make service-test-host`).
 
 ### Changed
 
