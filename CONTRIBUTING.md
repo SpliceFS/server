@@ -24,7 +24,7 @@ make fmt          # rewrite files with gofmt
 ```
 
 `make check` is what CI runs, and CI runs golangci-lint the way `make lint` does. `make lint` also
-runs ShellCheck, which CI does not run yet.
+runs ShellCheck, which CI runs as its own job.
 
 ## Branches and pull requests
 
