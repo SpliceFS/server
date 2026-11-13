@@ -80,7 +80,7 @@ jobs:
   # FreeBSD cannot run in a container, so each release runs as a virtual machine under QEMU
   # (scripts/package-freebsd.sh). On amd64 the runner offers hardware virtualization; on
   # arm64 the machine is emulated, which is slower and still the real system.
-  freebsd:
+  freebsd-package:
     name: FreeBSD package (${{ matrix.release }}, ${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -145,13 +145,28 @@ jobs:
             dist/alpine/
           if-no-files-found: error
 
+  # FreeBSD cannot run in a container, so the tests run in a virtual machine under QEMU
+  # (scripts/check-freebsd.sh). Only amd64: there the runner offers hardware virtualization,
+  # and an emulated machine would take too long for the whole test suite.
+  freebsd-tests:
+    name: FreeBSD tests (${{ matrix.release }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["14.5", "15.1"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Tests on FreeBSD, as root, 100% coverage
+        run: make check-freebsd FREEBSD=${{ matrix.release }}
+
   lint:
     name: Lint (${{ matrix.goos }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        goos: [linux, darwin]
+        goos: [linux, darwin, freebsd]
     env:
       GOOS: ${{ matrix.goos }}
     steps:

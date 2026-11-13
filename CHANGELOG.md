@@ -78,6 +78,9 @@ notable ones.
 
 - A request for a name longer than the file system allows is answered with 404 instead of
   500. Found by the new fuzz tests.
+- FreeBSD: `make check-freebsd` runs the tests as root in a FreeBSD virtual machine, with the
+  100% coverage gate, and CI runs it for FreeBSD 14 and 15. The FreeBSD scripts are the ones
+  the client uses.
 
 ### Removed
 
