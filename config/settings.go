@@ -44,6 +44,7 @@ func (c *Config) ShareNames() []string { return shareNames(c.Shares) }
 // Endpoint is one listener with its choice between TLS and plain HTTP.
 type Endpoint struct {
 	Listener `yaml:",inline"`
+
 	// Plain serves without TLS, for use behind a reverse proxy that terminates it.
 	Plain bool `yaml:"plain"`
 }
@@ -68,6 +69,7 @@ type Auth struct {
 
 // rawConfig reads trusted_proxies as text so that single addresses are accepted.
 type rawConfig struct {
-	Config         `yaml:",inline"`
+	Config `yaml:",inline"`
+
 	TrustedProxies []string `yaml:"trusted_proxies"`
 }

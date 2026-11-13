@@ -74,15 +74,15 @@ func (c *genCloser) waitClosed(t *testing.T) {
 func genNamed(name string, closer *genCloser) *generation {
 	return &generation{
 		handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte(name))
+			respondText(w, name)
 		}),
 		closer: closer,
 	}
 }
 
-func genGet(l *live) string {
+func genGet(handlers *live) string {
 	rec := httptest.NewRecorder()
-	l.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+	handlers.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 	return rec.Body.String()
 }
 
@@ -92,8 +92,8 @@ func discardLogger() *slog.Logger {
 
 func TestLiveRequestReachesCurrentHandler(t *testing.T) {
 	t.Parallel()
-	l := newLive(genNamed("first", newGenCloser(nil)), discardLogger())
-	if got := genGet(l); got != "first" {
+	handlers := newLive(genNamed("first", newGenCloser(nil)), discardLogger())
+	if got := genGet(handlers); got != "first" {
 		t.Fatalf("got %q, want first", got)
 	}
 }
@@ -101,9 +101,9 @@ func TestLiveRequestReachesCurrentHandler(t *testing.T) {
 func TestLiveReplaceSendsNewRequestsToNewHandler(t *testing.T) {
 	t.Parallel()
 	oldCloser := newGenCloser(nil)
-	l := newLive(genNamed("old", oldCloser), discardLogger())
-	l.replace(genNamed("new", newGenCloser(nil)))
-	if got := genGet(l); got != "new" {
+	handlers := newLive(genNamed("old", oldCloser), discardLogger())
+	handlers.replace(genNamed("new", newGenCloser(nil)))
+	if got := genGet(handlers); got != "new" {
 		t.Fatalf("got %q, want new", got)
 	}
 	oldCloser.waitClosed(t)
@@ -120,23 +120,23 @@ func TestLiveRequestInProgressFinishesOnOldGeneration(t *testing.T) {
 		handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			close(started)
 			<-release
-			_, _ = w.Write([]byte("old"))
+			respondText(w, "old")
 			finished.Store(true)
 		}),
 		closer: oldCloser,
 	}
-	l := newLive(old, discardLogger())
+	handlers := newLive(old, discardLogger())
 
 	done := make(chan string)
-	go func() { done <- genGet(l) }()
+	go func() { done <- genGet(handlers) }()
 	select {
 	case <-started:
 	case <-time.After(genWait):
 		t.Fatal("request did not start")
 	}
 
-	l.replace(genNamed("new", newGenCloser(nil)))
-	if got := genGet(l); got != "new" {
+	handlers.replace(genNamed("new", newGenCloser(nil)))
+	if got := genGet(handlers); got != "new" {
 		t.Fatalf("new request got %q, want new", got)
 	}
 	// The wait here cannot decide the result: a wrong implementation that closes early has
@@ -164,17 +164,17 @@ func TestLiveRequestInProgressFinishesOnOldGeneration(t *testing.T) {
 func TestLiveSeveralReplacesCloseEveryOldGenerationOnce(t *testing.T) {
 	t.Parallel()
 	closers := []*genCloser{newGenCloser(nil), newGenCloser(nil), newGenCloser(nil)}
-	l := newLive(genNamed("g0", closers[0]), discardLogger())
-	l.replace(genNamed("g1", closers[1]))
-	l.replace(genNamed("g2", closers[2]))
-	l.replace(genNamed("g3", newGenCloser(nil)))
-	l.retiring.Wait()
+	handlers := newLive(genNamed("g0", closers[0]), discardLogger())
+	handlers.replace(genNamed("g1", closers[1]))
+	handlers.replace(genNamed("g2", closers[2]))
+	handlers.replace(genNamed("g3", newGenCloser(nil)))
+	handlers.retiring.Wait()
 	for i, c := range closers {
 		if got := c.calls(); got != 1 {
 			t.Errorf("generation %d closed %d times, want 1", i, got)
 		}
 	}
-	if got := genGet(l); got != "g3" {
+	if got := genGet(handlers); got != "g3" {
 		t.Fatalf("got %q, want g3", got)
 	}
 }
@@ -182,11 +182,11 @@ func TestLiveSeveralReplacesCloseEveryOldGenerationOnce(t *testing.T) {
 func TestLiveCloseErrorOfReplacedGenerationIsLogged(t *testing.T) {
 	t.Parallel()
 	var logs bytes.Buffer
-	l := newLive(genNamed("old", newGenCloser(errors.New("disk gone"))),
+	handlers := newLive(genNamed("old", newGenCloser(errors.New("disk gone"))),
 		slog.New(slog.NewTextHandler(&logs, nil)))
-	l.replace(genNamed("new", newGenCloser(nil)))
+	handlers.replace(genNamed("new", newGenCloser(nil)))
 	// Waiting for the retiring generation also orders its log write before this read.
-	l.retiring.Wait()
+	handlers.retiring.Wait()
 	out := logs.String()
 	for _, want := range []string{"level=WARN", "close replaced configuration", "disk gone"} {
 		if !strings.Contains(out, want) {
@@ -199,9 +199,9 @@ func TestLiveCloseReturnsCurrentCloseError(t *testing.T) {
 	t.Parallel()
 	want := errors.New("close failed")
 	oldCloser := newGenCloser(nil)
-	l := newLive(genNamed("old", oldCloser), discardLogger())
-	l.replace(genNamed("new", newGenCloser(want)))
-	if err := l.close(); !errors.Is(err, want) {
+	handlers := newLive(genNamed("old", oldCloser), discardLogger())
+	handlers.replace(genNamed("new", newGenCloser(want)))
+	if err := handlers.close(); !errors.Is(err, want) {
 		t.Fatalf("close returned %v, want %v", err, want)
 	}
 	if got := oldCloser.calls(); got != 1 {
@@ -214,7 +214,7 @@ func TestLiveCloseWaitsForRequestsInProgress(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	closer := newGenCloser(nil)
-	l := newLive(&generation{
+	handlers := newLive(&generation{
 		handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			close(started)
 			<-release
@@ -222,14 +222,14 @@ func TestLiveCloseWaitsForRequestsInProgress(t *testing.T) {
 		closer: closer,
 	}, discardLogger())
 
-	go genGet(l)
+	go genGet(handlers)
 	select {
 	case <-started:
 	case <-time.After(genWait):
 		t.Fatal("request did not start")
 	}
 	result := make(chan error)
-	go func() { result <- l.close() }()
+	go func() { result <- handlers.close() }()
 	time.Sleep(5 * time.Millisecond)
 	if closer.isClosed() {
 		t.Fatal("current generation closed while its request was still running")
@@ -251,7 +251,7 @@ func TestLiveCloseWaitsForRequestsInProgress(t *testing.T) {
 func TestGenerationPanicReleasesRequestCount(t *testing.T) {
 	t.Parallel()
 	closer := newGenCloser(nil)
-	l := newLive(&generation{
+	handlers := newLive(&generation{
 		handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("handler broke") }),
 		closer:  closer,
 	}, discardLogger())
@@ -262,9 +262,9 @@ func TestGenerationPanicReleasesRequestCount(t *testing.T) {
 				t.Errorf("recovered %v, want the handler panic", got)
 			}
 		}()
-		genGet(l)
+		genGet(handlers)
 	}()
 
-	l.replace(genNamed("new", newGenCloser(nil)))
+	handlers.replace(genNamed("new", newGenCloser(nil)))
 	closer.waitClosed(t)
 }

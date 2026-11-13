@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -82,12 +83,12 @@ func Run(ctx context.Context, cfg *config.Config, stateDir string, opts Options)
 	r.handlers = newLive(first, logger)
 	defer func() { err = errors.Join(err, r.handlers.close()) }()
 
-	listeners, err := r.plan(ctx, cfg.Listen)
+	changes, err := r.plan(ctx, cfg.Listen)
 	if err != nil {
 		return err
 	}
 	r.srv = newServer(r.handlers, logger)
-	return r.serve(ctx, listeners.added, shutdownGrace)
+	return r.serve(ctx, changes.added, shutdownGrace)
 }
 
 // builder makes a generation from a configuration. Everything in it stays the same for the
@@ -101,12 +102,12 @@ type builder struct {
 }
 
 // generation opens the shares of cfg and builds the handler that serves them.
-func (b builder) generation(cfg *config.Config) (*generation, error) {
+func (b *builder) generation(cfg *config.Config) (*generation, error) {
 	shares, err := openShares(cfg)
 	if err != nil {
 		return nil, err
 	}
-	handler, err := newHandler(cfg, b.data, b.version, b.logger, shares)
+	handler, err := newHandler(cfg, &b.data, b.version, b.logger, shares)
 	if err != nil {
 		return nil, errors.Join(err, shares.Close())
 	}
@@ -117,7 +118,7 @@ func (b builder) generation(cfg *config.Config) (*generation, error) {
 // directory, so that a server with nothing configured and nothing stored starts, and it
 // refuses to start if it cannot make or read its own key or announce itself.
 func newHandler(
-	cfg *config.Config, data dataPaths, version string, logger *slog.Logger, shares *shareSet,
+	cfg *config.Config, data *dataPaths, version string, logger *slog.Logger, shares *shareSet,
 ) (http.Handler, error) {
 	if err := data.makeFolders(); err != nil {
 		return nil, err
@@ -128,11 +129,11 @@ func newHandler(
 	}
 	tokens := auth.NewTokens(data.keysDir, nodeID, cfg.Auth.TokenTTL.Std(), time.Now, logger)
 	if err := tokens.EnsureOwnKey(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("make or read own key: %w", err)
 	}
 	self := wire.Node{Name: cfg.Cluster.Node, URL: cfg.Cluster.URL}
 	if err := cluster.Announce(data.nodesDir, nodeID, self); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("announce node: %w", err)
 	}
 	nodes := namedCluster{name: cfg.Cluster.Name, nodes: cluster.NewLoader(data.nodesDir, logger)}
 	limiter := auth.NewLimiter(cfg.Auth.LoginRate.Count, cfg.Auth.LoginRate.Per, time.Now)
@@ -146,4 +147,13 @@ func newHandler(
 		TrustedProxies: cfg.TrustedProxies,
 		Logger:         logger,
 	}), nil
+}
+
+// wrap adds what the code was doing to err. It returns nil for a nil err, so that a call can
+// be passed straight in.
+func wrap(err error, doing string) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", doing, err)
 }

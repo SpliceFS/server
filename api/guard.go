@@ -73,11 +73,11 @@ func (s *server) forShare(next func(http.ResponseWriter, *http.Request, Share)) 
 			writeError(w, http.StatusForbidden, "share not allowed")
 			return
 		}
-		sh, ok := s.shares[name]
+		shared, ok := s.shares[name]
 		if !ok {
 			writeError(w, http.StatusNotFound, "not found")
 			return
 		}
-		next(w, r, sh)
+		next(w, r, shared)
 	})
 }

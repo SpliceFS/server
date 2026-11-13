@@ -102,7 +102,7 @@ func NewHandler(opts Options) http.Handler {
 	if now == nil {
 		now = time.Now
 	}
-	s := &server{
+	srv := &server{
 		node:       opts.Node,
 		version:    opts.Version,
 		base:       opts.BasePath,
@@ -112,7 +112,7 @@ func NewHandler(opts Options) http.Handler {
 		nodes:      opts.Nodes,
 		log:        log,
 	}
-	handler := noSniff(s.routes())
+	handler := noSniff(srv.routes())
 	handler = recoverPanics(log, handler)
 	handler = logAccess(log, now, handler)
 	return resolveClient(opts.TrustedProxies, handler)

@@ -15,7 +15,7 @@ func smallHash(password string) string {
 	salt := []byte("0123456789abcdef")
 	key := argon2.IDKey([]byte(password), salt, 1, 8, 1, 32)
 	return fmt.Sprintf("$argon2id$v=19$m=8,t=1,p=1$%s$%s",
-		phcEncoding.EncodeToString(salt), phcEncoding.EncodeToString(key))
+		phcEncoding().EncodeToString(salt), phcEncoding().EncodeToString(key))
 }
 
 type failingReader struct{}
@@ -33,11 +33,25 @@ func TestHashPasswordFormat(t *testing.T) {
 	if len(fields) != 6 || fields[1] != "argon2id" || fields[2] != "v=19" || fields[3] != "m=65536,t=3,p=4" {
 		t.Fatalf("unexpected format: %q", hash)
 	}
-	if got := phcEncoding.EncodeToString(salt); fields[4] != got {
+	if got := phcEncoding().EncodeToString(salt); fields[4] != got {
 		t.Errorf("salt field = %q, want %q", fields[4], got)
 	}
-	if key, err := phcEncoding.DecodeString(fields[5]); err != nil || len(key) != 32 || strings.Contains(fields[5], "=") {
+	if !isUnpaddedKey(fields[5]) {
 		t.Errorf("hash field %q is not 32 bytes of unpadded base64", fields[5])
+	}
+}
+
+// isUnpaddedKey reports whether field is the unpadded base64 of a 32 byte key.
+func isUnpaddedKey(field string) bool {
+	key, err := phcEncoding().DecodeString(field)
+	return err == nil && len(key) == 32 && !strings.Contains(field, "=")
+}
+
+func TestHashPasswordRoundTrip(t *testing.T) {
+	t.Parallel()
+	hash, err := HashPassword("correct horse", bytes.NewReader([]byte("0123456789abcdef")))
+	if err != nil {
+		t.Fatal(err)
 	}
 	ok, err := VerifyPassword(hash, "correct horse")
 	if err != nil || !ok {
@@ -47,8 +61,8 @@ func TestHashPasswordFormat(t *testing.T) {
 
 func TestHashPasswordErrors(t *testing.T) {
 	t.Parallel()
-	if _, err := HashPassword("", bytes.NewReader(make([]byte, 16))); err == nil {
-		t.Error("empty password: want error")
+	if _, err := HashPassword("", bytes.NewReader(make([]byte, 16))); !errors.Is(err, errEmptyPassword) {
+		t.Errorf("empty password: err = %v, want errEmptyPassword", err)
 	}
 	_, err := HashPassword("secret-password", failingReader{})
 	if err == nil {
@@ -91,7 +105,7 @@ func TestVerifyPasswordUsesStoredParameters(t *testing.T) {
 	salt := []byte("0123456789abcdef")
 	key := argon2.IDKey([]byte("pw"), salt, 2, 16, 2, 20)
 	hash := fmt.Sprintf("$argon2id$v=19$m=16,t=2,p=2$%s$%s",
-		phcEncoding.EncodeToString(salt), phcEncoding.EncodeToString(key))
+		phcEncoding().EncodeToString(salt), phcEncoding().EncodeToString(key))
 	ok, err := VerifyPassword(hash, "pw")
 	if err != nil || !ok {
 		t.Errorf("VerifyPassword = %v, %v; want true, nil", ok, err)
@@ -101,8 +115,8 @@ func TestVerifyPasswordUsesStoredParameters(t *testing.T) {
 func TestVerifyPasswordMalformed(t *testing.T) {
 	t.Parallel()
 	valid := smallHash("pw")
-	salt := phcEncoding.EncodeToString([]byte("0123456789abcdef"))
-	key := phcEncoding.EncodeToString(make([]byte, 32))
+	salt := phcEncoding().EncodeToString([]byte("0123456789abcdef"))
+	key := phcEncoding().EncodeToString(make([]byte, 32))
 	build := func(algo, version, costs, salt, key string) string {
 		return strings.Join([]string{"", algo, version, costs, salt, key}, "$")
 	}

@@ -51,45 +51,52 @@ func New(users *Users, tokens *Tokens, limiter *Limiter, slots int) *Authenticat
 //
 // After the rate limit check, Login waits for a free verification slot. If ctx ends first
 // it returns ctx.Err() wrapped, so a client that gave up does not queue for memory.
-func (a *Authenticator) Login(ctx context.Context, clientAddr, user, password string) (token string, expires time.Time, err error) {
+func (a *Authenticator) Login(
+	ctx context.Context, clientAddr, user, password string,
+) (string, time.Time, error) {
 	if !a.limiter.Allow(clientAddr) {
 		return "", time.Time{}, ErrRateLimited
 	}
-	if err := a.acquire(ctx); err != nil {
-		return "", time.Time{}, fmt.Errorf("login: %w", err)
+	if !a.acquire(ctx) {
+		return "", time.Time{}, fmt.Errorf("login: %w", ctx.Err())
 	}
 	defer a.release()
-	u, err := a.users.Lookup(user)
+	account, err := a.users.Lookup(user)
 	if errors.Is(err, ErrNoUser) {
 		return "", time.Time{}, a.reject(password)
 	}
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("login: %w", err)
 	}
-	if u.Disabled {
+	if account.Disabled {
 		return "", time.Time{}, a.reject(password)
 	}
-	ok, err := a.verify(u.PasswordHash, password)
+	ok, err := a.verify(account.PasswordHash, password)
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("login: user %q: %w", u.Name, err)
+		return "", time.Time{}, fmt.Errorf("login: user %q: %w", account.Name, err)
 	}
 	if !ok {
 		return "", time.Time{}, ErrBadCredentials
 	}
-	token, expires, err = a.tokens.Issue(u.Name, u.Shares)
+	token, expires, err := a.tokens.Issue(account.Name, account.Shares)
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("login: user %q: %w", u.Name, err)
+		return "", time.Time{}, fmt.Errorf("login: user %q: %w", account.Name, err)
 	}
 	return token, expires, nil
 }
 
-// acquire takes a verification slot, or returns the error of ctx if it ends first.
-func (a *Authenticator) acquire(ctx context.Context) error {
+// Verify checks a token and returns its claims; see Tokens.Verify.
+func (a *Authenticator) Verify(token string) (Claims, error) {
+	return a.tokens.Verify(token)
+}
+
+// acquire takes a verification slot. It returns false if ctx ends first.
+func (a *Authenticator) acquire(ctx context.Context) bool {
 	select {
 	case a.slots <- struct{}{}:
-		return nil
+		return true
 	case <-ctx.Done():
-		return ctx.Err()
+		return false
 	}
 }
 
@@ -101,11 +108,7 @@ func (a *Authenticator) release() {
 // reject spends the time of one password verification against dummyHash and returns
 // ErrBadCredentials.
 func (a *Authenticator) reject(password string) error {
+	//nolint:errcheck // only the time of the call matters, and the reply must not depend on its result
 	_, _ = a.verify(dummyHash, password)
 	return ErrBadCredentials
-}
-
-// Verify checks a token and returns its claims; see Tokens.Verify.
-func (a *Authenticator) Verify(token string) (Claims, error) {
-	return a.tokens.Verify(token)
 }

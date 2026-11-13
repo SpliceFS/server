@@ -49,13 +49,14 @@ func TestUsersLookupSeesChangesAtOnce(t *testing.T) {
 		t.Fatalf("before add: err = %v, want ErrNoUser", err)
 	}
 	writeFile(t, dir, "carol.yaml", "password_hash: h1\n")
-	u, err := users.Lookup("carol")
-	if err != nil || u.PasswordHash != "h1" {
-		t.Fatalf("after add: %+v, %v", u, err)
+	user, err := users.Lookup("carol")
+	if err != nil || user.PasswordHash != "h1" {
+		t.Fatalf("after add: %+v, %v", user, err)
 	}
 	writeFile(t, dir, "carol.yaml", "password_hash: h2\n")
-	if u, _ := users.Lookup("carol"); u.PasswordHash != "h2" {
-		t.Errorf("after change: hash = %q, want h2", u.PasswordHash)
+	user, err = users.Lookup("carol")
+	if err != nil || user.PasswordHash != "h2" {
+		t.Errorf("after change: hash = %q, err = %v, want h2", user.PasswordHash, err)
 	}
 	if err := os.Remove(filepath.Join(dir, "carol.yaml")); err != nil {
 		t.Fatal(err)
@@ -88,7 +89,7 @@ func TestUsersLookupNoUser(t *testing.T) {
 		{"slash", "a/b"},
 		{"backslash", `a\b`},
 		{"dot only", "."},
-		{"dot dot", ".."},
+		{"two dots", ".."},
 		{"leading dot", ".hidden"},
 		{"leading dash", "-x"},
 		{"leading underscore", "_x"},

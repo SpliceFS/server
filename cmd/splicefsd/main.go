@@ -43,8 +43,17 @@ SIGHUP applies the configuration without a restart.
 `
 )
 
-// exit is replaced in tests.
-var exit = os.Exit
+// exit is replaced in tests, which is the only way to run main inside the test process
+// without ending it.
+var exit = os.Exit //nolint:gochecknoglobals // the one seam that lets a test run main
+
+// The errors of a bad command line. They are printed after the program name, so their text
+// is what the user reads. A message that follows a quoted value holds only the words after
+// that value.
+var (
+	errConfigCommand      = errors.New("config needs one of: check, show")
+	errUnexpectedArgument = errors.New("unexpected argument")
+)
 
 func main() {
 	exit(run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
@@ -59,19 +68,19 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	opts, err := parseArgs(args)
 	switch {
 	case errors.Is(err, flag.ErrHelp):
-		_, _ = io.WriteString(stdout, usage)
+		sayf(stdout, "%s", usage)
 		return exitOK
 	case err != nil:
-		_, _ = fmt.Fprintf(stderr, "%s: %v\n%s", program, err, usage)
+		sayf(stderr, "%s: %v\n%s", program, err, usage)
 		return exitUsage
 	case opts.showVersion:
-		_, _ = fmt.Fprintf(stdout, "%s %s\n", program, version.String())
+		sayf(stdout, "%s %s\n", program, version.String())
 		return exitOK
 	}
 	if opts.command != "" {
-		return runConfig(opts, systemDirs, stdout, stderr)
+		return runConfig(opts, systemDirs(), stdout, stderr)
 	}
-	return runServer(ctx, opts, systemDirs, stderr)
+	return runServer(ctx, opts, systemDirs(), stderr)
 }
 
 // The subcommands after "config".
@@ -98,7 +107,8 @@ func parseArgs(args []string) (options, error) {
 	fs.StringVar(&opts.stateDir, "state", "", "")
 	fs.BoolVar(&opts.showVersion, "version", false, "")
 	if err := fs.Parse(args); err != nil {
-		return options{}, err
+		// The text of the flag package's error is what the user is shown, so it gets no prefix.
+		return options{}, err //nolint:wrapcheck // printed to the user as it is
 	}
 	rest := fs.Args()
 	switch {
@@ -106,9 +116,9 @@ func parseArgs(args []string) (options, error) {
 	case rest[0] == "config" && len(rest) == 2 && isConfigCommand(rest[1]):
 		opts.command = rest[1]
 	case rest[0] == "config":
-		return options{}, errors.New("config needs one of: check, show")
+		return options{}, errConfigCommand
 	default:
-		return options{}, fmt.Errorf("unexpected argument %q", rest[0])
+		return options{}, fmt.Errorf("%w %q", errUnexpectedArgument, rest[0])
 	}
 	return opts, nil
 }
@@ -119,8 +129,10 @@ type defaultDirs struct {
 	config, state func() (string, error)
 }
 
-// systemDirs are the defaults of this build.
-var systemDirs = defaultDirs{config: config.DefaultConfigDir, state: config.DefaultStateDir}
+// systemDirs returns the defaults of this build.
+func systemDirs() defaultDirs {
+	return defaultDirs{config: config.DefaultConfigDir, state: config.DefaultStateDir}
+}
 
 func isConfigCommand(name string) bool { return name == commandCheck || name == commandShow }
 
@@ -156,7 +168,7 @@ func runConfig(opts options, defaults defaultDirs, stdout, stderr io.Writer) int
 // runHashPassword implements the hash-password subcommand.
 func runHashPassword(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
-		_, _ = fmt.Fprintf(stderr, "%s: hash-password takes no arguments\n%s", program, usage)
+		sayf(stderr, "%s: hash-password takes no arguments\n%s", program, usage)
 		return exitUsage
 	}
 	if err := hashPassword(stdin, stdout, rand.Reader); err != nil {
@@ -175,7 +187,8 @@ func hashPassword(in io.Reader, out io.Writer, random io.Reader) error {
 	password := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
 	hash, err := auth.HashPassword(password, random)
 	if err != nil {
-		return err
+		// The message already says what failed and is printed to the user as it is.
+		return err //nolint:wrapcheck // printed to the user as it is
 	}
 	if _, err := fmt.Fprintln(out, hash); err != nil {
 		return fmt.Errorf("write hash: %w", err)
@@ -235,8 +248,9 @@ func logListening(logger *slog.Logger, addrs []net.Addr) {
 // rejected unknown names.
 func levelOf(cfg config.Log) slog.Level {
 	var level slog.Level
-	// An unknown name leaves the level at info, the default.
-	_ = level.UnmarshalText([]byte(cfg.Level))
+	if err := level.UnmarshalText([]byte(cfg.Level)); err != nil {
+		return slog.LevelInfo
+	}
 	return level
 }
 
@@ -259,6 +273,12 @@ func newLogger(format string, level *slog.LevelVar, w io.Writer) *slog.Logger {
 
 // fail prints err and returns the exit status for a runtime error.
 func fail(stderr io.Writer, err error) int {
-	_, _ = fmt.Fprintf(stderr, "%s: %v\n", program, err)
+	sayf(stderr, "%s: %v\n", program, err)
 	return exitError
+}
+
+// sayf writes a message to w. A failed write is ignored: it means the terminal or pipe is
+// gone, so nobody is left to read a report of it, and the exit status says what happened.
+func sayf(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, format, args...) //nolint:errcheck // nobody is left to report a failed write to
 }

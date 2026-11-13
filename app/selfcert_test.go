@@ -19,14 +19,16 @@ import (
 	"time"
 )
 
-var certTime = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+// certTime is the time of the clock that the certificates of the tests are made with.
+func certTime() time.Time {
+	return time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+}
 
 // certDir is where a test keeps its certificate: below a state directory that does not exist
 // yet, because creating the folders is part of what is tested.
-func certDir(t *testing.T) (state, dir string) {
+func certDir(t *testing.T) string {
 	t.Helper()
-	state = filepath.Join(t.TempDir(), "state")
-	return state, filepath.Join(state, localDirName, tlsDirName)
+	return filepath.Join(t.TempDir(), "state", localDirName, tlsDirName)
 }
 
 func hostnameOf(name string, err error) func() (string, error) {
@@ -35,7 +37,7 @@ func hostnameOf(name string, err error) func() (string, error) {
 
 func fixedSource() certSource {
 	src := testCertSource()
-	src.now = func() time.Time { return certTime }
+	src.now = certTime
 	return src
 }
 
@@ -61,9 +63,10 @@ func mode(t *testing.T, path string) os.FileMode {
 	return info.Mode().Perm()
 }
 
-func TestLocalCertificateContent(t *testing.T) {
-	t.Parallel()
-	state, dir := certDir(t)
+// localTestCert makes the certificate of a new server and returns it as it was saved.
+func localTestCert(t *testing.T) *x509.Certificate {
+	t.Helper()
+	dir := certDir(t)
 	cert, err := loadOrCreateCert(dir, fixedSource())
 	if err != nil {
 		t.Fatal(err)
@@ -71,11 +74,16 @@ func TestLocalCertificateContent(t *testing.T) {
 	if len(cert.Certificate) != 1 {
 		t.Fatalf("certificate chain has %d entries", len(cert.Certificate))
 	}
-
 	parsed, err := x509.ParseCertificate(readPEM(t, filepath.Join(dir, certFileName)).Bytes)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return parsed
+}
+
+func TestLocalCertificateNames(t *testing.T) {
+	t.Parallel()
+	parsed := localTestCert(t)
 	if parsed.Subject.CommonName != "test-host" {
 		t.Errorf("subject = %q", parsed.Subject.CommonName)
 	}
@@ -86,9 +94,19 @@ func TestLocalCertificateContent(t *testing.T) {
 		!parsed.IPAddresses[1].Equal(net.IPv6loopback) {
 		t.Errorf("IP addresses = %v", parsed.IPAddresses)
 	}
-	if !parsed.NotBefore.Equal(certTime) || !parsed.NotAfter.Equal(certTime.AddDate(10, 0, 0)) {
+}
+
+func TestLocalCertificateValidity(t *testing.T) {
+	t.Parallel()
+	parsed := localTestCert(t)
+	if !parsed.NotBefore.Equal(certTime()) || !parsed.NotAfter.Equal(certTime().AddDate(10, 0, 0)) {
 		t.Errorf("valid %v to %v", parsed.NotBefore, parsed.NotAfter)
 	}
+}
+
+func TestLocalCertificateKey(t *testing.T) {
+	t.Parallel()
+	parsed := localTestCert(t)
 	pub, ok := parsed.PublicKey.(*ecdsa.PublicKey)
 	if !ok || pub.Curve != elliptic.P256() {
 		t.Errorf("public key is %T, want ECDSA P-256", parsed.PublicKey)
@@ -97,14 +115,26 @@ func TestLocalCertificateContent(t *testing.T) {
 		parsed.Signature) != nil {
 		t.Error("the certificate is not self-signed")
 	}
+}
+
+func TestLocalCertificateIsForServers(t *testing.T) {
+	t.Parallel()
+	parsed := localTestCert(t)
 	if len(parsed.ExtKeyUsage) != 1 || parsed.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth {
 		t.Errorf("extended key usage = %v", parsed.ExtKeyUsage)
 	}
+}
 
+func TestLocalCertificateFilesArePrivate(t *testing.T) {
+	t.Parallel()
+	dir := certDir(t)
+	if _, err := loadOrCreateCert(dir, fixedSource()); err != nil {
+		t.Fatal(err)
+	}
 	for path, want := range map[string]os.FileMode{
-		filepath.Join(state, localDirName): 0o700,
-		dir:                                0o700,
-		filepath.Join(dir, keyFileName):    0o600,
+		filepath.Dir(dir):               0o700,
+		dir:                             0o700,
+		filepath.Join(dir, keyFileName): 0o600,
 	} {
 		if got := mode(t, path); got != want {
 			t.Errorf("%s has mode %o, want %o", path, got, want)
@@ -114,7 +144,7 @@ func TestLocalCertificateContent(t *testing.T) {
 
 func TestLocalCertificateIsNeverRegenerated(t *testing.T) {
 	t.Parallel()
-	_, dir := certDir(t)
+	dir := certDir(t)
 	first, err := loadOrCreateCert(dir, fixedSource())
 	if err != nil {
 		t.Fatal(err)
@@ -154,17 +184,43 @@ func TestLocalCertificateUsesTheStateDirectory(t *testing.T) {
 	}
 }
 
+// certFailure is a way to make the creation of the certificate fail.
+type certFailure struct {
+	name   string
+	setup  func(t *testing.T, dir string) // prepares the folder of the certificate
+	mutate func(src *certSource)          // breaks one of the sources of the certificate
+	want   string                         // part of the expected error
+	// absent lists files that a failure must not leave behind.
+	absent []string
+}
+
+// run makes a certificate in a new folder and fails the test unless that fails the way
+// the case says.
+func (c certFailure) run(t *testing.T) {
+	t.Helper()
+	dir := certDir(t)
+	if c.setup != nil {
+		c.setup(t, dir)
+	}
+	src := fixedSource()
+	if c.mutate != nil {
+		c.mutate(&src)
+	}
+	_, err := loadOrCreateCert(dir, src)
+	if err == nil || !strings.Contains(err.Error(), c.want) {
+		t.Fatalf("err = %v, want one containing %q", err, c.want)
+	}
+	for _, name := range c.absent {
+		if _, err = os.Lstat(filepath.Join(dir, name)); err == nil {
+			t.Errorf("%s was left behind", name)
+		}
+	}
+}
+
 func TestLocalCertificateErrors(t *testing.T) {
 	t.Parallel()
 	failing := errors.New("injected")
-	tests := []struct {
-		name   string
-		setup  func(t *testing.T, dir string)
-		mutate func(src *certSource)
-		want   string
-		// absent lists files that a failure must not leave behind.
-		absent []string
-	}{
+	tests := []certFailure{
 		{
 			name:   "no host name",
 			mutate: func(src *certSource) { src.hostname = hostnameOf("", failing) },
@@ -180,6 +236,7 @@ func TestLocalCertificateErrors(t *testing.T) {
 		{
 			name: "folder cannot be created",
 			setup: func(t *testing.T, dir string) {
+				t.Helper()
 				// A link to nothing where the folder belongs: its files read as missing, and
 				// the folder cannot be made over it. This stops every user, root included,
 				// which a read-only folder does not.
@@ -195,6 +252,7 @@ func TestLocalCertificateErrors(t *testing.T) {
 		{
 			name: "key exists without a certificate",
 			setup: func(t *testing.T, dir string) {
+				t.Helper()
 				write(t, dir, keyFileName, "operator key")
 			},
 			want: "file exists",
@@ -202,6 +260,7 @@ func TestLocalCertificateErrors(t *testing.T) {
 		{
 			name: "certificate cannot be written",
 			setup: func(t *testing.T, dir string) {
+				t.Helper()
 				// A link to nothing reads as missing but cannot be created over.
 				if err := os.MkdirAll(dir, 0o700); err != nil {
 					t.Fatal(err)
@@ -217,6 +276,7 @@ func TestLocalCertificateErrors(t *testing.T) {
 		{
 			name: "existing files are unusable",
 			setup: func(t *testing.T, dir string) {
+				t.Helper()
 				write(t, dir, certFileName, "not a certificate")
 				write(t, dir, keyFileName, "not a key")
 			},
@@ -226,30 +286,14 @@ func TestLocalCertificateErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, dir := certDir(t)
-			if tt.setup != nil {
-				tt.setup(t, dir)
-			}
-			src := fixedSource()
-			if tt.mutate != nil {
-				tt.mutate(&src)
-			}
-			_, err := loadOrCreateCert(dir, src)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("err = %v, want one containing %q", err, tt.want)
-			}
-			for _, name := range tt.absent {
-				if _, err := os.Lstat(filepath.Join(dir, name)); err == nil {
-					t.Errorf("%s was left behind", name)
-				}
-			}
+			tt.run(t)
 		})
 	}
 }
 
 func TestLocalCertificateKeepsFilesTheOperatorPlaced(t *testing.T) {
 	t.Parallel()
-	_, dir := certDir(t)
+	dir := certDir(t)
 	key := write(t, dir, keyFileName, "operator key")
 	if _, err := loadOrCreateCert(dir, fixedSource()); err == nil {
 		t.Fatal("a certificate was made next to an existing key")
@@ -264,7 +308,7 @@ func TestLocalCertificateKeepsFilesTheOperatorPlaced(t *testing.T) {
 func TestCertificateWithoutUsableHostName(t *testing.T) {
 	t.Parallel()
 	for _, host := range []string{"h\u00f6st", "two words", ""} {
-		_, dir := certDir(t)
+		dir := certDir(t)
 		src := fixedSource()
 		src.hostname = hostnameOf(host, nil)
 		cert, err := loadOrCreateCert(dir, src)
@@ -288,7 +332,7 @@ func TestEncodeCertRefusesABadTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	template := certTemplate("h\u00f6st", big.NewInt(1), time.Now())
-	if _, _, err := encodeCert(rand.Reader, template, key); err == nil {
+	if _, err := encodeCert(rand.Reader, template, key); err == nil {
 		t.Error("a name that cannot be encoded was accepted")
 	}
 }

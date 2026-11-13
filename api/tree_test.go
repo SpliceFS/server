@@ -24,8 +24,8 @@ func TestListShares(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			e := newEnv(t)
-			resp := e.get("/api/v1/tree/", tt.token)
+			fixture := newEnv(t)
+			resp := fixture.get("/api/v1/tree/", tt.token)
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("status = %d", resp.StatusCode)
 			}
@@ -33,66 +33,73 @@ func TestListShares(t *testing.T) {
 			if tt.want == nil && !strings.Contains(raw, `"entries":[]`) {
 				t.Errorf("body = %s, want an empty array", raw)
 			}
-			var l wire.Listing
-			decodeBody(t, raw, &l)
-			var names []string
-			for _, entry := range l.Entries {
-				names = append(names, entry.Name)
-				if !entry.Dir || entry.Size != 0 || !entry.MTime.Equal(testTime) || entry.ETag != "" {
-					t.Errorf("entry = %+v", entry)
-				}
-			}
-			if strings.Join(names, ",") != strings.Join(tt.want, ",") {
+			var listing wire.Listing
+			decodeBody(t, raw, &listing)
+			if names := shareDirNames(t, listing); strings.Join(names, ",") != strings.Join(tt.want, ",") {
 				t.Errorf("names = %v, want %v", names, tt.want)
 			}
 		})
 	}
 }
 
+// shareDirNames returns the names of the entries of the share list, and checks that each
+// entry is a bare directory.
+func shareDirNames(t *testing.T, listing wire.Listing) []string {
+	t.Helper()
+	names := make([]string, 0, len(listing.Entries))
+	for _, entry := range listing.Entries {
+		names = append(names, entry.Name)
+		if !entry.Dir || entry.Size != 0 || !entry.MTime.Equal(testTime()) || entry.ETag != "" {
+			t.Errorf("entry = %+v", entry)
+		}
+	}
+	return names
+}
+
 func TestListSharesStatError(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
-	e.media.errs["stat"] = errBroken
-	wantError(t, e.get("/api/v1/tree/", tokenAll), http.StatusInternalServerError, "internal error")
-	if len(e.logged("request failed")) != 1 {
-		t.Errorf("log = %s", e.logs)
+	fixture := newEnv(t)
+	fixture.media.errs["stat"] = errBroken
+	wantError(t, fixture.get("/api/v1/tree/", tokenAll), http.StatusInternalServerError, "internal error")
+	if len(fixture.logged("request failed")) != 1 {
+		t.Errorf("log = %s", fixture.logs)
 	}
 }
 
 func TestListDirectory(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
+	fixture := newEnv(t)
 	for _, target := range []string{
 		"/api/v1/tree/media", "/api/v1/tree/media/", "/api/v1/tree/media/sub", "/api/v1/tree/media/sub/",
 	} {
-		resp := e.get(target, tokenMedia)
+		resp := fixture.get(target, tokenMedia)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("%s: status = %d", target, resp.StatusCode)
 		}
 		wantHeader(t, resp, "Cache-Control", "private, no-cache")
-		var l wire.Listing
-		decodeJSON(t, resp, &l)
+		var listing wire.Listing
+		decodeJSON(t, resp, &listing)
 		if strings.HasSuffix(strings.TrimSuffix(target, "/"), "/sub") {
-			if l.Entries == nil || len(l.Entries) != 0 {
-				t.Errorf("%s: entries = %#v, want an empty non-nil slice", target, l.Entries)
+			if listing.Entries == nil || len(listing.Entries) != 0 {
+				t.Errorf("%s: entries = %#v, want an empty non-nil slice", target, listing.Entries)
 			}
 			continue
 		}
 		want := []wire.Entry{
-			{Name: "blob.zzz", Size: 10, MTime: testTime, ETag: share.ETag(10, testTime)},
-			{Name: "sub", Dir: true, MTime: testTime},
+			{Name: "blob.zzz", Size: 10, MTime: testTime(), ETag: share.ETag(10, testTime())},
+			{Name: "sub", Dir: true, MTime: testTime()},
 		}
-		if len(l.Entries) != 2 || l.Entries[0] != want[0] || l.Entries[1] != want[1] {
-			t.Errorf("%s: entries = %+v", target, l.Entries)
+		if len(listing.Entries) != 2 || listing.Entries[0] != want[0] || listing.Entries[1] != want[1] {
+			t.Errorf("%s: entries = %+v", target, listing.Entries)
 		}
 	}
 }
 
 func TestListDirectoryEmptyArrayNotNull(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
-	e.media.dirs["sub/empty"] = nil
-	raw := body(t, e.get("/api/v1/tree/media/sub/empty", tokenMedia))
+	fixture := newEnv(t)
+	fixture.media.dirs["sub/empty"] = nil
+	raw := body(t, fixture.get("/api/v1/tree/media/sub/empty", tokenMedia))
 	if strings.TrimSpace(raw) != `{"entries":[]}` {
 		t.Errorf("body = %s", raw)
 	}
@@ -115,11 +122,11 @@ func TestListDirectoryErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			e := newEnv(t)
+			fixture := newEnv(t)
 			if tt.err != nil {
-				e.media.errs["list"] = tt.err
+				fixture.media.errs["list"] = tt.err
 			}
-			wantError(t, e.get(tt.target, tokenMedia), tt.status, tt.message)
+			wantError(t, fixture.get(tt.target, tokenMedia), tt.status, tt.message)
 		})
 	}
 }
