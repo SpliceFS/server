@@ -20,12 +20,12 @@ const (
 // ones, so an empty configDir gives the defaults. When the configuration is invalid the
 // error lists every problem found and names the file a bad value came from.
 func LoadDir(configDir string) (*Config, error) {
-	return loadDir(configDir, os.Hostname)
+	return loadDirWithHostname(configDir, os.Hostname)
 }
 
-// loadDir is LoadDir with the host name lookup passed in, so tests need not depend on the
-// machine they run on.
-func loadDir(configDir string, hostname func() (string, error)) (*Config, error) {
+// loadDirWithHostname is LoadDir with the host name lookup passed in, so tests need not
+// depend on the machine they run on.
+func loadDirWithHostname(configDir string, hostname func() (string, error)) (*Config, error) {
 	sources := make(map[string]string)
 	raw, problems := readSettings(filepath.Join(configDir, confDirName), sources)
 	shares, shareProblems := readShares(filepath.Join(configDir, sharesDirName), sources)
@@ -69,43 +69,43 @@ func readSettings(dir string, sources map[string]string) (*rawConfig, []error) {
 // finishSettings applies defaults, normalizes and validates the merged settings. A problem
 // names the file of its value when a file set it.
 func finishSettings(
-	s *Config, proxies []string, configDir string, hostname func() (string, error),
+	settings *Config, proxies []string, configDir string, hostname func() (string, error),
 ) []error {
-	var problems []error
-	s.TrustedProxies, problems = parseProxies(proxies)
-	problems = append(problems, applyDirDefaults(s, hostname)...)
-	problems = append(problems, normalizeSettings(s)...)
-	for i := range s.Listen {
-		resolveTLS(&s.Listen[i].Listener, configDir)
+	prefixes, problems := parseProxies(proxies)
+	settings.TrustedProxies = prefixes
+	problems = append(problems, applyDirDefaults(settings, hostname)...)
+	problems = append(problems, normalizeSettings(settings)...)
+	for i := range settings.Listen {
+		resolveTLS(&settings.Listen[i].Listener, configDir)
 	}
-	problems = append(problems, validateSettings(s)...)
-	for i, p := range problems {
-		problems[i] = attribute(p, s.Sources)
+	problems = append(problems, validateSettings(settings)...)
+	for i, problem := range problems {
+		problems[i] = attribute(problem, settings.Sources)
 	}
 	return problems
 }
 
 // applyDirDefaults fills in the settings keys that no file set.
-func applyDirDefaults(s *Config, hostname func() (string, error)) []error {
-	if s.Listen == nil {
-		s.Listen = []Endpoint{{Listener: Listener{Address: netip.IPv6Unspecified(), Port: defaultPort}}}
+func applyDirDefaults(settings *Config, hostname func() (string, error)) []error {
+	if settings.Listen == nil {
+		settings.Listen = []Endpoint{{Listener: Listener{Address: netip.IPv6Unspecified(), Port: defaultPort}}}
 	}
-	if s.BasePath == "" {
-		s.BasePath = defaultBasePath
+	if settings.BasePath == "" {
+		settings.BasePath = defaultBasePath
 	}
-	if s.Cluster.Name == "" {
-		s.Cluster.Name = defaultClusterName
+	if settings.Cluster.Name == "" {
+		settings.Cluster.Name = defaultClusterName
 	}
-	applyLimitDefaults(&s.Auth.TokenTTL, &s.Auth.LoginRate, &s.MTimePrecision)
-	applyLogDefaults(&s.Log)
-	if s.Cluster.Node != "" {
+	applyLimitDefaults(&settings.Auth.TokenTTL, &settings.Auth.LoginRate, &settings.MTimePrecision)
+	applyLogDefaults(&settings.Log)
+	if settings.Cluster.Node != "" {
 		return nil
 	}
 	host, err := hostname()
 	if err != nil {
 		return []error{fmt.Errorf("cluster.node: host name unavailable, set it in a file: %w", err)}
 	}
-	s.Cluster.Node = nodeNameOf(host)
+	settings.Cluster.Node = nodeNameOf(host)
 	return nil
 }
 
@@ -136,19 +136,19 @@ func nodeNameOf(host string) string {
 }
 
 // normalizeSettings puts base_path and cluster.url into their canonical form.
-func normalizeSettings(s *Config) []error {
+func normalizeSettings(settings *Config) []error {
 	var problems []error
-	base, err := normalizeBasePath(s.BasePath)
+	base, err := normalizeBasePath(settings.BasePath)
 	if err != nil {
 		problems = append(problems, err)
 	} else {
-		s.BasePath = base
+		settings.BasePath = base
 	}
-	u, err := normalizeURL(s.Cluster.URL)
+	clusterURL, err := normalizeURL(settings.Cluster.URL)
 	if err != nil {
 		problems = append(problems, err)
 	} else {
-		s.Cluster.URL = u
+		settings.Cluster.URL = clusterURL
 	}
 	return problems
 }

@@ -8,11 +8,12 @@ import (
 )
 
 // validateSettings returns every problem in s, each naming its key.
-func validateSettings(s *Config) []error {
-	problems := validateEndpoints(s.Listen)
-	problems = append(problems, validateNode(s.Cluster.Node)...)
-	problems = append(problems, validateLimits(s.Auth.TokenTTL, s.Auth.LoginRate, s.MTimePrecision)...)
-	return append(problems, validateLog(s.Log)...)
+func validateSettings(settings *Config) []error {
+	problems := validateEndpoints(settings.Listen)
+	problems = append(problems, validateNode(settings.Cluster.Node)...)
+	problems = append(problems,
+		validateLimits(settings.Auth.TokenTTL, settings.Auth.LoginRate, settings.MTimePrecision)...)
+	return append(problems, validateLog(settings.Log)...)
 }
 
 // validateEndpoints applies the listener rules of Listener, then the rule that
@@ -24,7 +25,7 @@ func validateEndpoints(endpoints []Endpoint) []error {
 		listeners[i] = e.Listener
 		if e.Plain && e.TLS != nil {
 			problems = append(problems,
-				fmt.Errorf("listen[%d].plain: must not be true together with tls", i))
+				fmt.Errorf("listen[%d].plain: %w", i, ErrPlainWithTLS))
 		}
 	}
 	return append(validateListen(listeners), problems...)
@@ -37,7 +38,7 @@ func validateNode(node string) []error {
 		return required("cluster.node", node)
 	}
 	if !namePattern.MatchString(node) {
-		return []error{fmt.Errorf("cluster.node: %q must match %s", node, namePattern)}
+		return []error{fmt.Errorf("cluster.node: %q %w %s", node, ErrNamePattern, namePattern)}
 	}
 	return nil
 }
@@ -48,13 +49,11 @@ func normalizeURL(raw string) (string, error) {
 	if raw == "" {
 		return "", nil
 	}
-	u, err := url.Parse(raw)
-	ok := err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" &&
+	parsed, err := url.Parse(raw)
+	ok := err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" &&
 		!strings.ContainsAny(raw, "?#")
 	if !ok {
-		return raw, fmt.Errorf(
-			"cluster.url: %q must be an absolute http or https URL with a host, "+
-				"without query or fragment", raw)
+		return raw, fmt.Errorf("cluster.url: %q %w", raw, ErrURLInvalid)
 	}
 	return strings.TrimRight(raw, "/"), nil
 }

@@ -10,13 +10,13 @@ import (
 )
 
 func FuzzParseLogin(f *testing.F) {
-	for _, s := range []string{
+	for _, seed := range []string{
 		`{"user":"alice","password":"pw"}`, ` {"user":"a","password":"b"} `, `{}`,
 		`{"user":"a","password":"b","extra":1}`, `{"user":1}`, `null`, `[]`, `"x"`, `42`, ``,
 		`{"user":"a"}{"user":"b"}`, `{"user":"a"} x`, `{"user":"a"`, "{\x00}", `{"user":"\ud800"}`,
 		`{"user":"a","user":"b"}`,
 	} {
-		f.Add([]byte(s))
+		f.Add([]byte(seed))
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		req, err := parseLogin(data)
@@ -41,11 +41,11 @@ func FuzzParseLogin(f *testing.F) {
 }
 
 func FuzzBearerToken(f *testing.F) {
-	for _, s := range []string{
+	for _, seed := range []string{
 		"Bearer abc", "bearer abc", "BEARER abc", "Bearer ", "Bearer", "", "Basic abc",
 		"Bearer a b", "Bearer a\tb", "Bearer  abc", "Bearerabc", "Bearer a.b.c", "Bearer \x00",
 	} {
-		f.Add(s)
+		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, header string) {
 		token, ok := bearerToken(header)
@@ -64,22 +64,22 @@ func FuzzBearerToken(f *testing.F) {
 }
 
 func FuzzAuthorizationHeader(f *testing.F) {
-	for _, s := range []string{
+	for _, seed := range []string{
 		"Bearer " + tokenMedia, "bearer " + tokenAll, "Bearer " + tokenExpired,
 		"Bearer " + tokenBroken, "Bearer nope", "Bearer", "", "Basic " + tokenMedia,
 		"Bearer " + tokenMedia + " x", "Bearer\t" + tokenMedia, "Bearer " + tokenMedia + "\x00",
 	} {
-		f.Add(s)
+		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, header string) {
-		e := newEnv(t)
+		fixture := newEnv(t)
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet,
 			"/api/v1/nodes", nil)
 		req.Header["Authorization"] = []string{header}
 		rec := httptest.NewRecorder()
-		e.handler.ServeHTTP(rec, req)
+		fixture.handler.ServeHTTP(rec, req)
 		token, ok := bearerToken(header)
-		_, known := e.auth.tokens[token]
+		_, known := fixture.auth.tokens[token]
 		// A request is served only for a header that names a token the server issued.
 		if rec.Code == http.StatusOK && (!ok || !known) {
 			t.Fatalf("Authorization %q was accepted", header)
@@ -92,7 +92,7 @@ func FuzzAuthorizationHeader(f *testing.F) {
 }
 
 func FuzzFileRequest(f *testing.F) {
-	for _, s := range [][4]string{
+	for _, seed := range [][4]string{
 		{"blob.zzz", "bytes=0-4", "", ""},
 		{"blob.zzz", "bytes=5-", "", ""},
 		{"blob.zzz", "bytes=-3", "", ""},
@@ -114,12 +114,12 @@ func FuzzFileRequest(f *testing.F) {
 		{"sub//inner.zzz", "", "", ""},
 		{"nope", "", "", ""},
 	} {
-		f.Add(s[0], s[1], s[2], s[3])
+		f.Add(seed[0], seed[1], seed[2], seed[3])
 	}
 	f.Fuzz(func(t *testing.T, name, byteRange, ifRange, encoding string) {
-		e := newEnv(t)
+		fixture := newEnv(t)
 		target := "/api/v1/file/media/" + name
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, target, http.NoBody)
 		if err != nil || req.URL.Path == "" {
 			t.Skip("not a request a client can send")
 		}
@@ -128,7 +128,7 @@ func FuzzFileRequest(f *testing.F) {
 		req.Header.Set("If-Range", ifRange)
 		req.Header.Set("Accept-Encoding", encoding)
 		rec := httptest.NewRecorder()
-		e.handler.ServeHTTP(rec, req)
+		fixture.handler.ServeHTTP(rec, req)
 		// The server answers every crafted request; a 5xx means a panic or a missed case.
 		if rec.Code >= 500 {
 			t.Fatalf("GET %q Range %q gave status %d", target, byteRange, rec.Code)
@@ -141,11 +141,11 @@ func FuzzFileRequest(f *testing.F) {
 }
 
 func FuzzMultipleRanges(f *testing.F) {
-	for _, s := range []string{
+	for _, seed := range []string{
 		"bytes=0-1", "bytes=0-1,3-4", "bytes=0-1,", "bytes=,", "bytes=", "", "items=0-1,2-3",
 		"bytes= 0-1 , 2-3", "BYTES=0-1,2-3", ",,,", "bytes=0-1,,2-3",
 	} {
-		f.Add(s)
+		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, header string) {
 		got := multipleRanges(header)
@@ -162,12 +162,12 @@ func FuzzMultipleRanges(f *testing.F) {
 }
 
 func FuzzAcceptEncoding(f *testing.F) {
-	for _, s := range []string{
+	for _, seed := range []string{
 		"gzip", "gzip;q=0", "gzip;q=0.5", "*", "*;q=0", "identity", "gzip, deflate", "GZIP",
 		"gzip;q=abc", "gzip;q=", ";q=1", ",,", "gzip;q=1;q=0", "gzip;q=NaN", "gzip;q=-1",
 		"gzip;q=1e400", "*;q=Inf",
 	} {
-		f.Add(s, s)
+		f.Add(seed, seed)
 	}
 	f.Fuzz(func(t *testing.T, first, second string) {
 		h := http.Header{"Accept-Encoding": {first, second}}
@@ -182,21 +182,21 @@ func FuzzAcceptEncoding(f *testing.F) {
 }
 
 func FuzzIsCanonical(f *testing.F) {
-	for _, s := range []string{
+	for _, seed := range []string{
 		"/", "/a", "/a/b", "/a/", "//a", "/a//b", "/.", "/..", "/a/./b", "/a/../b", "", "a",
 		"/a/.b", "/a/b.", "/%2e%2e", "/a/...", "/\x00",
 	} {
-		f.Add(s)
+		f.Add(seed)
 	}
-	f.Fuzz(func(t *testing.T, p string) {
-		if !isCanonical(p) {
+	f.Fuzz(func(t *testing.T, urlPath string) {
+		if !isCanonical(urlPath) {
 			return
 		}
 		// The mux redirects any other form, and an API has no use for redirects.
-		if !strings.HasPrefix(p, "/") || strings.Contains(p, "//") ||
-			strings.Contains(p, "/./") || strings.Contains(p, "/../") ||
-			strings.HasSuffix(p, "/.") || strings.HasSuffix(p, "/..") {
-			t.Fatalf("isCanonical(%q) true", p)
+		if !strings.HasPrefix(urlPath, "/") || strings.Contains(urlPath, "//") ||
+			strings.Contains(urlPath, "/./") || strings.Contains(urlPath, "/../") ||
+			strings.HasSuffix(urlPath, "/.") || strings.HasSuffix(urlPath, "/..") {
+			t.Fatalf("isCanonical(%q) true", urlPath)
 		}
 	})
 }

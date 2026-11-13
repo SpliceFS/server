@@ -12,14 +12,15 @@ import (
 	"github.com/SpliceFS/server/share"
 )
 
-var blobETag = share.ETag(10, testTime)
+// blobETag is the tag of blob.zzz in the fake share.
+func blobETag() string { return share.ETag(10, testTime()) }
 
 const lastModified = "Sun, 01 Nov 2026 12:00:00 GMT"
 
 func TestGetFile(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
-	resp := e.get("/api/v1/file/media/blob.zzz", tokenMedia)
+	fixture := newEnv(t)
+	resp := fixture.get("/api/v1/file/media/blob.zzz", tokenMedia)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
@@ -27,7 +28,7 @@ func TestGetFile(t *testing.T) {
 		t.Errorf("body = %q", got)
 	}
 	for name, want := range map[string]string{
-		"ETag":                   blobETag,
+		"ETag":                   blobETag(),
 		"Last-Modified":          lastModified,
 		"Content-Type":           "application/octet-stream",
 		"Content-Length":         "10",
@@ -43,12 +44,12 @@ func TestGetFile(t *testing.T) {
 
 func TestGetNestedAndEmptyFile(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
-	resp := e.get("/api/v1/file/media/sub/inner.zzz", tokenMedia)
+	fixture := newEnv(t)
+	resp := fixture.get("/api/v1/file/media/sub/inner.zzz", tokenMedia)
 	if got := body(t, resp); resp.StatusCode != http.StatusOK || got != "inner" {
 		t.Errorf("nested: status %d body %q", resp.StatusCode, got)
 	}
-	resp = e.get("/api/v1/file/media/empty.zzz", tokenMedia)
+	resp = fixture.get("/api/v1/file/media/empty.zzz", tokenMedia)
 	if got := body(t, resp); resp.StatusCode != http.StatusOK || got != "" {
 		t.Errorf("empty: status %d body %q", resp.StatusCode, got)
 	}
@@ -57,9 +58,9 @@ func TestGetNestedAndEmptyFile(t *testing.T) {
 func TestGetFileClosesFile(t *testing.T) {
 	t.Parallel()
 	var opened []*fakeFile
-	e := newEnv(t)
-	e.handler = NewHandler(Options{
-		BasePath: "/api", Auth: e.auth, Shares: map[string]Share{"media": trackingShare{e.media, &opened}},
+	fixture := newEnv(t)
+	fixture.handler = NewHandler(Options{
+		BasePath: "/api", Auth: fixture.auth, Shares: map[string]Share{"media": trackingShare{fixture.media, &opened}},
 	})
 	for _, req := range []struct{ target, header, value string }{
 		{"blob.zzz", "Range", "bytes=0-0, 2-2"},
@@ -67,7 +68,7 @@ func TestGetFileClosesFile(t *testing.T) {
 		{"blob.zzz", "X-None", ""},
 		{"page.html", "Accept-Encoding", "gzip"},
 	} {
-		resp := e.get("/api/v1/file/media/"+req.target, tokenMedia, req.header, req.value)
+		resp := fixture.get("/api/v1/file/media/"+req.target, tokenMedia, req.header, req.value)
 		body(t, resp)
 	}
 	if len(opened) != 4 {
@@ -83,15 +84,18 @@ func TestGetFileClosesFile(t *testing.T) {
 // trackingShare remembers the files it opens.
 type trackingShare struct {
 	*fakeShare
+
 	opened *[]*fakeFile
 }
 
+//nolint:ireturn // Share.Open returns the File interface, so its implementations must too.
 func (s trackingShare) Open(name string) (File, error) {
-	f, err := s.fakeShare.Open(name)
-	if err == nil {
-		*s.opened = append(*s.opened, f.(*fakeFile))
+	file, err := s.openFile(name)
+	if err != nil {
+		return nil, err
 	}
-	return f, err
+	*s.opened = append(*s.opened, file)
+	return file, nil
 }
 
 func TestGetFileRanges(t *testing.T) {
@@ -107,20 +111,20 @@ func TestGetFileRanges(t *testing.T) {
 		{"open ended", []string{"Range", "bytes=7-"}, 206, "789", "bytes 7-9/10"},
 		{"suffix", []string{"Range", "bytes=-2"}, 206, "89", "bytes 8-9/10"},
 		{"trailing comma is one range", []string{"Range", "bytes=1-2,"}, 206, "12", "bytes 1-2/10"},
-		{"matching If-Match", []string{"Range", "bytes=0-1", "If-Match", blobETag}, 206, "01", "bytes 0-1/10"},
-		{"matching If-Range", []string{"Range", "bytes=0-1", "If-Range", blobETag}, 206, "01", "bytes 0-1/10"},
+		{"matching If-Match", []string{"Range", "bytes=0-1", "If-Match", blobETag()}, 206, "01", "bytes 0-1/10"},
+		{"matching If-Range", []string{"Range", "bytes=0-1", "If-Range", blobETag()}, 206, "01", "bytes 0-1/10"},
 		{"stale If-Range sends everything", []string{"Range", "bytes=0-1", "If-Range", `"stale"`}, 200, "0123456789", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			e := newEnv(t)
-			resp := e.get("/api/v1/file/media/blob.zzz", tokenMedia, tt.header...)
+			fixture := newEnv(t)
+			resp := fixture.get("/api/v1/file/media/blob.zzz", tokenMedia, tt.header...)
 			if got := body(t, resp); resp.StatusCode != tt.status || got != tt.body {
 				t.Errorf("status %d body %q, want %d %q", resp.StatusCode, got, tt.status, tt.body)
 			}
 			wantHeader(t, resp, "Content-Range", tt.contentRange)
-			wantHeader(t, resp, "ETag", blobETag)
+			wantHeader(t, resp, "ETag", blobETag())
 		})
 	}
 }
@@ -137,8 +141,8 @@ func TestGetFileRangeRefusals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			e := newEnv(t)
-			resp := e.get("/api/v1/file/media/blob.zzz", tokenMedia, "Range", tt.header)
+			fixture := newEnv(t)
+			resp := fixture.get("/api/v1/file/media/blob.zzz", tokenMedia, "Range", tt.header)
 			wantError(t, resp, http.StatusRequestedRangeNotSatisfiable, "requested range not satisfiable")
 			wantHeader(t, resp, "Content-Range", tt.contentRange)
 		})
@@ -155,19 +159,20 @@ func TestGetFilePreconditions(t *testing.T) {
 	for name, header := range failing {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			e := newEnv(t)
-			wantError(t, e.get("/api/v1/file/media/blob.zzz", tokenMedia, header...), http.StatusPreconditionFailed, "precondition failed")
+			fixture := newEnv(t)
+			resp := fixture.get("/api/v1/file/media/blob.zzz", tokenMedia, header...)
+			wantError(t, resp, http.StatusPreconditionFailed, "precondition failed")
 		})
 	}
 	notModified := map[string][]string{
-		"If-None-Match of this version":   {"If-None-Match", blobETag},
+		"If-None-Match of this version":   {"If-None-Match", blobETag()},
 		"If-Modified-Since the same time": {"If-Modified-Since", lastModified},
 	}
 	for name, header := range notModified {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			e := newEnv(t)
-			resp := e.get("/api/v1/file/media/blob.zzz", tokenMedia, header...)
+			fixture := newEnv(t)
+			resp := fixture.get("/api/v1/file/media/blob.zzz", tokenMedia, header...)
 			if got := body(t, resp); resp.StatusCode != http.StatusNotModified || got != "" {
 				t.Errorf("status %d body %q", resp.StatusCode, got)
 			}
@@ -192,35 +197,36 @@ func TestGetFileErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			e := newEnv(t)
-			e.media.dirs["sub"] = nil
-			e.media.dirs[""] = nil
+			fixture := newEnv(t)
+			fixture.media.dirs["sub"] = nil
+			fixture.media.dirs[""] = nil
 			if tt.err != nil {
-				e.media.errs["open"] = tt.err
+				fixture.media.errs["open"] = tt.err
 			}
-			wantError(t, e.get(tt.target, tokenMedia), tt.status, tt.msg)
+			wantError(t, fixture.get(tt.target, tokenMedia), tt.status, tt.msg)
 		})
 	}
 }
 
 func TestGetFileSeekFailure(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
-	e.handler = NewHandler(Options{
-		BasePath: "/api", Auth: e.auth, Shares: map[string]Share{"media": unseekableShare{e.media}},
+	fixture := newEnv(t)
+	fixture.handler = NewHandler(Options{
+		BasePath: "/api", Auth: fixture.auth, Shares: map[string]Share{"media": unseekableShare{fixture.media}},
 	})
-	wantError(t, e.get("/api/v1/file/media/blob.zzz", tokenMedia), http.StatusInternalServerError, "internal error")
+	wantError(t, fixture.get("/api/v1/file/media/blob.zzz", tokenMedia), http.StatusInternalServerError, "internal error")
 }
 
 // unseekableShare opens files that cannot seek.
 type unseekableShare struct{ *fakeShare }
 
+//nolint:ireturn // Share.Open returns the File interface, so its implementations must too.
 func (s unseekableShare) Open(name string) (File, error) {
-	f, err := s.fakeShare.Open(name)
+	file, err := s.openFile(name)
 	if err != nil {
 		return nil, err
 	}
-	return unseekableFile{f.(*fakeFile)}, nil
+	return unseekableFile{file}, nil
 }
 
 type unseekableFile struct{ *fakeFile }
@@ -229,13 +235,13 @@ func (unseekableFile) Seek(int64, int) (int64, error) { return 0, errors.New("no
 
 func TestHeadFile(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
-	resp := e.do(request{method: "HEAD", target: "/api/v1/file/media/blob.zzz", token: tokenMedia})
+	fixture := newEnv(t)
+	resp := fixture.do(&request{method: "HEAD", target: "/api/v1/file/media/blob.zzz", token: tokenMedia})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 	for name, want := range map[string]string{
-		"ETag":                   blobETag,
+		"ETag":                   blobETag(),
 		"Last-Modified":          lastModified,
 		"Content-Length":         "10",
 		"Accept-Ranges":          "bytes",
@@ -255,8 +261,8 @@ func TestHeadFile(t *testing.T) {
 
 func TestHeadCompressibleFileVariesOnEncoding(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
-	resp := e.do(request{
+	fixture := newEnv(t)
+	resp := fixture.do(&request{
 		method: "HEAD", target: "/api/v1/file/media/page.html", token: tokenMedia,
 		header: map[string]string{"Accept-Encoding": "gzip"},
 	})
@@ -264,7 +270,7 @@ func TestHeadCompressibleFileVariesOnEncoding(t *testing.T) {
 	wantHeader(t, resp, "Vary", "Accept-Encoding")
 	wantHeader(t, resp, "Content-Encoding", "")
 	wantHeader(t, resp, "Content-Length", strconv.Itoa(13*200))
-	wantHeader(t, resp, "ETag", share.ETag(13*200, testTime))
+	wantHeader(t, resp, "ETag", share.ETag(13*200, testTime()))
 }
 
 func TestHeadFileErrors(t *testing.T) {
@@ -283,12 +289,12 @@ func TestHeadFileErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			e := newEnv(t)
-			e.media.dirs["sub"] = nil
+			fixture := newEnv(t)
+			fixture.media.dirs["sub"] = nil
 			if tt.err != nil {
-				e.media.errs["head"] = tt.err
+				fixture.media.errs["head"] = tt.err
 			}
-			wantError(t, e.do(request{method: "HEAD", target: tt.target, token: tokenMedia}), tt.status, tt.msg)
+			wantError(t, fixture.do(&request{method: "HEAD", target: tt.target, token: tokenMedia}), tt.status, tt.msg)
 		})
 	}
 }
@@ -348,5 +354,14 @@ func TestErrorBodyWriter(t *testing.T) {
 	}
 	if rec.Code != http.StatusPartialContent || rec.Body.String() != "part" {
 		t.Errorf("status %d body %q", rec.Code, rec.Body)
+	}
+}
+
+func TestErrorBodyWriterPassesWriteErrors(t *testing.T) {
+	t.Parallel()
+	want := errors.New("broken pipe")
+	writer := &errorBodyWriter{ResponseWriter: failingWriter{err: want}}
+	if _, err := writer.Write([]byte("x")); !errors.Is(err, want) {
+		t.Errorf("err = %v, want %v", err, want)
 	}
 }

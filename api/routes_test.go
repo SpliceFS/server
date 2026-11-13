@@ -9,8 +9,8 @@ import (
 
 func TestHealth(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
-	resp := e.do(request{target: "/api/v1/health"})
+	fixture := newEnv(t)
+	resp := fixture.do(&request{target: "/api/v1/health"})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
@@ -25,16 +25,16 @@ func TestHealth(t *testing.T) {
 
 func TestEmptyBasePath(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t, func(o *Options) { o.BasePath = "" })
-	if resp := e.do(request{target: "/v1/health"}); resp.StatusCode != http.StatusOK {
+	fixture := newEnv(t, func(o *Options) { o.BasePath = "" })
+	if resp := fixture.do(&request{target: "/v1/health"}); resp.StatusCode != http.StatusOK {
 		t.Errorf("/v1/health status = %d", resp.StatusCode)
 	}
-	wantError(t, e.do(request{target: "/api/v1/health"}), http.StatusNotFound, "not found")
+	wantError(t, fixture.do(&request{target: "/api/v1/health"}), http.StatusNotFound, "not found")
 }
 
 func TestNotFound(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
+	fixture := newEnv(t)
 	targets := []string{
 		"/", "/v1/health", "/api", "/api/", "/api/v1", "/api/v1/", "/api/v2/health",
 		"/api/v1/health/", "/api/v1/unknown", "/api/v1/login/x",
@@ -47,14 +47,14 @@ func TestNotFound(t *testing.T) {
 	for _, target := range targets {
 		t.Run(target, func(t *testing.T) {
 			t.Parallel()
-			wantError(t, e.get(target, tokenAll), http.StatusNotFound, "not found")
+			wantError(t, fixture.get(target, tokenAll), http.StatusNotFound, "not found")
 		})
 	}
 }
 
 func TestMethodNotAllowed(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
+	fixture := newEnv(t)
 	tests := []struct {
 		method, target, allow string
 	}{
@@ -74,7 +74,7 @@ func TestMethodNotAllowed(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.method+" "+tt.target, func(t *testing.T) {
 			t.Parallel()
-			resp := e.do(request{method: tt.method, target: tt.target, token: tokenAll})
+			resp := fixture.do(&request{method: tt.method, target: tt.target, token: tokenAll})
 			wantError(t, resp, http.StatusMethodNotAllowed, "method not allowed")
 			wantHeader(t, resp, "Allow", tt.allow)
 		})
@@ -83,8 +83,8 @@ func TestMethodNotAllowed(t *testing.T) {
 
 func TestHeadIsRoutedToGetEndpoints(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
-	resp := e.do(request{method: "HEAD", target: "/api/v1/space/media", token: tokenAll})
+	fixture := newEnv(t)
+	resp := fixture.do(&request{method: "HEAD", target: "/api/v1/space/media", token: tokenAll})
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d", resp.StatusCode)
 	}
@@ -119,13 +119,13 @@ func TestIsCanonical(t *testing.T) {
 
 func TestResponseHeadersOfEveryEndpoint(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
+	fixture := newEnv(t)
 	targets := []string{
 		"/api/v1/nodes", "/api/v1/tree/", "/api/v1/tree/media", "/api/v1/space/media",
 		"/api/v1/file/media/blob.zzz",
 	}
 	for _, target := range targets {
-		resp := e.get(target, tokenAll)
+		resp := fixture.get(target, tokenAll)
 		wantHeader(t, resp, "Cache-Control", "private, no-cache")
 		wantHeader(t, resp, "X-Content-Type-Options", "nosniff")
 		body(t, resp)

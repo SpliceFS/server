@@ -102,7 +102,7 @@ func Open(opts Options) (*Share, error) {
 	if err != nil {
 		return nil, fmt.Errorf("share %q: open root: %w", opts.Name, err)
 	}
-	s := &Share{
+	share := &Share{
 		name:       opts.Name,
 		path:       opts.Path,
 		root:       root,
@@ -115,20 +115,20 @@ func Open(opts Options) (*Share, error) {
 		headDigest: headDigest,
 		beforeOpen: func(string) {},
 	}
-	if s.now == nil {
-		s.now = time.Now
+	if share.now == nil {
+		share.now = time.Now
 	}
 	size := opts.DigestCacheSize
 	if size <= 0 {
 		size = defaultDigestCacheSize
 	}
-	s.digests = newLRU(size)
-	return s, nil
+	share.digests = newLRU(size)
+	return share, nil
 }
 
 // Close releases the share root.
 func (s *Share) Close() error {
-	return s.root.Close()
+	return s.root.Close() //nolint:wrapcheck // the caller names the share, and the error says the rest
 }
 
 // Name returns the share name.
@@ -138,30 +138,91 @@ func (s *Share) Name() string {
 
 // Stat describes the file or directory at name.
 func (s *Share) Stat(name string) (Info, error) {
-	p, fi, err := s.lookup(name)
+	target, err := s.lookup(name)
 	if err != nil {
 		return Info{}, err
 	}
-	return s.info(path.Base(p), fi), nil
+	return s.info(path.Base(target.relPath), target.info), nil
 }
 
 // List returns the visible entries of the directory at name, sorted by name in
 // byte order. It never opens the files it lists.
 func (s *Share) List(name string) ([]Info, error) {
-	p, fi, err := s.lookup(name)
+	target, err := s.lookup(name)
 	if err != nil {
 		return nil, err
 	}
-	if !fi.IsDir() {
+	if !target.info.IsDir() {
 		return nil, ErrNotDir
 	}
-	s.beforeOpen(p)
-	d, err := s.root.OpenFile(p, openFlags, 0)
+	s.beforeOpen(target.relPath)
+	dir, err := s.root.OpenFile(target.relPath, openFlags, 0)
 	if err != nil {
-		return nil, s.fail(p, err)
+		return nil, s.fail(target.relPath, err)
 	}
-	defer func() { _ = d.Close() }()
-	return s.collect(p, d)
+	defer closeRead(dir)
+	return s.collect(target.relPath, dir)
+}
+
+// OpenFile opens the regular file at name for reading. The returned Info describes
+// the file that was actually opened.
+func (s *Share) OpenFile(name string) (*File, error) {
+	target, err := s.lookup(name)
+	if err != nil {
+		return nil, err
+	}
+	if target.info.IsDir() {
+		return nil, ErrIsDir
+	}
+	s.beforeOpen(target.relPath)
+	file, err := s.root.OpenFile(target.relPath, openFlags, 0)
+	if err != nil {
+		return nil, s.fail(target.relPath, err)
+	}
+	info, err := s.openInfo(target.relPath, file)
+	if err != nil {
+		closeRead(file)
+		return nil, err
+	}
+	return &File{f: file, info: info}, nil
+}
+
+// HeadDigest returns the hex SHA-256 of the first wire.HeadDigestBytes bytes of the
+// file at name, and the file's Info. A file is read once until its size or
+// modification time changes.
+func (s *Share) HeadDigest(name string) (string, Info, error) {
+	target, err := s.lookup(name)
+	if err != nil {
+		return "", Info{}, err
+	}
+	if target.info.IsDir() {
+		return "", Info{}, ErrIsDir
+	}
+	info := s.info(path.Base(target.relPath), target.info)
+	if digest, ok := s.digests.get(newDigestKey(target.relPath, info)); ok {
+		return digest, info, nil
+	}
+	file, err := s.OpenFile(name)
+	if err != nil {
+		return "", Info{}, err
+	}
+	defer closeRead(file)
+	digest, err := s.headDigest(file)
+	if err != nil {
+		return "", Info{}, fmt.Errorf("share %q: %s: read head: %w", s.name, target.relPath, err)
+	}
+	info = file.Info()
+	s.digests.put(newDigestKey(target.relPath, info), digest)
+	return digest, info, nil
+}
+
+// Space reports the size and free space of the file system holding the share.
+func (s *Share) Space() (wire.Space, error) {
+	space, err := s.space(s.path)
+	if err != nil {
+		return wire.Space{}, fmt.Errorf("share %q: space: %w", s.name, err)
+	}
+	return space, nil
 }
 
 // dirReader is the part of a directory handle that List needs.
@@ -169,55 +230,32 @@ type dirReader interface {
 	Readdirnames(n int) ([]string, error)
 }
 
-// collect builds the sorted listing of the directory p from its entry names.
-func (s *Share) collect(p string, d dirReader) ([]Info, error) {
-	names, err := d.Readdirnames(-1)
+// collect builds the sorted listing of the directory relPath from its entry names.
+func (s *Share) collect(relPath string, dir dirReader) ([]Info, error) {
+	names, err := dir.Readdirnames(-1)
 	if err != nil {
-		return nil, s.fail(p, err)
+		return nil, s.fail(relPath, err)
 	}
 	slices.Sort(names)
 	infos := make([]Info, 0, len(names))
-	for _, n := range names {
+	for _, name := range names {
 		// A name that is not valid UTF-8 cannot be written in a JSON listing or
 		// asked for by a client, so it is hidden like any other unservable entry.
-		if s.excluded(n) || !utf8.ValidString(n) {
+		if s.excluded(name) || !utf8.ValidString(name) {
 			continue
 		}
-		fi, err := s.statEntry(path.Join(p, n))
+		fileInfo, err := s.statEntry(path.Join(relPath, name))
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		if s.visible(fi) {
-			infos = append(infos, s.info(n, fi))
+		if s.visible(fileInfo) {
+			infos = append(infos, s.info(name, fileInfo))
 		}
 	}
 	return infos, nil
-}
-
-// OpenFile opens the regular file at name for reading. The returned Info describes
-// the file that was actually opened.
-func (s *Share) OpenFile(name string) (*File, error) {
-	p, fi, err := s.lookup(name)
-	if err != nil {
-		return nil, err
-	}
-	if fi.IsDir() {
-		return nil, ErrIsDir
-	}
-	s.beforeOpen(p)
-	f, err := s.root.OpenFile(p, openFlags, 0)
-	if err != nil {
-		return nil, s.fail(p, err)
-	}
-	info, err := s.openInfo(p, f)
-	if err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	return &File{f: f, info: info}, nil
 }
 
 // handle is the part of an open file that openInfo needs.
@@ -226,63 +264,25 @@ type handle interface {
 }
 
 // openInfo checks the open file h itself and describes it.
-func (s *Share) openInfo(p string, h handle) (Info, error) {
-	fi, err := h.Stat()
+func (s *Share) openInfo(relPath string, h handle) (Info, error) {
+	fileInfo, err := h.Stat()
 	if err != nil {
-		return Info{}, s.fail(p, err)
+		return Info{}, s.fail(relPath, err)
 	}
-	if fi.IsDir() {
+	if fileInfo.IsDir() {
 		return Info{}, ErrIsDir
 	}
-	if !s.visible(fi) {
+	if !s.visible(fileInfo) {
 		return Info{}, ErrNotFound
 	}
-	return s.info(path.Base(p), fi), nil
-}
-
-// HeadDigest returns the hex SHA-256 of the first wire.HeadDigestBytes bytes of the
-// file at name, and the file's Info. A file is read once until its size or
-// modification time changes.
-func (s *Share) HeadDigest(name string) (string, Info, error) {
-	p, fi, err := s.lookup(name)
-	if err != nil {
-		return "", Info{}, err
-	}
-	if fi.IsDir() {
-		return "", Info{}, ErrIsDir
-	}
-	info := s.info(path.Base(p), fi)
-	if digest, ok := s.digests.get(newDigestKey(p, info)); ok {
-		return digest, info, nil
-	}
-	f, err := s.OpenFile(name)
-	if err != nil {
-		return "", Info{}, err
-	}
-	defer func() { _ = f.Close() }()
-	digest, err := s.headDigest(f)
-	if err != nil {
-		return "", Info{}, fmt.Errorf("share %q: %s: read head: %w", s.name, p, err)
-	}
-	info = f.Info()
-	s.digests.put(newDigestKey(p, info), digest)
-	return digest, info, nil
-}
-
-// Space reports the size and free space of the file system holding the share.
-func (s *Share) Space() (wire.Space, error) {
-	sp, err := s.space(s.path)
-	if err != nil {
-		return wire.Space{}, fmt.Errorf("share %q: space: %w", s.name, err)
-	}
-	return sp, nil
+	return s.info(path.Base(relPath), fileInfo), nil
 }
 
 // excluded reports whether name matches an exclude pattern.
 func (s *Share) excluded(name string) bool {
 	for _, pattern := range s.exclude {
-		// Open has validated every pattern, so Match cannot fail.
-		if ok, _ := path.Match(pattern, name); ok {
+		// Open has rejected every invalid pattern, so an error here means no match.
+		if matched, err := path.Match(pattern, name); err == nil && matched {
 			return true
 		}
 	}
@@ -290,26 +290,26 @@ func (s *Share) excluded(name string) bool {
 }
 
 // visible reports whether an entry of this type and age is shown.
-func (s *Share) visible(fi os.FileInfo) bool {
+func (s *Share) visible(fileInfo os.FileInfo) bool {
 	switch {
-	case fi.IsDir():
+	case fileInfo.IsDir():
 		return true
-	case !fi.Mode().IsRegular():
+	case !fileInfo.Mode().IsRegular():
 		return false
 	case s.minAge > 0:
-		return !fi.ModTime().After(s.now().Add(-s.minAge))
+		return !fileInfo.ModTime().After(s.now().Add(-s.minAge))
 	}
 	return true
 }
 
 // info converts file information to an Info.
-func (s *Share) info(name string, fi os.FileInfo) Info {
-	i := Info{Name: name, Dir: fi.IsDir(), MTime: s.truncate(fi.ModTime())}
-	if !i.Dir {
-		i.Size = fi.Size()
-		i.ETag = ETag(i.Size, i.MTime)
+func (s *Share) info(name string, fileInfo os.FileInfo) Info {
+	info := Info{Name: name, Dir: fileInfo.IsDir(), MTime: s.truncate(fileInfo.ModTime())}
+	if !info.Dir {
+		info.Size = fileInfo.Size()
+		info.ETag = ETag(info.Size, info.MTime)
 	}
-	return i
+	return info
 }
 
 // truncate applies the modification time precision and converts to UTC.
@@ -330,4 +330,10 @@ func cleanName(name string) (string, bool) {
 		return "", false
 	}
 	return name, true
+}
+
+// closeRead closes a handle that was only read. A failed close cannot lose data, so
+// the error carries nothing a caller could act on.
+func closeRead(closer io.Closer) {
+	_ = closer.Close() //nolint:errcheck // the handle was only read, so a failed close loses nothing
 }

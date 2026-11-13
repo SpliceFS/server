@@ -44,14 +44,24 @@ func TestResolveDirWithoutHome(t *testing.T) {
 	}
 }
 
+// resolveOSDefault returns the directory resolveDir gives for a build that set nothing.
+func resolveOSDefault(t *testing.T, fallback string) string {
+	t.Helper()
+	dir, err := resolveDir("", fallback, os.UserHomeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func TestDefaultDirs(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	oldConfig, oldState := defaultConfigDir, defaultStateDir
 	t.Cleanup(func() { defaultConfigDir, defaultStateDir = oldConfig, oldState })
 
 	defaultConfigDir, defaultStateDir = "", ""
-	wantConfig, _ := resolveDir("", osConfigDir, os.UserHomeDir)
-	wantState, _ := resolveDir("", osStateDir, os.UserHomeDir)
+	wantConfig := resolveOSDefault(t, osConfigDir)
+	wantState := resolveOSDefault(t, osStateDir)
 	if got, err := DefaultConfigDir(); err != nil || got != wantConfig {
 		t.Errorf("DefaultConfigDir = %q, %v, want %q", got, err, wantConfig)
 	}
@@ -60,10 +70,10 @@ func TestDefaultDirs(t *testing.T) {
 	}
 
 	defaultConfigDir, defaultStateDir = "/c", "/s"
-	if got, _ := DefaultConfigDir(); got != "/c" {
-		t.Errorf("DefaultConfigDir = %q, want the build setting", got)
+	if got, err := DefaultConfigDir(); err != nil || got != "/c" {
+		t.Errorf("DefaultConfigDir = %q, %v, want the build setting", got, err)
 	}
-	if got, _ := DefaultStateDir(); got != "/s" {
-		t.Errorf("DefaultStateDir = %q, want the build setting", got)
+	if got, err := DefaultStateDir(); err != nil || got != "/s" {
+		t.Errorf("DefaultStateDir = %q, %v, want the build setting", got, err)
 	}
 }

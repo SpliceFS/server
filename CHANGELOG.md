@@ -85,4 +85,7 @@ notable ones.
   system is supported only while its own vendor supports it.
 - A compiled copy of the program that was committed by mistake is removed from the repository,
   and `make check` now fails when a compiled program or a file over 1 MiB is tracked.
+- Code quality checks at their strictest: every linter is on, and each one that is off says
+  why in `.golangci.yml`. The code declares its errors, so callers can test for
+  them. Behavior, the HTTP interface, the configuration keys and the messages are unchanged.
 

@@ -14,6 +14,11 @@ import (
 // files need. It rejects unknown keys and a second document. It returns the dotted key
 // path of every value the document sets (a list counts as one value), so the caller can
 // tell which file a value came from. An empty document sets nothing.
+//
+// The decoder errors are returned as they are: decodeFile names the file, and another
+// prefix would change the message the administrator reads.
+//
+//nolint:wrapcheck // the caller decodeFile adds the context
 func decodeStrict(data []byte, out any) ([]string, error) {
 	var doc yaml.Node
 	dec := yaml.NewDecoder(bytes.NewReader(data))

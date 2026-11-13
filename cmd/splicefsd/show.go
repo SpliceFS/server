@@ -11,10 +11,14 @@ import (
 	"github.com/SpliceFS/server/config"
 )
 
+// yamlIndent is the number of spaces that config show indents by.
+const yamlIndent = 2
+
 // shownConfig is what config show prints: the settings, the proxies that the settings
 // keep as prefixes, and the shares.
 type shownConfig struct {
-	config.Config  `yaml:",inline"`
+	config.Config `yaml:",inline"`
+
 	TrustedProxies []string              `yaml:"trusted_proxies"`
 	Shares         map[string]shownShare `yaml:"shares"`
 }
@@ -49,7 +53,7 @@ func showConfig(w io.Writer, cfg *config.Config) error {
 	encodeErr := doc.Encode(shown)
 	annotate(&doc, "", cfg.Sources)
 	enc := yaml.NewEncoder(w)
-	enc.SetIndent(2)
+	enc.SetIndent(yamlIndent)
 	return errors.Join(encodeErr, enc.Encode(&doc))
 }
 
@@ -72,6 +76,8 @@ func annotate(n *yaml.Node, prefix string, sources map[string]string) {
 			value.LineComment = "# " + file
 		case set:
 			key.LineComment = "# " + file
+		default:
+			// A value nobody set is a default and has no comment.
 		}
 	}
 }

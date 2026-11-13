@@ -3,9 +3,7 @@
 package share
 
 import (
-	"errors"
 	"path/filepath"
-	"reflect"
 	"syscall"
 	"testing"
 
@@ -22,29 +20,25 @@ func errSyscall(name string) error {
 
 func TestNamedPipeIsHidden(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	f.write(t, "regular", "x", epoch)
-	if err := mkfifo(filepath.Join(f.root, "pipe")); err != nil {
+	fix := newFixture(t)
+	fix.write(t, "regular", "x", epoch())
+	if err := mkfifo(filepath.Join(fix.root, "pipe")); err != nil {
 		t.Skipf("cannot create a named pipe: %v", err)
 	}
-	s := f.open(t, Options{})
-	list, err := s.List("")
-	if err != nil {
-		t.Fatal(err)
+	share := fix.open(t, &Options{})
+	requireListing(t, share, "", []string{"regular"})
+	requireHidden(t, share, "pipe")
+}
+
+func TestNonNegative(t *testing.T) {
+	t.Parallel()
+	if got := nonNegative(int64(-1)); got != 0 {
+		t.Errorf("nonNegative(-1) = %d, want 0", got)
 	}
-	if want := []string{"regular"}; !reflect.DeepEqual(names(list), want) {
-		t.Errorf("List = %v, want %v", names(list), want)
+	if got := nonNegative(int32(4096)); got != 4096 {
+		t.Errorf("nonNegative(4096) = %d", got)
 	}
-	if _, err := s.Stat("pipe"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("Stat(pipe) = %v", err)
-	}
-	if _, err := s.OpenFile("pipe"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("OpenFile(pipe) = %v", err)
-	}
-	if _, _, err := s.HeadDigest("pipe"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("HeadDigest(pipe) = %v", err)
-	}
-	if _, err := s.List("pipe"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("List(pipe) = %v", err)
+	if got := nonNegative(uint32(7)); got != 7 {
+		t.Errorf("nonNegative(7) = %d", got)
 	}
 }

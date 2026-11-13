@@ -29,10 +29,16 @@ const (
 	keyFileName  = "key.pem"
 
 	certYears = 10
-	dirMode   = 0o700
-	keyMode   = 0o600
-	certMode  = 0o644
+	// serialBits is the size of a certificate serial number. It is below 128 bits so that the
+	// number stays positive in a signed 128 bit field, and far above what makes a clash likely.
+	serialBits = 127
+	dirMode    = 0o700
+	keyMode    = 0o600
+	certMode   = 0o644
 )
+
+// loopbackAddress is the address that every certificate of the server names.
+const loopbackAddress = "127.0.0.1"
 
 // certSource is what making a certificate takes from the outside world.
 type certSource struct {
@@ -69,18 +75,18 @@ func loadOrCreateCert(dir string, src certSource) (tls.Certificate, error) {
 // files are created exclusively so that nothing is overwritten, and the key goes first so
 // that a failure never leaves a certificate without its key.
 func createCert(dir string, src certSource) error {
-	certPEM, keyPEM, err := generateCert(src)
+	pemFiles, err := generateCert(src)
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(dir, dirMode); err != nil {
-		return err
+		return fmt.Errorf("create certificate folder: %w", err)
 	}
 	keyPath := filepath.Join(dir, keyFileName)
-	if err := writeNew(keyPath, keyPEM, keyMode); err != nil {
+	if err := writeNew(keyPath, pemFiles.key, keyMode); err != nil {
 		return err
 	}
-	if err := writeNew(filepath.Join(dir, certFileName), certPEM, certMode); err != nil {
+	if err := writeNew(filepath.Join(dir, certFileName), pemFiles.cert, certMode); err != nil {
 		// A key alone would make every later start fail instead of trying again.
 		return errors.Join(err, os.Remove(keyPath))
 	}
@@ -92,23 +98,28 @@ func createCert(dir string, src certSource) error {
 func writeNew(path string, data []byte, mode os.FileMode) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
-		return err
+		return fmt.Errorf("create certificate file: %w", err)
 	}
 	_, writeErr := f.Write(data)
 	return errors.Join(writeErr, f.Close())
 }
 
+// pemPair is a certificate and its private key, both PEM encoded.
+type pemPair struct {
+	cert, key []byte
+}
+
 // generateCert makes a self-signed ECDSA P-256 certificate for the host name and the
 // loopback names, and returns it and its key as PEM.
-func generateCert(src certSource) (certPEM, keyPEM []byte, err error) {
+func generateCert(src certSource) (pemPair, error) {
 	host, err := src.hostname()
 	if err != nil {
-		return nil, nil, fmt.Errorf("host name: %w", err)
+		return pemPair{}, fmt.Errorf("host name: %w", err)
 	}
 	key, keyErr := ecdsa.GenerateKey(elliptic.P256(), src.random)
-	serial, serialErr := rand.Int(src.random, new(big.Int).Lsh(big.NewInt(1), 127))
+	serial, serialErr := rand.Int(src.random, new(big.Int).Lsh(big.NewInt(1), serialBits))
 	if err := errors.Join(keyErr, serialErr); err != nil {
-		return nil, nil, err
+		return pemPair{}, err
 	}
 	return encodeCert(src.random, certTemplate(certHost(host), serial, src.now()), key)
 }
@@ -116,14 +127,16 @@ func generateCert(src certSource) (certPEM, keyPEM []byte, err error) {
 // encodeCert signs template with key and returns the certificate and the key as PEM.
 func encodeCert(
 	random io.Reader, template *x509.Certificate, key *ecdsa.PrivateKey,
-) (certPEM, keyPEM []byte, err error) {
+) (pemPair, error) {
 	certDER, certErr := x509.CreateCertificate(random, template, template, &key.PublicKey, key)
 	keyDER, keyDERErr := x509.MarshalECPrivateKey(key)
 	if err := errors.Join(certErr, keyDERErr); err != nil {
-		return nil, nil, err
+		return pemPair{}, err
 	}
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}),
-		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), nil
+	return pemPair{
+		cert: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}),
+		key:  pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
+	}, nil
 }
 
 // certHost returns host if it can be a name in a certificate, which holds only printable
@@ -152,6 +165,6 @@ func certTemplate(host string, serial *big.Int, now time.Time) *x509.Certificate
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		DNSNames:     names,
-		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
+		IPAddresses:  []net.IP{net.ParseIP(loopbackAddress), net.IPv6loopback},
 	}
 }

@@ -2,6 +2,7 @@ package version
 
 import "testing"
 
+//nolint:paralleltest // each case sets the package variable version, which the build also sets
 func TestString(t *testing.T) {
 	tests := []struct {
 		name string
@@ -24,6 +25,9 @@ func TestString(t *testing.T) {
 }
 
 func TestDefaultIsDev(t *testing.T) {
+	// A parallel test never runs together with a serial one, so TestString has put the
+	// variable back before this one reads it.
+	t.Parallel()
 	if version != "dev" {
 		t.Errorf("version = %q in a test build, want %q", version, "dev")
 	}

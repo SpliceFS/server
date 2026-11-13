@@ -43,7 +43,7 @@ func validateShareFiles(shares map[string]Share) []error {
 		share := shares[name]
 		found := validateShare(name, share)
 		if share.Path != "" && !filepath.IsAbs(share.Path) {
-			found = append(found, fmt.Errorf("shares.%s.path: %q must be absolute", name, share.Path))
+			found = append(found, fmt.Errorf("shares.%s.path: %q %w", name, share.Path, ErrPathNotAbsolute))
 		}
 		for _, p := range found {
 			problems = append(problems, fmt.Errorf("%w (file %s%s)", p, name, yamlExt))

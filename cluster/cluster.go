@@ -26,6 +26,17 @@ import (
 // namePattern is the form of a node name.
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
+// The errors of a bad node file. They only reach the log, where the problem file is named,
+// so they are not exported. Each message that follows a quoted value holds only the words
+// after that value, which keeps the text of the log lines as it was.
+var (
+	errNotNodeFile = errors.New("the file name is not a node id and .yaml")
+	errNameForm    = errors.New("must match")
+	errURLNotHTTP  = errors.New("must be an absolute http or https URL")
+	errURLNoHost   = errors.New("has no host")
+	errURLExtra    = errors.New("must not have a query or a fragment")
+)
+
 // announcementMode lets every user on the machine and every sync tool read the file: it holds
 // only what clients are told anyway.
 const announcementMode = 0o644
@@ -43,7 +54,7 @@ func Announce(dir, nodeID string, self wire.Node) error {
 		return nil
 	}
 	// A struct of two strings always encodes, so there is no error to handle.
-	data, _ := yaml.Marshal(self)
+	data, _ := yaml.Marshal(self) //nolint:errcheck // cannot fail for a struct of two strings
 	if current, err := os.ReadFile(path); err == nil && bytes.Equal(current, data) {
 		return nil
 	}
@@ -87,14 +98,15 @@ func (l *Loader) Nodes() (wire.Nodes, error) {
 func (l *Loader) merge(entries []datadir.Entry[wire.Node]) []wire.Node {
 	nodes := make([]wire.Node, 0, len(entries))
 	owner := map[string]string{}
-	for _, e := range entries {
-		if first, dup := owner[e.Value.Name]; dup {
+	for _, entry := range entries {
+		if first, dup := owner[entry.Value.Name]; dup {
 			l.log.Warn("duplicate node name, keeping the first file's node",
-				"name", e.Value.Name, "kept", first, "ignored", e.Name)
+				slog.String("name", entry.Value.Name), slog.String("kept", first),
+				slog.String("ignored", entry.Name))
 			continue
 		}
-		owner[e.Value.Name] = e.Name
-		nodes = append(nodes, e.Value)
+		owner[entry.Value.Name] = entry.Name
+		nodes = append(nodes, entry.Value)
 	}
 	slices.SortFunc(nodes, func(a, b wire.Node) int { return strings.Compare(a.Name, b.Name) })
 	return nodes
@@ -104,7 +116,7 @@ func (l *Loader) merge(entries []datadir.Entry[wire.Node]) []wire.Node {
 // file never adds a node.
 func parseNode(name string, data []byte) (wire.Node, error) {
 	if _, ok := datadir.NodeOfFile(name); !ok {
-		return wire.Node{}, errors.New("the file name is not a node id and .yaml")
+		return wire.Node{}, errNotNodeFile
 	}
 	var node wire.Node
 	dec := yaml.NewDecoder(bytes.NewReader(data))
@@ -113,7 +125,7 @@ func parseNode(name string, data []byte) (wire.Node, error) {
 		return wire.Node{}, fmt.Errorf("parse node file: %w", err)
 	}
 	if !namePattern.MatchString(node.Name) {
-		return wire.Node{}, fmt.Errorf("name %q must match %s", node.Name, namePattern)
+		return wire.Node{}, fmt.Errorf("name %q %w %s", node.Name, errNameForm, namePattern)
 	}
 	cleaned, err := cleanURL(node.URL)
 	if err != nil {
@@ -126,16 +138,16 @@ func parseNode(name string, data []byte) (wire.Node, error) {
 // cleanURL checks that raw is an absolute http or https URL with a host and no
 // query or fragment, and returns it without a trailing slash.
 func cleanURL(raw string) (string, error) {
-	u, err := url.Parse(raw)
+	parsed, err := url.Parse(raw)
 	switch {
 	case err != nil:
 		return "", fmt.Errorf("%q is not a valid URL: %w", raw, err)
-	case u.Scheme != "http" && u.Scheme != "https":
-		return "", fmt.Errorf("%q must be an absolute http or https URL", raw)
-	case u.Hostname() == "":
-		return "", fmt.Errorf("%q has no host", raw)
+	case parsed.Scheme != "http" && parsed.Scheme != "https":
+		return "", fmt.Errorf("%q %w", raw, errURLNotHTTP)
+	case parsed.Hostname() == "":
+		return "", fmt.Errorf("%q %w", raw, errURLNoHost)
 	case strings.ContainsAny(raw, "?#"):
-		return "", fmt.Errorf("%q must not have a query or a fragment", raw)
+		return "", fmt.Errorf("%q %w", raw, errURLExtra)
 	}
 	return strings.TrimRight(raw, "/"), nil
 }

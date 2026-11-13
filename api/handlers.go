@@ -14,6 +14,12 @@ import (
 	"github.com/SpliceFS/server/share"
 )
 
+// errNotJSONObject and errTrailingData say why a login body was refused.
+var (
+	errNotJSONObject = errors.New("not a JSON object")
+	errTrailingData  = errors.New("data after the JSON object")
+)
+
 // maxLoginBody is the largest login request accepted. A user name and a password are
 // far smaller; the limit keeps a client from making the server buffer a large body.
 const maxLoginBody = 4 << 10
@@ -52,7 +58,7 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 func readLogin(w http.ResponseWriter, r *http.Request) (wire.LoginRequest, error) {
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxLoginBody))
 	if err != nil {
-		return wire.LoginRequest{}, err
+		return wire.LoginRequest{}, fmt.Errorf("read login body: %w", err)
 	}
 	return parseLogin(data)
 }
@@ -64,15 +70,15 @@ func parseLogin(data []byte) (wire.LoginRequest, error) {
 	// Decoding null into a struct succeeds and changes nothing, which would turn
 	// a body of "null" into a login attempt by the empty user.
 	if !bytes.HasPrefix(data, []byte("{")) {
-		return req, errors.New("not a JSON object")
+		return req, errNotJSONObject
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		return req, err
+		return req, fmt.Errorf("decode login body: %w", err)
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return req, errors.New("data after the JSON object")
+		return req, errTrailingData
 	}
 	return req, nil
 }
@@ -105,8 +111,8 @@ func (s *server) listShares(w http.ResponseWriter, r *http.Request, claims auth.
 }
 
 // listDir answers GET /v1/tree/{share}/{dir...}.
-func (s *server) listDir(w http.ResponseWriter, r *http.Request, sh Share) {
-	infos, err := sh.List(strings.TrimSuffix(r.PathValue("dir"), "/"))
+func (s *server) listDir(w http.ResponseWriter, r *http.Request, shared Share) {
+	infos, err := shared.List(strings.TrimSuffix(r.PathValue("dir"), "/"))
 	if err != nil {
 		s.failLookup(w, r, err, share.ErrNotFound, share.ErrNotDir)
 		return
@@ -121,8 +127,8 @@ func (s *server) listDir(w http.ResponseWriter, r *http.Request, sh Share) {
 }
 
 // space answers GET /v1/space/{share}.
-func (s *server) space(w http.ResponseWriter, r *http.Request, sh Share) {
-	space, err := sh.Space()
+func (s *server) space(w http.ResponseWriter, r *http.Request, shared Share) {
+	space, err := shared.Space()
 	if err != nil {
 		s.internalError(w, r, err)
 		return

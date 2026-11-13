@@ -14,6 +14,9 @@ import (
 // ErrNoUser means that no user of that name exists.
 var ErrNoUser = errors.New("no such user")
 
+// errEmptyPasswordHash means that a user file has no password_hash.
+var errEmptyPasswordHash = errors.New("password_hash is empty")
+
 // allShares is the entry in a user's share list that allows every share.
 const allShares = "*"
 
@@ -79,16 +82,18 @@ func (u *Users) Lookup(name string) (User, error) {
 	if err != nil {
 		return User{}, fmt.Errorf("read user %q: %w", name, err)
 	}
-	var f userFile
+	var parsed userFile
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
-	if err := dec.Decode(&f); err != nil {
+	if err := dec.Decode(&parsed); err != nil {
 		return User{}, fmt.Errorf("parse user %q: %w", name, err)
 	}
-	if f.PasswordHash == "" {
-		return User{}, fmt.Errorf("user %q: password_hash is empty", name)
+	if parsed.PasswordHash == "" {
+		return User{}, fmt.Errorf("user %q: %w", name, errEmptyPasswordHash)
 	}
-	return User{Name: name, PasswordHash: f.PasswordHash, Shares: f.Shares, Disabled: f.Disabled}, nil
+	return User{
+		Name: name, PasswordHash: parsed.PasswordHash, Shares: parsed.Shares, Disabled: parsed.Disabled,
+	}, nil
 }
 
 // validName reports whether name matches ^[a-z0-9][a-z0-9._-]{0,63}$. It is the guard
@@ -98,13 +103,22 @@ func validName(name string) bool {
 		return false
 	}
 	for i := range len(name) {
-		c := name[i]
-		switch {
-		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
-		case i > 0 && (c == '.' || c == '_' || c == '-'):
-		default:
+		if !validNameByte(name[i], i == 0) {
 			return false
 		}
 	}
 	return true
+}
+
+// validNameByte reports whether c may appear in a user name. The separators may not start
+// one, so a name cannot be "." or "..".
+func validNameByte(c byte, first bool) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		return true
+	case c == '.' || c == '_' || c == '-':
+		return !first
+	default:
+		return false
+	}
 }
