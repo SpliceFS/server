@@ -11,6 +11,9 @@
 #                      which is as close as FreeBSD lets a package come to "installing
 #                      means running": pkg stops whatever an install script starts.
 
+# rc.subr reads rcvar, command, command_args, extra_commands, start_precmd and reload_cmd.
+# shellcheck disable=SC2034
+# shellcheck source=/dev/null
 . /etc/rc.subr
 
 name=splicefsd
@@ -52,7 +55,8 @@ splicefsd_reload() {
         echo "${name} is not running."
         return 1
     fi
-    kill -HUP "$(cat "${childpidfile}")"
+    server_pid="$(cat "${childpidfile}")"
+    kill -HUP "${server_pid}"
 }
 
 run_rc_command "$1"

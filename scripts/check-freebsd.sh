@@ -41,15 +41,15 @@ run_tests() {
     freebsd_job_folder "$job" freebsd-check-job.sh "${FREEBSD_ONLY:-}"
     if [ -f packaging/freebsd/test-modules ]; then cp packaging/freebsd/test-modules "$job/"; fi
     echo "FreeBSD $release ($machine): running the tests"
-    freebsd_run "$disk" "$job" "$results" "$archive" ||
-        fail "the tests failed on FreeBSD $release ($machine)"
+    freebsd_run "$disk" "$job" "$results" "$archive"
+    [ "$run_status" -eq 0 ] || fail "the tests failed on FreeBSD $release ($machine)"
     if [ -n "${FREEBSD_ONLY:-}" ]; then
         echo "ok   FreeBSD $release ($machine), $FREEBSD_ONLY only: coverage NOT checked"
         return 0
     fi
     # The profiles name source files, so the gate needs the Go tools and the source: it
     # runs in the Go container like every other build step.
-    docker run --rm -v "$(pwd)":/src:ro -v "$out":/out -v splicefs-gomod:/go/pkg/mod "$image" \
+    docker run --rm -v "$source_dir":/src:ro -v "$out":/out -v splicefs-gomod:/go/pkg/mod "$image" \
         sh -c "cd /src && sh scripts/freebsd-coverage.sh '/out/${results#"$out"/}/cover'" ||
         fail "coverage on FreeBSD $release ($machine) is not 100%"
     echo "ok   FreeBSD $release ($machine)"
