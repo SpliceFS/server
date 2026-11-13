@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -16,6 +19,19 @@ var ErrNoUser = errors.New("no such user")
 
 // errEmptyPasswordHash means that a user file has no password_hash.
 var errEmptyPasswordHash = errors.New("password_hash is empty")
+
+// Problems with a user file. The text of one never contains the content of the file, because
+// it is logged and a mistake in the file may put a password hash where a key or a value
+// belongs. The YAML decoder quotes values and key names in its errors, so none of its text is
+// passed on except the line number.
+var (
+	errUserFileEmpty    = errors.New("the file is empty")
+	errUserNotYAML      = errors.New("not valid YAML")
+	errUserUnknownKey   = errors.New("a key that is not known")
+	errUserDuplicateKey = errors.New("a key that is set twice")
+	errUserWrongType    = errors.New("a value of the wrong type for its key")
+	errUserOtherProblem = errors.New("a key or value that cannot be used")
+)
 
 // allShares is the entry in a user's share list that allows every share.
 const allShares = "*"
@@ -86,7 +102,7 @@ func (u *Users) Lookup(name string) (User, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&parsed); err != nil {
-		return User{}, fmt.Errorf("parse user %q: %w", name, err)
+		return User{}, fmt.Errorf("parse user %q: %w", name, describeUserFileError(err))
 	}
 	if parsed.PasswordHash == "" {
 		return User{}, fmt.Errorf("user %q: %w", name, errEmptyPasswordHash)
@@ -94,6 +110,80 @@ func (u *Users) Lookup(name string) (User, error) {
 	return User{
 		Name: name, PasswordHash: parsed.PasswordHash, Shares: parsed.Shares, Disabled: parsed.Disabled,
 	}, nil
+}
+
+// describeUserFileError says where in a user file the decoder found a problem and what kind
+// it is, without any text of the file. A type error lists one message per problem and the
+// first one is reported with the count of the others.
+func describeUserFileError(err error) error {
+	var typeErr *yaml.TypeError
+	switch {
+	case errors.Is(err, io.EOF):
+		return errUserFileEmpty
+	case errors.As(err, &typeErr):
+		return describeTypeErrors(typeErr.Errors)
+	default:
+		return atLine(errUserNotYAML, lineNumber(strings.TrimPrefix(err.Error(), "yaml: ")))
+	}
+}
+
+// describeTypeErrors reports the first of the messages of a yaml.TypeError and how many more
+// there are.
+func describeTypeErrors(messages []string) error {
+	if len(messages) == 0 {
+		return errUserOtherProblem
+	}
+	first := userProblem(messages[0])
+	if more := len(messages) - 1; more > 0 {
+		return fmt.Errorf("%w (and %d more)", first, more)
+	}
+	return first
+}
+
+// userProblem classifies one message of a yaml.TypeError by the words the decoder puts first,
+// which are its own, and keeps nothing after them, where it quotes the file.
+func userProblem(message string) error {
+	line := lineNumber(message)
+	text := message
+	if line > 0 {
+		_, text, _ = strings.Cut(message, ": ")
+	}
+	switch {
+	case strings.HasPrefix(text, "cannot unmarshal "):
+		return atLine(errUserWrongType, line)
+	case strings.HasPrefix(text, "field ") && strings.Contains(text, " not found in type "):
+		return atLine(errUserUnknownKey, line)
+	case strings.HasPrefix(text, "mapping key "):
+		return atLine(errUserDuplicateKey, line)
+	default:
+		return atLine(errUserOtherProblem, line)
+	}
+}
+
+// lineNumber reads the "line N: " the decoder puts before a message. It is 0 when the message
+// has no such start.
+func lineNumber(message string) int {
+	rest, found := strings.CutPrefix(message, "line ")
+	if !found {
+		return 0
+	}
+	digits, _, found := strings.Cut(rest, ": ")
+	if !found {
+		return 0
+	}
+	line, err := strconv.Atoi(digits)
+	if err != nil || line < 1 {
+		return 0
+	}
+	return line
+}
+
+// atLine puts the line number before the problem, when there is one.
+func atLine(problem error, line int) error {
+	if line == 0 {
+		return problem
+	}
+	return fmt.Errorf("line %d: %w", line, problem)
 }
 
 // validName reports whether name matches ^[a-z0-9][a-z0-9._-]{0,63}$. It is the guard
