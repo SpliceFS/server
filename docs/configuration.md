@@ -266,6 +266,7 @@ The server applies changes to `conf.d/` and `shares.d/` without a restart. Send 
 ```
 systemctl reload splicefsd        # Linux packages with systemd
 rc-service splicefsd reload       # Alpine
+service splicefsd reload          # FreeBSD
 kill -HUP <pid>                   # by hand
 ```
 

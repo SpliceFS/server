@@ -89,7 +89,7 @@ shares: [media]
 Apply the share without a restart:
 
 ```
-systemctl reload splicefsd        # on Alpine: rc-service splicefsd reload
+systemctl reload splicefsd        # on Alpine: rc-service splicefsd reload; on FreeBSD: service splicefsd reload
 ```
 
 A new or changed user file takes effect at the next login and needs no reload. On a macOS
@@ -127,7 +127,7 @@ make lint         # golangci-lint, then ShellCheck on every shell script with ev
 make package      # deb, rpm and apk packages for amd64 and arm64 in ./dist (needs Docker)
 make package-test # installs and removes each package in a clean container of every system
 make repo         # signed apt, rpm and Alpine repositories in ./dist/repo from the packages in ./dist
-make package-freebsd  # FreeBSD packages in ./dist/freebsd, built and tested in a FreeBSD virtual machine
+make package-freebsd  # FreeBSD packages in ./dist/freebsd and their signed repository in ./dist/repo/freebsd, built and tested in a FreeBSD virtual machine
 make repo-test    # installs from the repositories with signature checks on, in every system
 make publish-fetch  # downloads the published repositories into ./dist/repo
 make publish        # uploads ./dist/repo to packages.splicefs.org/server, never deleting a package
