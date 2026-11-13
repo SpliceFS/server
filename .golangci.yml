@@ -92,6 +92,14 @@ linters:
         # message types has as many as the protocol has messages.
         - name: max-public-structs
           disabled: true
+    # Log values are passed as typed attributes (slog.String, slog.Int), never as loose
+    # key and value pairs: a missing value or a key that is not a string cannot compile.
+    sloglint:
+      attr-only: true
+      no-global: all
+      context: scope
+      static-msg: true
+      key-naming-case: snake
     staticcheck:
       checks:
         - all

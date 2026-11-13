@@ -84,12 +84,12 @@ func (r *runner) start(listener *endpoint) {
 func (r *runner) reload(ctx context.Context) {
 	cfg, err := r.opts.Load()
 	if err != nil {
-		r.logger.Error("configuration not applied", "error", err)
+		r.logger.ErrorContext(ctx, "configuration not applied", slog.Any("error", err))
 		return
 	}
 	changes, err := r.plan(ctx, cfg.Listen)
 	if err != nil {
-		r.logger.Error("configuration not applied", "error", err)
+		r.logger.ErrorContext(ctx, "configuration not applied", slog.Any("error", err))
 		return
 	}
 	// The generation comes last because building it announces this node to the cluster,
@@ -97,7 +97,7 @@ func (r *runner) reload(ctx context.Context) {
 	next, err := r.build.generation(cfg)
 	if err != nil {
 		err = errors.Join(err, closeAll(changes.added))
-		r.logger.Error("configuration not applied", "error", err)
+		r.logger.ErrorContext(ctx, "configuration not applied", slog.Any("error", err))
 		return
 	}
 
@@ -113,13 +113,13 @@ func (r *runner) reload(ctx context.Context) {
 		// Connections it accepted stay open and finish their requests. A close error of a
 		// listener that is going away changes nothing, so it is logged and not acted on.
 		if err := listener.retire(); err != nil {
-			r.logger.Warn("close removed listener", "error", err)
+			r.logger.WarnContext(ctx, "close removed listener", slog.Any("error", err))
 		}
 	}
 	if r.opts.Applied != nil {
 		r.opts.Applied(cfg)
 	}
-	r.logger.Info("configuration applied", "listeners", len(r.endpoints))
+	r.logger.InfoContext(ctx, "configuration applied", slog.Int("listeners", len(r.endpoints)))
 }
 
 // plan compares entries with the listeners being served. It loads every certificate and

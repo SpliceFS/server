@@ -101,7 +101,8 @@ func (l *Loader) merge(entries []datadir.Entry[wire.Node]) []wire.Node {
 	for _, entry := range entries {
 		if first, dup := owner[entry.Value.Name]; dup {
 			l.log.Warn("duplicate node name, keeping the first file's node",
-				"name", entry.Value.Name, "kept", first, "ignored", entry.Name)
+				slog.String("name", entry.Value.Name), slog.String("kept", first),
+				slog.String("ignored", entry.Name))
 			continue
 		}
 		owner[entry.Value.Name] = entry.Name

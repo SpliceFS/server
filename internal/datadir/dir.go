@@ -76,7 +76,8 @@ func (d *Dir[T]) Refresh() ([]Entry[T], bool) {
 func (d *Dir[T]) scan() (map[string]stamp, bool) {
 	items, err := os.ReadDir(d.dir)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		d.log.Warn("cannot list directory, keeping what was loaded", "dir", d.dir, "error", err)
+		d.log.Warn("cannot list directory, keeping what was loaded",
+			slog.String("dir", d.dir), slog.Any("error", err))
 		return nil, false
 	}
 	found := map[string]stamp{}
@@ -121,7 +122,7 @@ func (d *Dir[T]) load(name string) bool {
 	}
 	if err != nil {
 		d.log.Warn("ignoring file, keeping its last good content",
-			"dir", d.dir, "file", name, "error", err)
+			slog.String("dir", d.dir), slog.String("file", name), slog.Any("error", err))
 		return false
 	}
 	d.values[name] = value

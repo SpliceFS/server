@@ -52,9 +52,10 @@ func answerPanic(log *slog.Logger, w http.ResponseWriter, r *http.Request, value
 	if err, ok := value.(error); ok && errors.Is(err, http.ErrAbortHandler) {
 		panic(value)
 	}
-	log.ErrorContext(r.Context(), "panic in handler", "panic", value,
-		"method", r.Method, "path", r.URL.Path, "client", clientAddr(r.Context()),
-		"stack", string(debug.Stack()))
+	log.ErrorContext(r.Context(), "panic in handler", slog.Any("panic", value),
+		slog.String("method", r.Method), slog.String("path", r.URL.Path),
+		slog.String("client", clientAddr(r.Context())),
+		slog.String("stack", string(debug.Stack())))
 	writeError(w, http.StatusInternalServerError, internalErrorMsg)
 }
 

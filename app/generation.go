@@ -55,7 +55,7 @@ func (l *live) replace(next *generation) {
 	l.retiring.Go(func() {
 		old.active.Wait()
 		if err := old.closer.Close(); err != nil {
-			l.logger.Warn("close replaced configuration", "error", err)
+			l.logger.Warn("close replaced configuration", slog.Any("error", err))
 		}
 	})
 }
