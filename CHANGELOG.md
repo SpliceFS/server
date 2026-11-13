@@ -81,6 +81,8 @@ notable ones.
 - FreeBSD: `make check-freebsd` runs the tests as root in a FreeBSD virtual machine, with the
   100% coverage gate, and CI runs it for FreeBSD 14 and 15. The FreeBSD scripts are the ones
   the client uses.
+- A user file that cannot be read as YAML is reported without quoting any of its content, so a
+  misplaced password hash cannot reach a log.
 
 ### Removed
 
