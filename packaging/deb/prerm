@@ -9,4 +9,7 @@ case "$1" in
             systemctl disable --now splicefsd.service || true
         fi
         ;;
+    *)
+        # An upgrade keeps the service running, and a failed upgrade needs nothing here.
+        ;;
 esac

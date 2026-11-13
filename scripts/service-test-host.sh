@@ -34,6 +34,22 @@ wait_for() {
     done
 }
 
+# Ends the test with the message, after showing the service's state, when the command fails.
+# The command runs through "$@" so that its own status is the answer, not something set -e
+# acts on in the middle of a function.
+must() {
+    message="$1"
+    shift
+    "$@" || { report; fail "$message"; }
+}
+
+# The same for a command that has to fail: ends the test when it succeeds.
+refuse() {
+    message="$1"
+    shift
+    if "$@"; then fail "$message"; fi
+}
+
 answers() {
     code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 3 \
         "https://127.0.0.1:$port$health_path" || true)"
@@ -58,20 +74,25 @@ trap remove EXIT
 sudo apt-get install -y -qq "./$deb" >/dev/null
 # Nobody starts it: installing the package must be enough.
 systemctl is-enabled --quiet "$program.service" || { report; fail "the service is not enabled after the install"; }
-wait_for 20 active || { report; fail "the service is not running after the install"; }
+must "the service is not running after the install" wait_for 20 active
 pid="$(systemctl show -p MainPID --value "$program.service")"
 owner="$(ps -o user= -p "$pid" | tr -d ' ')"
 [ "$owner" = "$expected_user" ] || fail "the service runs as '$owner', not as $expected_user"
-wait_for 10 answers || { report; fail "the server does not answer on $health_path"; }
+must "the server does not answer on $health_path" wait_for 10 answers
 
 sudo systemctl restart "$program.service"
-wait_for 20 active || { report; fail "the service is not running after a restart"; }
-wait_for 10 answers || { report; fail "the server does not answer after a restart"; }
+must "the service is not running after a restart" wait_for 20 active
+must "the server does not answer after a restart" wait_for 10 answers
 
 sudo apt-get purge -y -qq "$name" >/dev/null
 trap - EXIT
-if active; then fail "the service is still running after the package was removed"; fi
-if answers; then fail "the port still answers after the package was removed"; fi
+refuse "the service is still running after the package was removed" active
+refuse "the port still answers after the package was removed" answers
 
+arch="$(uname -m)"
+file="$(basename "$deb")"
+# shellcheck source=/dev/null
 . /etc/os-release
-echo "service test passed on this machine ($PRETTY_NAME, $(uname -m)): $(basename "$deb")"
+# PRETTY_NAME comes from /etc/os-release, which ShellCheck cannot read here.
+# shellcheck disable=SC2154
+echo "service test passed on this machine ($PRETTY_NAME, $arch): $file"

@@ -1,3 +1,6 @@
+# shellcheck shell=sh
+# answers_text is read by scripts/service-test.sh, which sources this file.
+# shellcheck disable=SC2034
 # Sourced by scripts/service-test.sh. It says what "the service works" means for this
 # program; everything else in the service test is the same for every SpliceFS program.
 
@@ -8,6 +11,8 @@ port=8480
 health_path=/api/v1/health
 answers_text="answers 200 on $health_path from outside the container"
 
+# program is set by scripts/service-test.sh before it sources this file.
+# shellcheck disable=SC2154
 expected_user="$(sed -n 's/^User=//p' "packaging/systemd/$program.service")"
 [ -n "$expected_user" ] || fail "packaging/systemd/$program.service sets no User"
 
@@ -20,7 +25,8 @@ run_options() {
 # connection on the host even when nothing listens inside, so only the answer counts. The
 # published port can change when the container restarts, so it is looked up every time.
 answers() {
-    hostport="$(docker port "$1" "$port/tcp" | head -n 1 | sed 's/.*://')" || return 1
+    mapping="$(docker port "$1" "$port/tcp")" || return 1
+    hostport="$(printf '%s\n' "$mapping" | head -n 1 | sed 's/.*://')" || return 1
     code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 3 \
         "https://127.0.0.1:$hostport$health_path" || true)"
     [ "$code" = 200 ]
