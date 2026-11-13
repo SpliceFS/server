@@ -146,6 +146,13 @@ func TestVerifyPasswordMalformed(t *testing.T) {
 		{"time above 10", build("argon2id", "v=19", "m=8,t=11,p=1", salt, key)},
 		{"threads above 64", build("argon2id", "v=19", "m=8,t=1,p=65", salt, key)},
 		{"threads overflow uint8", build("argon2id", "v=19", "m=8,t=1,p=260", salt, key)},
+		{"threads just over uint8", build("argon2id", "v=19", "m=8,t=1,p=256", salt, key)},
+		{"threads far over uint8", build("argon2id", "v=19", "m=8,t=1,p=99999", salt, key)},
+		{"threads over uint32", build("argon2id", "v=19", "m=8,t=1,p=99999999999", salt, key)},
+		{"non-numeric threads", build("argon2id", "v=19", "m=8,t=1,p=four", salt, key)},
+		{"wrong threads prefix", build("argon2id", "v=19", "m=8,t=1,x=1", salt, key)},
+		{"wrong time prefix", build("argon2id", "v=19", "m=8,x=1,p=1", salt, key)},
+		{"non-numeric time", build("argon2id", "v=19", "m=8,t=one,p=1", salt, key)},
 		{"bad salt base64", build("argon2id", "v=19", "m=8,t=1,p=1", "!!!", key)},
 		{"padded salt", build("argon2id", "v=19", "m=8,t=1,p=1", salt+"==", key)},
 		{"empty salt", build("argon2id", "v=19", "m=8,t=1,p=1", "", key)},
@@ -175,5 +182,29 @@ func TestVerifyPasswordAcceptsLimits(t *testing.T) {
 	}
 	if costs.memory != maxMemory || costs.time != maxTime || costs.threads != maxThreads {
 		t.Errorf("costs = %+v", costs)
+	}
+}
+
+func TestParseCostsThreadCountRefusal(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		threads string
+		want    string
+	}{
+		{"0", "parameters out of range"},
+		{"65", "parameters out of range"},
+		{"256", "parameters out of range"},
+		{"99999", "parameters out of range"},
+		{"four", "bad parameters"},
+		{"-1", "bad parameters"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.threads, func(t *testing.T) {
+			t.Parallel()
+			_, err := parseCosts("m=8,t=1,p=" + tt.threads)
+			if !errors.Is(err, errInvalidHash) || !strings.HasSuffix(err.Error(), tt.want) {
+				t.Errorf("parseCosts(p=%s) = %v; want %v with %q", tt.threads, err, errInvalidHash, tt.want)
+			}
+		})
 	}
 }

@@ -313,7 +313,7 @@ func (t *Tokens) merge(entries []datadir.Entry[[]signingKey]) *keyring {
 				// The id is left out: a mistake in a file may put a secret where the
 				// id belongs, and this line is logged.
 				t.log.Warn("duplicate key id, keeping the first file's key",
-					"kept", first, "ignored", entry.Name)
+					slog.String("kept", first), slog.String("ignored", entry.Name))
 				continue
 			}
 			owner[key.id] = entry.Name

@@ -240,7 +240,7 @@ func runServer(ctx context.Context, opts options, defaults defaultDirs, stderr i
 // logListening tells the operator where the server is reachable.
 func logListening(logger *slog.Logger, addrs []net.Addr) {
 	for _, addr := range addrs {
-		logger.Info("listening", "address", addr.String())
+		logger.Info("listening", slog.String("address", addr.String()))
 	}
 }
 

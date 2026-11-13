@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -29,7 +30,8 @@ func writeError(w http.ResponseWriter, status int, message string) {
 // internalError logs err and answers 500. The client learns nothing about the cause.
 func (s *server) internalError(w http.ResponseWriter, r *http.Request, err error) {
 	s.log.ErrorContext(r.Context(), "request failed",
-		"method", r.Method, "path", r.URL.Path, "client", clientAddr(r.Context()), "error", err)
+		slog.String("method", r.Method), slog.String("path", r.URL.Path),
+		slog.String("client", clientAddr(r.Context())), slog.Any("error", err))
 	writeError(w, http.StatusInternalServerError, internalErrorMsg)
 }
 
@@ -59,7 +61,7 @@ func (s *server) writeJSON(w http.ResponseWriter, r *http.Request, v any) {
 func (s *server) sendGzip(w http.ResponseWriter, r *http.Request, src io.Reader) {
 	if err := writeGzip(w, src); err != nil {
 		s.log.DebugContext(r.Context(), "compressed response ended early",
-			"path", r.URL.Path, "error", err)
+			slog.String("path", r.URL.Path), slog.Any("error", err))
 	}
 }
 

@@ -52,7 +52,7 @@ func invalidHash(reason string) error {
 type hashParams struct {
 	memory  uint32
 	time    uint32
-	threads uint32
+	threads uint8
 	salt    []byte
 	key     []byte
 }
@@ -81,9 +81,8 @@ func VerifyPassword(encoded, password string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	threads := uint8(params.threads)  //nolint:gosec // parseCosts bounds it to maxThreads
 	keyLen := uint32(len(params.key)) //nolint:gosec // a decoded field of one config line cannot exceed uint32
-	key := argon2.IDKey([]byte(password), params.salt, params.time, params.memory, threads, keyLen)
+	key := argon2.IDKey([]byte(password), params.salt, params.time, params.memory, params.threads, keyLen)
 	return subtle.ConstantTimeCompare(key, params.key) == 1, nil
 }
 
@@ -118,15 +117,19 @@ func parseCosts(field string) (hashParams, error) {
 	if len(parts) != costFieldCount {
 		return hashParams{}, invalidHash("bad parameters")
 	}
-	var values [costFieldCount]uint32
-	for i, prefix := range [costFieldCount]string{"m=", "t=", "p="} {
-		value, ok := parseCostValue(parts[i], prefix)
-		if !ok {
-			return hashParams{}, invalidHash("bad parameters")
-		}
-		values[i] = value
+	memory, err := parseCostValue(parts[0], "m=")
+	if err != nil {
+		return hashParams{}, err
 	}
-	params := hashParams{memory: values[0], time: values[1], threads: values[2]}
+	passes, err := parseCostValue(parts[1], "t=")
+	if err != nil {
+		return hashParams{}, err
+	}
+	threads, err := parseThreadCount(parts[2], "p=")
+	if err != nil {
+		return hashParams{}, err
+	}
+	params := hashParams{memory: memory, time: passes, threads: threads}
 	if !costsInRange(params) {
 		return hashParams{}, invalidHash("parameters out of range")
 	}
@@ -134,16 +137,34 @@ func parseCosts(field string) (hashParams, error) {
 }
 
 // parseCostValue reads one "<prefix><number>" part of the costs field.
-func parseCostValue(part, prefix string) (uint32, bool) {
+func parseCostValue(part, prefix string) (uint32, error) {
 	rest, ok := strings.CutPrefix(part, prefix)
 	if !ok {
-		return 0, false
+		return 0, invalidHash("bad parameters")
 	}
 	value, err := strconv.ParseUint(rest, 10, 32)
 	if err != nil {
-		return 0, false
+		return 0, invalidHash("bad parameters")
 	}
-	return uint32(value), true
+	return uint32(value), nil
+}
+
+// parseThreadCount reads the "<prefix><number>" part of the costs field that holds the
+// thread count. It is parsed as 8 bits so that the type carries the bound argon2 needs.
+// A number that is well formed but does not fit is out of range, like one above maxThreads.
+func parseThreadCount(part, prefix string) (uint8, error) {
+	rest, ok := strings.CutPrefix(part, prefix)
+	if !ok {
+		return 0, invalidHash("bad parameters")
+	}
+	value, err := strconv.ParseUint(rest, 10, 8)
+	if errors.Is(err, strconv.ErrRange) {
+		return 0, invalidHash("parameters out of range")
+	}
+	if err != nil {
+		return 0, invalidHash("bad parameters")
+	}
+	return uint8(value), nil
 }
 
 // costsInRange reports whether every cost of params is at least 1 and within its upper bound.
