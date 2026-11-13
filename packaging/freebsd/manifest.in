@@ -5,7 +5,7 @@ comment: "Server of the SpliceFS read-only multi-source filesystem"
 desc: <<EOD
 The SpliceFS server. A SpliceFS client mounts the folders of a cluster of these
 servers as one folder and reads each file from several servers at once.
-Installing the package starts the server with nothing shared.
+A freshly installed server shares nothing and runs after the next boot.
 
 WWW: https://splicefs.org
 EOD
