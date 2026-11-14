@@ -6,6 +6,10 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.7] - 2026-11-14
+
+- The protocol names the server and client version headers and the digests a block request carries.
+
 ## [0.5.6] - 2026-11-14
 
 - Internal: a release uploads the package files before the index files that name them, and stops at
