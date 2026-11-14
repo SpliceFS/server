@@ -6,6 +6,10 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.14] - 2026-11-14
+
+- Internal: the file identity code moves to its own code folder. Nothing changes for users.
+
 ## [0.5.13] - 2026-11-14
 
 - Internal: an interrupted FreeBSD image unpack is no longer mistaken for a cached image. Nothing

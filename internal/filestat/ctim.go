@@ -1,6 +1,6 @@
 //go:build unix && !darwin && !freebsd
 
-package share
+package filestat
 
 import "syscall"
 

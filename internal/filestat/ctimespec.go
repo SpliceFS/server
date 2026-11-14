@@ -1,6 +1,6 @@
 //go:build darwin || freebsd
 
-package share
+package filestat
 
 import "syscall"
 

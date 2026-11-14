@@ -3,21 +3,20 @@ package share
 import (
 	"container/list"
 	"sync"
+
+	"github.com/SpliceFS/server/internal/filestat"
 )
 
 // digestKey identifies one version of a file. Path, size and a modification time cut to
 // the share's precision are not enough: a file replaced by another of the same size within
-// the same second looks the same by those. So the key also holds the device and inode
-// number, which differ for every file that exists at the same time, and the change time
-// (ctime), which the kernel sets to the current time whenever a file is written, renamed or
-// has its times set, so a program cannot put it back. Times have full precision.
+// the same second looks the same by those. So the key also holds the file's identity (see
+// filestat.Identity): its device and inode number and its change time. Times have full
+// precision.
 type digestKey struct {
 	path  string
-	dev   uint64
-	ino   uint64
+	id    filestat.Identity
 	size  int64
 	mtime int64
-	ctime int64
 	// identified is false when the file system gave no device, inode and change time. Such
 	// a key says too little about the file, so the cache never stores or finds anything
 	// under it, and the zero value is the safe one.
