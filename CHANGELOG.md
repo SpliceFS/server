@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.10] - 2026-11-14
+
+- Internal: a change to the packaging is tested by upgrading from the last published version.
+  Nothing changes for users.
+
 ## [0.5.9] - 2026-11-14
 
 - The server notices a file replaced by another of the same size within the same second, and reports
