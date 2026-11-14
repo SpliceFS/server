@@ -52,7 +52,11 @@ freebsd_each_release() {
             [ "$digest" = "$sum" ] ||
                 fail "$url does not have the checksum in packaging/freebsd/images"
             mv "$packed.part" "$packed"
-            xz -d "$packed"
+            # Unpacked under a temporary name and renamed when complete: a run that is killed
+            # while unpacking must not leave a short disk that the next run takes as cached.
+            xz -dc "$packed" >"$disk.part"
+            mv "$disk.part" "$disk"
+            rm -f "$packed"
         fi
         # The loop reads the list on standard input, which the callback must not consume.
         "$each" "$release" "$disk" </dev/null
