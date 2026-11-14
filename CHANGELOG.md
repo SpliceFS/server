@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.13] - 2026-11-14
+
+- Internal: an interrupted FreeBSD image unpack is no longer mistaken for a cached image. Nothing
+  changes for users.
+
 ## [0.5.12] - 2026-11-14
 
 - Internal: a release no longer opens a pull request in the client to move its shared code. Whoever
