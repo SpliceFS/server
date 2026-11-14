@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.3] - 2026-11-14
+
+- Internal: a release of the shared code now opens the pull request that moves the server to it, and
+  the server's release does the same for the client.
+
 ## [0.5.2] - 2026-11-14
 
 - Internal: a release now updates the Homebrew formula and opens the client's change for a new
