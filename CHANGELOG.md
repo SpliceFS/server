@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.2] - 2026-11-14
+
+- Internal: a release now updates the Homebrew formula and opens the client's change for a new
+  version of the shared code. Nothing changes for users.
+
 ## [0.5.1] - 2026-11-14
 
 - Internal: the checks now run the newest released client against the server with real programs, so
