@@ -20,7 +20,7 @@ import (
 	"github.com/SpliceFS/common/wire"
 )
 
-// defaultDigestCacheSize is the head digest cache size used when Options leaves it 0.
+// defaultDigestCacheSize is the digest cache size used when Options leaves it 0.
 const defaultDigestCacheSize = 65536
 
 var (
@@ -28,7 +28,7 @@ var (
 	ErrNotFound = errors.New("not found")
 	// ErrNotDir means List was called on something that is not a directory.
 	ErrNotDir = errors.New("not a directory")
-	// ErrIsDir means OpenFile or HeadDigest was called on a directory.
+	// ErrIsDir means OpenFile or Digests was called on a directory.
 	ErrIsDir = errors.New("is a directory")
 )
 
@@ -50,7 +50,7 @@ type Options struct {
 	MTimePrecision time.Duration
 	// Now returns the current time. It defaults to time.Now.
 	Now func() time.Time
-	// DigestCacheSize is the number of entries kept by the head digest cache.
+	// DigestCacheSize is the number of entries kept by the digest cache.
 	// 0 means a default of 65536.
 	DigestCacheSize int
 }
@@ -83,8 +83,9 @@ type Share struct {
 
 	// space reports the file system usage for a path. Tests replace it.
 	space func(string) (wire.Space, error)
-	// headDigest computes the digest of a file's head. Tests replace it.
-	headDigest func(io.Reader) (string, error)
+	// computeDigests computes the head and tail digests of a file of the given size.
+	// Tests replace it.
+	computeDigests func(io.ReaderAt, int64) (FileDigests, error)
 	// beforeOpen runs after a name has been resolved and before it is opened.
 	// Tests use it to change the file system at exactly that moment.
 	beforeOpen func(string)
@@ -103,17 +104,17 @@ func Open(opts Options) (*Share, error) {
 		return nil, fmt.Errorf("share %q: open root: %w", opts.Name, err)
 	}
 	share := &Share{
-		name:       opts.Name,
-		path:       opts.Path,
-		root:       root,
-		exclude:    slices.Clone(opts.Exclude),
-		minAge:     opts.MinAge,
-		follow:     opts.FollowSymlinks,
-		precision:  opts.MTimePrecision,
-		now:        opts.Now,
-		space:      statSpace,
-		headDigest: headDigest,
-		beforeOpen: func(string) {},
+		name:           opts.Name,
+		path:           opts.Path,
+		root:           root,
+		exclude:        slices.Clone(opts.Exclude),
+		minAge:         opts.MinAge,
+		follow:         opts.FollowSymlinks,
+		precision:      opts.MTimePrecision,
+		now:            opts.Now,
+		space:          statSpace,
+		computeDigests: computeDigests,
+		beforeOpen:     func(string) {},
 	}
 	if share.now == nil {
 		share.now = time.Now
@@ -187,33 +188,34 @@ func (s *Share) OpenFile(name string) (*File, error) {
 	return &File{f: file, info: info}, nil
 }
 
-// HeadDigest returns the hex SHA-256 of the first wire.HeadDigestBytes bytes of the
-// file at name, and the file's Info. A file is read once until its size or
-// modification time changes.
-func (s *Share) HeadDigest(name string) (string, Info, error) {
+// Digests returns the hex SHA-256 of the first wire.HeadDigestBytes bytes (the head
+// digest) and of the last wire.TailDigestBytes bytes (the tail digest) of the file at
+// name, and the file's Info. For a file of at most 64 KiB both cover the whole file. A
+// file is read once until its size or modification time changes.
+func (s *Share) Digests(name string) (FileDigests, Info, error) {
 	target, err := s.lookup(name)
 	if err != nil {
-		return "", Info{}, err
+		return FileDigests{}, Info{}, err
 	}
 	if target.info.IsDir() {
-		return "", Info{}, ErrIsDir
+		return FileDigests{}, Info{}, ErrIsDir
 	}
 	info := s.info(path.Base(target.relPath), target.info)
-	if digest, ok := s.digests.get(newDigestKey(target.relPath, info)); ok {
-		return digest, info, nil
+	if cached, ok := s.digests.get(newDigestKey(target.relPath, info)); ok {
+		return cached, info, nil
 	}
 	file, err := s.OpenFile(name)
 	if err != nil {
-		return "", Info{}, err
+		return FileDigests{}, Info{}, err
 	}
 	defer closeRead(file)
-	digest, err := s.headDigest(file)
-	if err != nil {
-		return "", Info{}, fmt.Errorf("share %q: %s: read head: %w", s.name, target.relPath, err)
-	}
 	info = file.Info()
-	s.digests.put(newDigestKey(target.relPath, info), digest)
-	return digest, info, nil
+	digests, err := s.computeDigests(file.f, info.Size)
+	if err != nil {
+		return FileDigests{}, Info{}, fmt.Errorf("share %q: %s: read digests: %w", s.name, target.relPath, err)
+	}
+	s.digests.put(newDigestKey(target.relPath, info), digests)
+	return digests, info, nil
 }
 
 // Space reports the size and free space of the file system holding the share.

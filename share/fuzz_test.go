@@ -181,8 +181,8 @@ func requireRefusedNameNotFound(t *testing.T, share *Share, name string) {
 	if _, ok := cleanName(name); ok {
 		return
 	}
-	if _, _, err := share.HeadDigest(name); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("HeadDigest(%q) = %v", name, err)
+	if _, _, err := share.Digests(name); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Digests(%q) = %v", name, err)
 	}
 }
 

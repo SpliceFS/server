@@ -29,8 +29,8 @@ type Share interface {
 	List(name string) ([]share.Info, error)
 	// Open opens a regular file. The File's Info describes the file that was opened.
 	Open(name string) (File, error)
-	// HeadDigest returns the head digest and the Info of a regular file.
-	HeadDigest(name string) (string, share.Info, error)
+	// Digests returns the head digest, the tail digest and the Info of a regular file.
+	Digests(name string) (share.FileDigests, share.Info, error)
 	// Space reports the size and free space of the file system holding the share.
 	Space() (wire.Space, error)
 }

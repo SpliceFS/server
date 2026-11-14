@@ -66,15 +66,15 @@ func (f *fakeShare) Open(name string) (File, error) {
 	return file, nil
 }
 
-func (f *fakeShare) HeadDigest(name string) (string, share.Info, error) {
-	if err := f.errs["head"]; err != nil {
-		return "", share.Info{}, err
+func (f *fakeShare) Digests(name string) (share.FileDigests, share.Info, error) {
+	if err := f.errs["digests"]; err != nil {
+		return share.FileDigests{}, share.Info{}, err
 	}
 	data, err := f.lookup(name)
 	if err != nil {
-		return "", share.Info{}, err
+		return share.FileDigests{}, share.Info{}, err
 	}
-	return "digest-of-" + name, fileInfo(name, data), nil
+	return share.FileDigests{Head: "head-of-" + name, Tail: "tail-of-" + name}, fileInfo(name, data), nil
 }
 
 func (f *fakeShare) Space() (wire.Space, error) {
