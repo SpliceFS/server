@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.4] - 2026-11-14
+
+- Internal: each test runs once per change, on the pull request. The checks on `main` and the tests
+  inside the release are gone. Nothing changes for users.
+
 ## [0.5.3] - 2026-11-14
 
 - Internal: a release of the shared code now opens the pull request that moves the server to it, and
