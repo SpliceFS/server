@@ -6,6 +6,12 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.1] - 2026-11-14
+
+- Internal: the checks now run the newest released client against the server with real programs, so
+  a change of the server cannot break the clients that are out. Nothing changes for users.
+- Internal: a release now waits for earlier releases to end. Nothing changes for users.
+
 ## [0.5.0] - 2026-11-14
 
 - The server now sends a second digest of every file, taken from its last 64 KiB, in the header
