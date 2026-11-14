@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.7] - 2026-11-14
+
+- The server notices a file replaced by another of the same size within the same second, and reports
+  the new file's head and tail digests.
+
 ## [0.5.6] - 2026-11-14
 
 - Internal: a release uploads the package files before the index files that name them, and stops at
