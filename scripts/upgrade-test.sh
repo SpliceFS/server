@@ -33,9 +33,11 @@ case "$platform" in
     *) fail "no package CPU type for $platform" ;;
 esac
 
+# Both downloads insist on HTTPS, also after a redirect, so that a redirect can never hand
+# over a package from a plain address.
 # The tag of the newest release. GitHub answers with the releases page itself when there is
 # none; a network failure is a failure of this script and not a reason to skip.
-final_url="$(curl -fsSIL --retry 3 -o /dev/null -w '%{url_effective}' "$releases/latest")" ||
+final_url="$(curl -fsSIL --proto =https --proto-redir =https --retry 3 -o /dev/null -w '%{url_effective}' "$releases/latest")" ||
     fail "could not ask $releases/latest for the newest release"
 case "$final_url" in
     */releases/tag/*) tag="${final_url##*/}" ;;
@@ -99,7 +101,7 @@ for format in deb rpm apk; do
     if [ ! -f "$published_dir/$old_file" ]; then
         # Written under another name first, so an interrupted download is never mistaken
         # for the package.
-        if ! curl -fsSL --retry 3 -o "$published_dir/$old_file.part" "$releases/download/$tag/$old_file" ||
+        if ! curl -fsSL --proto =https --proto-redir =https --retry 3 -o "$published_dir/$old_file.part" "$releases/download/$tag/$old_file" ||
             ! mv "$published_dir/$old_file.part" "$published_dir/$old_file"; then
             rm -f "$published_dir/$old_file.part"
             echo "FAIL $format: could not download $releases/download/$tag/$old_file"
