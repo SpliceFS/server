@@ -491,6 +491,33 @@ func TestDigestsAreReadAgainForANewSize(t *testing.T) {
 	}
 }
 
+// TestDigestsAreReadAgainForAFileReplacedWithinTheSameSecond covers a file that another file
+// of the same size is renamed over, with the same modification time: path, size and the
+// modification time cut to the second all stay the same.
+func TestDigestsAreReadAgainForAFileReplacedWithinTheSameSecond(t *testing.T) {
+	t.Parallel()
+	fix, share, counter := countedShare(t)
+	digests1, info1 := mustDigests(t, share, "f")
+
+	fix.write(t, "replacement", "other", epoch())
+	if err := os.Rename(filepath.Join(fix.root, "replacement"), filepath.Join(fix.root, "f")); err != nil {
+		t.Fatal(err)
+	}
+	digests2, info2 := mustDigests(t, share, "f")
+	if info2.Size != info1.Size || !info2.MTime.Equal(info1.MTime) {
+		t.Fatalf("the test needs the same size and time: %+v, then %+v", info1, info2)
+	}
+	if counter.opens != 2 || digests2.Head == digests1.Head || digests2.Tail == digests1.Tail {
+		t.Errorf("opens = %d, digests1 = %+v, digests2 = %+v", counter.opens, digests1, digests2)
+	}
+
+	// The new file is cached like any other.
+	digests3, _ := mustDigests(t, share, "f")
+	if counter.opens != 2 || digests3 != digests2 {
+		t.Errorf("opens = %d, digests3 = %+v, want %+v", counter.opens, digests3, digests2)
+	}
+}
+
 func TestHeadDigestCoversOnlyTheHead(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t)
@@ -713,7 +740,7 @@ func (handle fakeHandle) Stat() (os.FileInfo, error) { return nil, handle.err }
 func TestOpenInfoStatError(t *testing.T) {
 	t.Parallel()
 	share := newFixture(t).open(t, &Options{})
-	_, err := share.openInfo("f", fakeHandle{err: errors.New("stat failed")})
+	_, _, err := share.openInfo("f", fakeHandle{err: errors.New("stat failed")})
 	if err == nil || errors.Is(err, ErrNotFound) {
 		t.Errorf("openInfo = %v", err)
 	}

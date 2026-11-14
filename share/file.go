@@ -16,6 +16,9 @@ import (
 type File struct {
 	f    *os.File
 	info Info
+	// stat is what the file system said about the open file when it was opened, before
+	// anything was read. The digest cache is keyed on it.
+	stat os.FileInfo
 }
 
 // Read implements io.Reader.
