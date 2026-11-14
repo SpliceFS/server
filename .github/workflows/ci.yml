@@ -33,10 +33,18 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
+      # The real client mounts the server's share, which needs the FUSE tools.
+      - name: Install FUSE
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fuse3
       # Run as root because that is the configuration the coverage gate is measured
       # in locally (make check-linux runs as root inside its container).
       - name: Format, vet, tests with race detector, 100% coverage
         run: sudo -E env "PATH=$PATH" make check
+      # The rule this proves: with the same first version number, a client works with every
+      # server whose second number is equal or higher. So a change of this server must not
+      # break the newest released client it has to serve. Needs root and FUSE for the mount.
+      - name: The real client against this server
+        run: sudo -E env "PATH=$PATH" make compat
       # One report per commit is enough, so only the stable Go release uploads. Forks
       # cannot get an OIDC token for this repository. The upload must never fail the
       # build, for example before the organization is enabled on Codecov.
