@@ -87,6 +87,44 @@ func TestResolveClientStoresAddress(t *testing.T) {
 	}
 }
 
+// panicNodes is a NodeLister that panics, to reach the 500 answer of recoverPanics.
+type panicNodes struct{}
+
+func (panicNodes) Nodes() (wire.Nodes, error) { panic("kaboom") }
+
+func TestServerVersionOnEveryAnswer(t *testing.T) {
+	t.Parallel()
+	fixture := newEnv(t, func(o *Options) {
+		o.Version = "v9.8.7"
+		o.Nodes = panicNodes{}
+	})
+	tests := []struct {
+		name   string
+		method string
+		target string
+		token  string
+		status int
+	}{
+		{"normal route", http.MethodGet, "/api/v1/health", "", http.StatusOK},
+		{"unknown path", http.MethodGet, "/api/v1/nothing", "", http.StatusNotFound},
+		{"wrong method", http.MethodPost, "/api/v1/health", "", http.StatusMethodNotAllowed},
+		{"panicking handler", http.MethodGet, "/api/v1/nodes", tokenAll, http.StatusInternalServerError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resp := fixture.do(&request{method: tt.method, target: tt.target, token: tt.token})
+			_ = body(t, resp)
+			if resp.StatusCode != tt.status {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tt.status)
+			}
+			if got := resp.Header.Get(serverVersionHeader); got != "v9.8.7" {
+				t.Errorf("%s = %q, want v9.8.7", serverVersionHeader, got)
+			}
+		})
+	}
+}
+
 func TestNoSniff(t *testing.T) {
 	t.Parallel()
 	rec := httptest.NewRecorder()

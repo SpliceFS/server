@@ -47,6 +47,10 @@ and login need `Authorization: Bearer <token>`.
 | `GET`, `HEAD /v1/file/<share>/<path>` | The file. Supports `Range` (one range), `If-Range` and `If-Match`. Sends `ETag` and `Accept-Ranges: bytes`. `HEAD` also sends `X-SpliceFS-Head-Digest` (see File identity). |
 | `GET /v1/space/<share>` | `{"total":<bytes>,"free":<bytes>}` for the filesystem holding the share. |
 
+Every response carries `X-SpliceFS-Server-Version` with the version of `splicefsd`. A client
+uses it to refuse a server that is older than the client needs (same first number, second
+number equal or higher).
+
 Errors are JSON, `{"error":"..."}`, with the usual status codes: `400` malformed request,
 `401` missing or invalid token, `403` share not allowed for this user, `404` not found,
 `412` and `416` for failed preconditions and bad ranges, `429` login rate limit.
