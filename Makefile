@@ -75,6 +75,27 @@ fuzz:
 check-linux:
 	$(LINUX_RUN) sh -c 'cp -r /src /tmp/w && cd /tmp/w && make check'
 
+# Proves the compatibility rule from the server's side: with the same first version number, a
+# client works with every server whose second number is equal or higher. It builds this
+# server and the newest released client that this server must serve, mounts for real and
+# compares every file, so it needs Linux, FUSE and root. scripts/client-compat.sh says which
+# client it uses; CLIENT_TAG replaces that choice.
+.PHONY: compat compat-linux
+compat:
+	scripts/client-compat.sh
+
+# The same from any system that has Docker. The container is privileged and has the FUSE
+# device, which a mount inside it needs; LINUX_RUN has neither, so this line has its own
+# docker options. docker run takes its options before the image, so CLIENT_TAG, CLUSTER_ONLY
+# and CLUSTER_SEED go into the container only when the caller has set them.
+LINUX_DOCKER := docker run --rm --privileged --device /dev/fuse \
+	-v "$(CURDIR)":/src:ro -v splicefs-gomod:/go/pkg/mod
+COMPAT_ENV := $(foreach v,CLIENT_TAG CLUSTER_ONLY CLUSTER_SEED,$(if $(filter undefined,$(origin $(v))),,-e $(v)))
+compat-linux:
+	$(LINUX_DOCKER) $(COMPAT_ENV) $(LINUX_IMAGE) sh -c 'apt-get update -qq && \
+		apt-get install -y -qq fuse3 curl >/dev/null && \
+		cp -r /src /tmp/w && cd /tmp/w && scripts/client-compat.sh'
+
 # Runs the tests on FreeBSD itself: the test programs are built for FreeBSD in the Go
 # container and run as root in a virtual machine of every FreeBSD release in
 # packaging/freebsd/images, with the same 100% coverage gate as make check. FreeBSD cannot

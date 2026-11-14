@@ -19,6 +19,7 @@ You need Go 1.26 or newer and `make`. Linting uses
 ```
 make build        # build splicefsd into ./bin
 make check        # format check, vet, tests with the race detector, coverage gate
+make compat-linux # runs the newest released client against this server (Docker; make compat on Linux as root)
 make lint         # golangci-lint (the configuration CI uses), then ShellCheck with every optional check on
 make fmt          # rewrite files with gofmt
 ```
