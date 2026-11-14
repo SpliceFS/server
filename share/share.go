@@ -180,18 +180,20 @@ func (s *Share) OpenFile(name string) (*File, error) {
 	if err != nil {
 		return nil, s.fail(target.relPath, err)
 	}
-	info, err := s.openInfo(target.relPath, file)
+	info, stat, err := s.openInfo(target.relPath, file)
 	if err != nil {
 		closeRead(file)
 		return nil, err
 	}
-	return &File{f: file, info: info}, nil
+	return &File{f: file, info: info, stat: stat}, nil
 }
 
 // Digests returns the hex SHA-256 of the first wire.HeadDigestBytes bytes (the head
 // digest) and of the last wire.TailDigestBytes bytes (the tail digest) of the file at
 // name, and the file's Info. For a file of at most 64 KiB both cover the whole file. A
-// file is read once until its size or modification time changes.
+// file is read once until it is changed or replaced: the cache is keyed on what the file
+// system reports (device, inode, size, modification time and change time, all at full
+// precision), so a replacement of the same size within the same second is seen too.
 func (s *Share) Digests(name string) (FileDigests, Info, error) {
 	target, err := s.lookup(name)
 	if err != nil {
@@ -201,7 +203,7 @@ func (s *Share) Digests(name string) (FileDigests, Info, error) {
 		return FileDigests{}, Info{}, ErrIsDir
 	}
 	info := s.info(path.Base(target.relPath), target.info)
-	if cached, ok := s.digests.get(newDigestKey(target.relPath, info)); ok {
+	if cached, ok := s.digests.get(newDigestKey(target.relPath, target.info)); ok {
 		return cached, info, nil
 	}
 	file, err := s.OpenFile(name)
@@ -214,7 +216,9 @@ func (s *Share) Digests(name string) (FileDigests, Info, error) {
 	if err != nil {
 		return FileDigests{}, Info{}, fmt.Errorf("share %q: %s: read digests: %w", s.name, target.relPath, err)
 	}
-	s.digests.put(newDigestKey(target.relPath, info), digests)
+	// The key comes from the stat taken when the file was opened, before the read, so it can
+	// only be older than the digests; a change after that makes a different key.
+	s.digests.put(newDigestKey(target.relPath, file.stat), digests)
 	return digests, info, nil
 }
 
@@ -265,19 +269,20 @@ type handle interface {
 	Stat() (os.FileInfo, error)
 }
 
-// openInfo checks the open file h itself and describes it.
-func (s *Share) openInfo(relPath string, h handle) (Info, error) {
+// openInfo checks the open file h itself and describes it. It also returns what the file
+// system reported, for the digest cache key.
+func (s *Share) openInfo(relPath string, h handle) (Info, os.FileInfo, error) {
 	fileInfo, err := h.Stat()
 	if err != nil {
-		return Info{}, s.fail(relPath, err)
+		return Info{}, nil, s.fail(relPath, err)
 	}
 	if fileInfo.IsDir() {
-		return Info{}, ErrIsDir
+		return Info{}, nil, ErrIsDir
 	}
 	if !s.visible(fileInfo) {
-		return Info{}, ErrNotFound
+		return Info{}, nil, ErrNotFound
 	}
-	return s.info(path.Base(relPath), fileInfo), nil
+	return s.info(path.Base(relPath), fileInfo), fileInfo, nil
 }
 
 // excluded reports whether name matches an exclude pattern.
