@@ -6,6 +6,12 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.11] - 2026-11-14
+
+- Internal: a failed release, merge or scheduled check opens an issue that emails the owner. Nothing
+  changes for users.
+- The protocol names the server and client version headers and the digests a block request carries.
+
 ## [0.5.10] - 2026-11-14
 
 - Internal: a change to the packaging is tested by upgrading from the last published version.
