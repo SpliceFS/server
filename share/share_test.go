@@ -1,6 +1,8 @@
 package share
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
@@ -142,8 +144,8 @@ func TestErrorKindsForTheWrongType(t *testing.T) {
 	if _, err := share.OpenFile("dir"); !errors.Is(err, ErrIsDir) {
 		t.Errorf("OpenFile(dir) = %v, want ErrIsDir", err)
 	}
-	if _, _, err := share.HeadDigest("dir"); !errors.Is(err, ErrIsDir) {
-		t.Errorf("HeadDigest(dir) = %v, want ErrIsDir", err)
+	if _, _, err := share.Digests("dir"); !errors.Is(err, ErrIsDir) {
+		t.Errorf("Digests(dir) = %v, want ErrIsDir", err)
 	}
 }
 
@@ -333,13 +335,15 @@ func TestSameFileSameIdentity(t *testing.T) {
 	if infoA != infoB {
 		t.Errorf("infos differ: %+v and %+v", infoA, infoB)
 	}
-	digestA, _ := mustHeadDigest(t, shareA, "x/f.bin")
-	digestB, _ := mustHeadDigest(t, shareB, "x/f.bin")
+	digestA, _ := mustDigests(t, shareA, "x/f.bin")
+	digestB, _ := mustDigests(t, shareB, "x/f.bin")
 	if digestA != digestB {
-		t.Errorf("digests differ: %s and %s", digestA, digestB)
+		t.Errorf("digests differ: %+v and %+v", digestA, digestB)
 	}
-	if len(digestA) != 64 || digestA != strings.ToLower(digestA) {
-		t.Errorf("digest %q is not lowercase hex SHA-256", digestA)
+	for _, digest := range []string{digestA.Head, digestA.Tail} {
+		if len(digest) != 64 || digest != strings.ToLower(digest) {
+			t.Errorf("digest %q is not lowercase hex SHA-256", digest)
+		}
 	}
 }
 
@@ -449,40 +453,41 @@ func countedShare(t *testing.T) (fixture, *Share, *openCounter) {
 	return fix, share, counter
 }
 
-func TestHeadDigestIsCached(t *testing.T) {
+func TestDigestsAreCached(t *testing.T) {
 	t.Parallel()
 	_, share, counter := countedShare(t)
-	digest1, info1 := mustHeadDigest(t, share, "f")
-	digest2, info2 := mustHeadDigest(t, share, "f")
-	if counter.opens != 1 || digest1 != digest2 || info1 != info2 {
-		t.Errorf("opens = %d, digest1 = %s, digest2 = %s", counter.opens, digest1, digest2)
+	digests1, info1 := mustDigests(t, share, "f")
+	digests2, info2 := mustDigests(t, share, "f")
+	if counter.opens != 1 || digests1 != digests2 || info1 != info2 {
+		t.Errorf("opens = %d, digests1 = %+v, digests2 = %+v", counter.opens, digests1, digests2)
 	}
 }
 
-func TestHeadDigestIsReadAgainForANewModificationTime(t *testing.T) {
+func TestDigestsAreReadAgainForANewModificationTime(t *testing.T) {
 	t.Parallel()
 	fix, share, counter := countedShare(t)
-	digest1, info1 := mustHeadDigest(t, share, "f")
+	digests1, info1 := mustDigests(t, share, "f")
 
 	// Same size, new modification time: a different version.
 	fix.write(t, "f", "other", epoch().Add(time.Minute))
-	digest2, info2 := mustHeadDigest(t, share, "f")
-	if counter.opens != 2 || digest2 == digest1 || info2.ETag == info1.ETag {
-		t.Errorf("opens = %d, digest2 = %s", counter.opens, digest2)
+	digests2, info2 := mustDigests(t, share, "f")
+	if counter.opens != 2 || digests2.Head == digests1.Head || digests2.Tail == digests1.Tail ||
+		info2.ETag == info1.ETag {
+		t.Errorf("opens = %d, digests2 = %+v", counter.opens, digests2)
 	}
 }
 
-func TestHeadDigestIsReadAgainForANewSize(t *testing.T) {
+func TestDigestsAreReadAgainForANewSize(t *testing.T) {
 	t.Parallel()
 	fix, share, counter := countedShare(t)
 	fix.write(t, "f", "other", epoch().Add(time.Minute))
-	digest1, _ := mustHeadDigest(t, share, "f")
+	digests1, _ := mustDigests(t, share, "f")
 
 	// New size, same modification time.
 	fix.write(t, "f", "longer content", epoch().Add(time.Minute))
-	digest2, _ := mustHeadDigest(t, share, "f")
-	if counter.opens != 2 || digest2 == digest1 {
-		t.Errorf("opens = %d, digest2 = %s", counter.opens, digest2)
+	digests2, _ := mustDigests(t, share, "f")
+	if counter.opens != 2 || digests2.Head == digests1.Head || digests2.Tail == digests1.Tail {
+		t.Errorf("opens = %d, digests2 = %+v", counter.opens, digests2)
 	}
 }
 
@@ -492,21 +497,61 @@ func TestHeadDigestCoversOnlyTheHead(t *testing.T) {
 	head := strings.Repeat("h", 64<<10)
 	fix.write(t, "a", head+"tail one", epoch())
 	fix.write(t, "b", head+"tail two", epoch())
-	fix.write(t, "short", "abc", epoch())
 	share := fix.open(t, &Options{})
-	digestA, _ := mustHeadDigest(t, share, "a")
-	digestB, _ := mustHeadDigest(t, share, "b")
-	if digestA != digestB {
-		t.Error("digests of equal heads differ")
+	digestsA, _ := mustDigests(t, share, "a")
+	digestsB, _ := mustDigests(t, share, "b")
+	if digestsA.Head != digestsB.Head {
+		t.Error("head digests of equal heads differ")
 	}
-	shortDigest, _ := mustHeadDigest(t, share, "short")
-	// SHA-256 of "abc".
-	if want := "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"; shortDigest != want {
-		t.Errorf("digest = %s, want %s", shortDigest, want)
+	if digestsA.Tail == digestsB.Tail {
+		t.Error("tail digests of different tails are equal")
 	}
 }
 
-func TestHeadDigestCacheEvicts(t *testing.T) {
+func TestTailDigestCoversOnlyTheTail(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t)
+	tail := strings.Repeat("t", 64<<10)
+	fix.write(t, "a", "head one"+tail, epoch())
+	fix.write(t, "b", "head two"+tail, epoch())
+	share := fix.open(t, &Options{})
+	digestsA, _ := mustDigests(t, share, "a")
+	digestsB, _ := mustDigests(t, share, "b")
+	if digestsA.Tail != digestsB.Tail {
+		t.Error("tail digests of equal tails differ")
+	}
+	if digestsA.Head == digestsB.Head {
+		t.Error("head digests of different heads are equal")
+	}
+	sum := sha256.Sum256([]byte(tail))
+	if want := hex.EncodeToString(sum[:]); digestsA.Tail != want {
+		t.Errorf("tail digest = %s, want %s", digestsA.Tail, want)
+	}
+}
+
+func TestDigestsOfShortAndEmptyFiles(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t)
+	fix.write(t, "short", "abc", epoch())
+	fix.write(t, "exact", strings.Repeat("e", 64<<10), epoch())
+	fix.write(t, "empty", "", epoch())
+	share := fix.open(t, &Options{})
+	// SHA-256 of "abc" and of nothing.
+	const abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+	const nothing = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	for name, want := range map[string]string{"short": abc, "empty": nothing} {
+		digests, _ := mustDigests(t, share, name)
+		if digests.Head != want || digests.Tail != want {
+			t.Errorf("%s: digests = %+v, want %s for both", name, digests, want)
+		}
+	}
+	exact, _ := mustDigests(t, share, "exact")
+	if exact.Head != exact.Tail {
+		t.Errorf("a file of exactly 64 KiB: head %s, tail %s", exact.Head, exact.Tail)
+	}
+}
+
+func TestDigestsCacheEvicts(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t)
 	for _, name := range []string{"a", "b", "c"} {
@@ -515,50 +560,71 @@ func TestHeadDigestCacheEvicts(t *testing.T) {
 	share := fix.open(t, &Options{DigestCacheSize: 2})
 	counter := &openCounter{}
 	counter.attach(share)
-	mustHeadDigest(t, share, "a")
-	mustHeadDigest(t, share, "b")
-	mustHeadDigest(t, share, "c") // evicts a
+	mustDigests(t, share, "a")
+	mustDigests(t, share, "b")
+	mustDigests(t, share, "c") // evicts a
 	if counter.opens != 3 {
 		t.Fatalf("opens = %d, want 3", counter.opens)
 	}
-	mustHeadDigest(t, share, "c")
-	mustHeadDigest(t, share, "b")
+	mustDigests(t, share, "c")
+	mustDigests(t, share, "b")
 	if counter.opens != 3 {
 		t.Errorf("cached entries were read again: opens = %d", counter.opens)
 	}
-	mustHeadDigest(t, share, "a")
+	mustDigests(t, share, "a")
 	if counter.opens != 4 {
 		t.Errorf("evicted entry was not read again: opens = %d", counter.opens)
 	}
 }
 
-func TestHeadDigestOpenFailure(t *testing.T) {
+func TestDigestsOpenFailure(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t)
 	fix.write(t, "f", "x", epoch())
 	share := fix.open(t, &Options{})
 	share.beforeOpen = func(string) { mustRemove(t, filepath.Join(fix.root, "f")) }
-	if _, _, err := share.HeadDigest("f"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("HeadDigest = %v, want ErrNotFound", err)
+	if _, _, err := share.Digests("f"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Digests = %v, want ErrNotFound", err)
 	}
 }
 
-type failingReader struct{}
+// failingReaderAt fails every read at the given offset or later, so a test can break the
+// head read or the tail read on its own.
+type failingReaderAt struct {
+	from    int64
+	content string
+}
 
-func (failingReader) Read([]byte) (int, error) { return 0, errors.New("disk on fire") }
+func (r failingReaderAt) ReadAt(p []byte, offset int64) (int, error) {
+	if offset >= r.from {
+		return 0, errors.New("disk on fire")
+	}
+	return strings.NewReader(r.content).ReadAt(p, offset)
+}
 
-func TestHeadDigestReadError(t *testing.T) {
+func TestDigestsReadError(t *testing.T) {
 	t.Parallel()
-	if _, err := headDigest(failingReader{}); err == nil {
-		t.Error("headDigest succeeded on a failing reader")
+	size := int64(2 * (64 << 10))
+	content := strings.Repeat("x", int(size))
+	if _, err := computeDigests(failingReaderAt{from: 0, content: content}, size); err == nil ||
+		!strings.Contains(err.Error(), "head") {
+		t.Errorf("computeDigests with a failing head = %v", err)
+	}
+	// The head ends at 64 KiB and the tail starts there, so a failure from 64 KiB on
+	// leaves the head readable and breaks only the tail.
+	if _, err := computeDigests(failingReaderAt{from: 64 << 10, content: content}, size); err == nil ||
+		!strings.Contains(err.Error(), "tail") {
+		t.Errorf("computeDigests with a failing tail = %v", err)
 	}
 	fix := newFixture(t)
 	fix.write(t, "f", "x", epoch())
 	share := fix.open(t, &Options{})
-	share.headDigest = func(io.Reader) (string, error) { return headDigest(failingReader{}) }
-	_, _, err := share.HeadDigest("f")
+	share.computeDigests = func(io.ReaderAt, int64) (FileDigests, error) {
+		return computeDigests(failingReaderAt{content: "x"}, 1)
+	}
+	_, _, err := share.Digests("f")
 	if err == nil || errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), `share "test"`) {
-		t.Errorf("HeadDigest = %v", err)
+		t.Errorf("Digests = %v", err)
 	}
 }
 
@@ -704,7 +770,7 @@ func useShareLikeAClient(t *testing.T, share *Share, files []string) {
 	t.Helper()
 	for range 20 {
 		for _, name := range files {
-			if _, _, err := share.HeadDigest(name); err != nil {
+			if _, _, err := share.Digests(name); err != nil {
 				t.Error(err)
 			}
 			if _, err := share.Stat(name); err != nil {

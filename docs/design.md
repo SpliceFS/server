@@ -44,7 +44,7 @@ and login need `Authorization: Bearer <token>`.
 | `GET /v1/nodes` | `{"cluster":"...","nodes":[{"name":"...","url":"..."}]}` from the files in `shared/nodes/`. |
 | `GET /v1/tree/` | The shares this user may read, as directory entries. |
 | `GET /v1/tree/<share>/<dir>/` | `{"entries":[{"name":"...","dir":false,"size":123,"mtime":"<RFC 3339>","etag":"..."}]}`, sorted by name. `404` if the directory does not exist on this node. |
-| `GET`, `HEAD /v1/file/<share>/<path>` | The file. Supports `Range` (one range), `If-Range` and `If-Match`. Sends `ETag` and `Accept-Ranges: bytes`. `HEAD` also sends `X-SpliceFS-Head-Digest` (see File identity). |
+| `GET`, `HEAD /v1/file/<share>/<path>` | The file. Supports `Range` (one range), `If-Range` and `If-Match`. Sends `ETag` and `Accept-Ranges: bytes`. `HEAD` also sends `X-SpliceFS-Head-Digest` and `X-SpliceFS-Tail-Digest` (see File identity). |
 | `GET /v1/space/<share>` | `{"total":<bytes>,"free":<bytes>}` for the filesystem holding the share. |
 
 Every response carries `X-SpliceFS-Server-Version` with the version of `splicefsd`. A client
@@ -72,12 +72,16 @@ A file's tag (`ETag`) is derived from its size and its modification time, trunca
 configured precision (default one second). Two nodes therefore produce the same tag for the
 same file whenever the replication tool preserves modification times.
 
-A `HEAD` request also returns `X-SpliceFS-Head-Digest`: the SHA-256 of the first 64 KiB of
-the file. It costs one small read, which the server remembers per file until the file's size
-or modification time changes. It catches two different files that happen to share a size
-and a modification time.
+A `HEAD` request also returns two digests. `X-SpliceFS-Head-Digest` is the SHA-256 of the
+first 64 KiB of the file. `X-SpliceFS-Tail-Digest` is the SHA-256 of the last 64 KiB, or of
+the whole file when it is shorter, so for a file of at most 64 KiB the two are equal. Both
+cost two small reads at fixed positions, however large the file is, so a file that was just
+added is usable at once. The server remembers both per file until the file's size or
+modification time changes. They catch two different files that happen to share a size and a
+modification time and differ at the start or at the end.
 
-Two copies are treated as the same file when their tag and their head digest are equal.
+Two copies are treated as the same file when their tag, their head digest and their tail
+digest are equal.
 
 ### Compression
 
@@ -164,14 +168,17 @@ choice.
 SpliceFS assumes: *a file with the same path, size and modification time has the same
 content on every node.* It enforces what it can:
 
-1. When a file is opened, the client sends `HEAD` to every node, groups the nodes by tag and
-   head digest, and reads only from the largest group. Ties go to the newest modification time.
+1. When a file is opened, the client sends `HEAD` to every node, groups the nodes by tag,
+   head digest and tail digest, and reads only from the largest group. Ties go to the newest
+   modification time.
 2. Every block request carries `If-Match` with that tag. A node whose copy has changed
    answers `412`, and the client drops it for that file.
 3. A file that disappears from every node during a read fails the read with an I/O error.
 
-Beyond the head digest, content hashes are not part of version 1. *Open:* an optional
-per-block checksum for deployments that cannot trust modification times.
+Beyond the head and tail digests, content hashes are not part of version 1. Copies that
+differ only in the middle and agree in size and modification time are still taken for one
+file. *Open:* an optional per-block checksum for deployments that cannot trust modification
+times.
 
 ## Client
 

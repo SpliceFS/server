@@ -6,18 +6,19 @@ func TestLRU(t *testing.T) {
 	t.Parallel()
 	cache := newLRU(2)
 	keyOf := func(name string) digestKey { return digestKey{path: name} }
-	cache.put(keyOf("a"), "1")
-	cache.put(keyOf("b"), "2")
-	if digest, ok := cache.get(keyOf("a")); !ok || digest != "1" { // a is now most recent
-		t.Fatalf("get(a) = %q, %v", digest, ok)
+	pairOf := func(value string) FileDigests { return FileDigests{Head: value, Tail: "tail" + value} }
+	cache.put(keyOf("a"), pairOf("1"))
+	cache.put(keyOf("b"), pairOf("2"))
+	if digests, ok := cache.get(keyOf("a")); !ok || digests != pairOf("1") { // a is now most recent
+		t.Fatalf("get(a) = %+v, %v", digests, ok)
 	}
-	cache.put(keyOf("c"), "3") // evicts b
+	cache.put(keyOf("c"), pairOf("3")) // evicts b
 	if _, ok := cache.get(keyOf("b")); ok {
 		t.Error("b was not evicted")
 	}
-	cache.put(keyOf("a"), "4") // update in place
-	if digest, _ := cache.get(keyOf("a")); digest != "4" {
-		t.Errorf("get(a) = %q, want 4", digest)
+	cache.put(keyOf("a"), pairOf("4")) // update in place
+	if digests, _ := cache.get(keyOf("a")); digests != pairOf("4") {
+		t.Errorf("get(a) = %+v, want 4", digests)
 	}
 	if cache.order.Len() != 2 || len(cache.entries) != 2 {
 		t.Errorf("size = %d/%d, want 2", cache.order.Len(), len(cache.entries))
@@ -34,15 +35,15 @@ func TestLRUReplacesAnElementThatIsNotAnEntry(t *testing.T) {
 	cache := newLRU(1)
 	foreign := digestKey{path: "foreign"}
 	cache.entries[foreign] = cache.order.PushFront("not an entry")
-	if digest, ok := cache.get(foreign); ok {
-		t.Errorf("get(foreign) = %q, want a miss", digest)
+	if digests, ok := cache.get(foreign); ok {
+		t.Errorf("get(foreign) = %+v, want a miss", digests)
 	}
-	cache.put(foreign, "1")
-	if digest, ok := cache.get(foreign); !ok || digest != "1" {
-		t.Errorf("get(foreign) after put = %q, %v", digest, ok)
+	cache.put(foreign, FileDigests{Head: "1", Tail: "1"})
+	if digests, ok := cache.get(foreign); !ok || digests.Head != "1" {
+		t.Errorf("get(foreign) after put = %+v, %v", digests, ok)
 	}
 	// The limit is 1, so this put evicts the oldest element, which is the foreign one.
-	cache.put(digestKey{path: "other"}, "2")
+	cache.put(digestKey{path: "other"}, FileDigests{Head: "2", Tail: "2"})
 	if cache.order.Len() != 1 {
 		t.Errorf("order holds %d elements, want 1", cache.order.Len())
 	}

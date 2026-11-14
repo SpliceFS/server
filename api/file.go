@@ -31,9 +31,9 @@ func (s *server) file(w http.ResponseWriter, r *http.Request, shared Share) {
 	s.get(w, r, file)
 }
 
-// head answers HEAD with the headers a GET would carry, plus the head digest.
+// head answers HEAD with the headers a GET would carry, plus the head and tail digests.
 func (s *server) head(w http.ResponseWriter, r *http.Request, shared Share, name string) {
-	digest, info, err := shared.HeadDigest(name)
+	digests, info, err := shared.Digests(name)
 	if err != nil {
 		s.failLookup(w, r, err, share.ErrNotFound, share.ErrIsDir)
 		return
@@ -42,7 +42,8 @@ func (s *server) head(w http.ResponseWriter, r *http.Request, shared Share, name
 	setFileHeaders(header, info)
 	header.Set("Content-Length", strconv.FormatInt(info.Size, 10))
 	header.Set("Accept-Ranges", "bytes")
-	header.Set(wire.HeaderHeadDigest, digest)
+	header.Set(wire.HeaderHeadDigest, digests.Head)
+	header.Set(wire.HeaderTailDigest, digests.Tail)
 	w.WriteHeader(http.StatusOK)
 }
 

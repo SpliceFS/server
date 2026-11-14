@@ -6,6 +6,14 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.0] - 2026-11-14
+
+- The server now sends a second digest of every file, taken from its last 64 KiB, in the header
+  `X-SpliceFS-Tail-Digest`. Clients use it with size, time and the digest of the first 64 KiB to
+  tell whether copies on different servers are the same file.
+- Both digests are read in constant time when a file is first asked for, so a file that was just
+  added to a share is usable at once.
+
 ## [0.4.0] - 2026-11-14
 
 - Every response of the server now carries its version in the header `X-SpliceFS-Server-Version`. A

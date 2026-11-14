@@ -155,7 +155,7 @@ func TestListingOfAFolderHidesDotFiles(t *testing.T) {
 	}
 }
 
-func TestHeadReportsTheDigest(t *testing.T) {
+func TestHeadReportsTheDigests(t *testing.T) {
 	t.Parallel()
 	session := startSignedIn(t)
 	resp := session.request(t, http.MethodHead, "/v1/file/media/hello.bin", nil)
@@ -165,6 +165,7 @@ func TestHeadReportsTheDigest(t *testing.T) {
 		"Content-Length":      "10",
 		"Accept-Ranges":       "bytes",
 		wire.HeaderHeadDigest: hex.EncodeToString(sum[:]),
+		wire.HeaderTailDigest: hex.EncodeToString(sum[:]),
 	} {
 		if got := resp.Header.Get(name); got != want {
 			t.Errorf("%s = %q, want %q", name, got, want)

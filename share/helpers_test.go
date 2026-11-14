@@ -126,8 +126,8 @@ func requireHidden(t *testing.T, share *Share, names ...string) {
 		if _, err := share.OpenFile(name); !errors.Is(err, ErrNotFound) {
 			t.Errorf("OpenFile(%q) = %v", name, err)
 		}
-		if _, _, err := share.HeadDigest(name); !errors.Is(err, ErrNotFound) {
-			t.Errorf("HeadDigest(%q) = %v", name, err)
+		if _, _, err := share.Digests(name); !errors.Is(err, ErrNotFound) {
+			t.Errorf("Digests(%q) = %v", name, err)
 		}
 	}
 }
@@ -154,14 +154,14 @@ func mustStat(t *testing.T, share *Share, name string) Info {
 	return info
 }
 
-// mustHeadDigest returns the digest and Info of name and fails the test when HeadDigest fails.
-func mustHeadDigest(t *testing.T, share *Share, name string) (string, Info) {
+// mustDigests returns the digests and Info of name and fails the test when Digests fails.
+func mustDigests(t *testing.T, share *Share, name string) (FileDigests, Info) {
 	t.Helper()
-	digest, info, err := share.HeadDigest(name)
+	digests, info, err := share.Digests(name)
 	if err != nil {
-		t.Fatalf("HeadDigest(%q): %v", name, err)
+		t.Fatalf("Digests(%q): %v", name, err)
 	}
-	return digest, info
+	return digests, info
 }
 
 // readFile returns the content of name and fails the test when it cannot be read.

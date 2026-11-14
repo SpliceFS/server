@@ -246,7 +246,8 @@ func TestHeadFile(t *testing.T) {
 		"Content-Length":         "10",
 		"Accept-Ranges":          "bytes",
 		"Content-Type":           "application/octet-stream",
-		wire.HeaderHeadDigest:    "digest-of-blob.zzz",
+		wire.HeaderHeadDigest:    "head-of-blob.zzz",
+		wire.HeaderTailDigest:    "tail-of-blob.zzz",
 		"Cache-Control":          "private, no-cache",
 		"X-Content-Type-Options": "nosniff",
 		"Content-Encoding":       "",
@@ -292,7 +293,7 @@ func TestHeadFileErrors(t *testing.T) {
 			fixture := newEnv(t)
 			fixture.media.dirs["sub"] = nil
 			if tt.err != nil {
-				fixture.media.errs["head"] = tt.err
+				fixture.media.errs["digests"] = tt.err
 			}
 			wantError(t, fixture.do(&request{method: "HEAD", target: tt.target, token: tokenMedia}), tt.status, tt.msg)
 		})

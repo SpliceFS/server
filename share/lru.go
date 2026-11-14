@@ -18,7 +18,16 @@ func newDigestKey(relPath string, info Info) digestKey {
 	return digestKey{path: relPath, size: info.Size, mtime: info.MTime.UnixNano()}
 }
 
-// lru is a fixed-size least-recently-used cache of head digests. It is safe for
+// FileDigests holds the head digest and the tail digest of one version of a file: the
+// hex SHA-256 of its first wire.HeadDigestBytes bytes and of its last
+// wire.TailDigestBytes bytes. They are cached together because one read of the file
+// produces both.
+type FileDigests struct {
+	Head string
+	Tail string
+}
+
+// lru is a fixed-size least-recently-used cache of digest pairs. It is safe for
 // concurrent use.
 type lru struct {
 	mu      sync.Mutex
@@ -29,8 +38,8 @@ type lru struct {
 
 // lruEntry is the value stored in the list.
 type lruEntry struct {
-	key    digestKey
-	digest string
+	key     digestKey
+	digests FileDigests
 }
 
 // newLRU returns a cache holding at most limit entries.
@@ -45,35 +54,35 @@ func entryOf(element *list.Element) (*lruEntry, bool) {
 	return entry, ok
 }
 
-// get returns the digest stored for key and marks it as recently used.
-func (c *lru) get(key digestKey) (string, bool) {
+// get returns the digests stored for key and marks them as recently used.
+func (c *lru) get(key digestKey) (FileDigests, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	element, found := c.entries[key]
 	if !found {
-		return "", false
+		return FileDigests{}, false
 	}
 	entry, ok := entryOf(element)
 	if !ok {
-		return "", false
+		return FileDigests{}, false
 	}
 	c.order.MoveToFront(element)
-	return entry.digest, true
+	return entry.digests, true
 }
 
-// put stores the digest for key, evicting the least recently used entry when the
+// put stores the digests for key, evicting the least recently used entry when the
 // cache is full.
-func (c *lru) put(key digestKey, digest string) {
+func (c *lru) put(key digestKey, digests FileDigests) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if element, found := c.entries[key]; found {
 		if entry, ok := entryOf(element); ok {
-			entry.digest = digest
+			entry.digests = digests
 			c.order.MoveToFront(element)
 			return
 		}
 	}
-	c.entries[key] = c.order.PushFront(&lruEntry{key: key, digest: digest})
+	c.entries[key] = c.order.PushFront(&lruEntry{key: key, digests: digests})
 	if c.order.Len() > c.limit {
 		c.evictOldest()
 	}
