@@ -5,17 +5,23 @@ import (
 	"sync"
 )
 
-// digestKey identifies one version of a file: a change of size or modification time
-// is a different key.
+// digestKey identifies one version of a file. Path, size and a modification time cut to
+// the share's precision are not enough: a file replaced by another of the same size within
+// the same second looks the same by those. So the key also holds the device and inode
+// number, which differ for every file that exists at the same time, and the change time
+// (ctime), which the kernel sets to the current time whenever a file is written, renamed or
+// has its times set, so a program cannot put it back. Times have full precision.
 type digestKey struct {
 	path  string
+	dev   uint64
+	ino   uint64
 	size  int64
 	mtime int64
-}
-
-// newDigestKey builds the cache key for the file at path relPath.
-func newDigestKey(relPath string, info Info) digestKey {
-	return digestKey{path: relPath, size: info.Size, mtime: info.MTime.UnixNano()}
+	ctime int64
+	// identified is false when the file system gave no device, inode and change time. Such
+	// a key says too little about the file, so the cache never stores or finds anything
+	// under it, and the zero value is the safe one.
+	identified bool
 }
 
 // FileDigests holds the head digest and the tail digest of one version of a file: the
@@ -56,6 +62,9 @@ func entryOf(element *list.Element) (*lruEntry, bool) {
 
 // get returns the digests stored for key and marks them as recently used.
 func (c *lru) get(key digestKey) (FileDigests, bool) {
+	if !key.identified {
+		return FileDigests{}, false
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	element, found := c.entries[key]
@@ -71,8 +80,11 @@ func (c *lru) get(key digestKey) (FileDigests, bool) {
 }
 
 // put stores the digests for key, evicting the least recently used entry when the
-// cache is full.
+// cache is full. A key that is not identified is not stored.
 func (c *lru) put(key digestKey, digests FileDigests) {
+	if !key.identified {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if element, found := c.entries[key]; found {
