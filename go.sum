@@ -1,5 +1,5 @@
-github.com/SpliceFS/common v0.3.1 h1:ZAnFw/xmy6fAzQyvql68CooYU0uSjDxOdvmR57bHYAU=
-github.com/SpliceFS/common v0.3.1/go.mod h1:s0uJCePRQcNNX+4MLaSV4XrtTJJtl4Q72VOl6Hcdx+0=
+github.com/SpliceFS/common v0.3.3 h1:ADw6HIqeUz0MtyHEscX48kYzoZ0WJF1jAr0d9Vzclfk=
+github.com/SpliceFS/common v0.3.3/go.mod h1:s0uJCePRQcNNX+4MLaSV4XrtTJJtl4Q72VOl6Hcdx+0=
 go.yaml.in/yaml/v3 v3.0.6 h1:zcDfvjXEqTQmpjniUBLc91xYJMB2c4QOFxEF/LCEckM=
 go.yaml.in/yaml/v3 v3.0.6/go.mod h1:HVTZu1O7/Vkt2N+BFy8Zza+lnLsABggaTM2ZpNIGuKg=
 golang.org/x/crypto v0.59.0 h1:xS2jhqYbzNrpvkWP2YTDf4TJwBy3ykR03i8vFDxEc7c=
