@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.9] - 2026-11-14
+
+- The server notices a file replaced by another of the same size within the same second, and reports
+  the new file's head and tail digests.
+
 ## [0.5.8] - 2026-11-14
 
 - Internal: a failed release, merge or scheduled check opens an issue that emails the owner. Nothing
