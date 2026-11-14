@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -111,54 +112,60 @@ func TestLiveReplaceSendsNewRequestsToNewHandler(t *testing.T) {
 
 func TestLiveRequestInProgressFinishesOnOldGeneration(t *testing.T) {
 	t.Parallel()
-	started := make(chan struct{})
-	release := make(chan struct{})
-	var finished atomic.Bool
-	oldCloser := newGenCloser(nil)
-	oldCloser.finished = &finished
-	old := &generation{
-		handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			close(started)
-			<-release
-			respondText(w, "old")
-			finished.Store(true)
-		}),
-		closer: oldCloser,
-	}
-	handlers := newLive(old, discardLogger())
-
-	done := make(chan string)
-	go func() { done <- genGet(handlers) }()
-	select {
-	case <-started:
-	case <-time.After(genWait):
-		t.Fatal("request did not start")
-	}
-
-	handlers.replace(genNamed("new", newGenCloser(nil)))
-	if got := genGet(handlers); got != "new" {
-		t.Fatalf("new request got %q, want new", got)
-	}
-	// The wait here cannot decide the result: a wrong implementation that closes early has
-	// already done so by the time the new request returned, or does so within this wait.
-	time.Sleep(5 * time.Millisecond)
-	if oldCloser.isClosed() {
-		t.Fatal("old generation closed while its request was still running")
-	}
-
-	close(release)
-	select {
-	case got := <-done:
-		if got != "old" {
-			t.Fatalf("request in progress got %q, want old", got)
+	synctest.Test(t, func(t *testing.T) {
+		started := make(chan struct{})
+		unblock := make(chan struct{})
+		// A failed check must still release the handler, or the bubble reports a deadlock
+		// instead of the failure.
+		release := sync.OnceFunc(func() { close(unblock) })
+		defer release()
+		var finished atomic.Bool
+		oldCloser := newGenCloser(nil)
+		oldCloser.finished = &finished
+		old := &generation{
+			handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				close(started)
+				<-unblock
+				respondText(w, "old")
+				finished.Store(true)
+			}),
+			closer: oldCloser,
 		}
-	case <-time.After(genWait):
-		t.Fatal("request in progress did not finish")
-	}
-	oldCloser.waitClosed(t)
-	if !oldCloser.finishedAtEnd {
-		t.Fatal("old generation closed before its request finished")
-	}
+		handlers := newLive(old, discardLogger())
+
+		done := make(chan string, 1)
+		go func() { done <- genGet(handlers) }()
+		select {
+		case <-started:
+		case <-time.After(genWait):
+			t.Fatal("request did not start")
+		}
+
+		handlers.replace(genNamed("new", newGenCloser(nil)))
+		if got := genGet(handlers); got != "new" {
+			t.Fatalf("new request got %q, want new", got)
+		}
+		// Wait returns when every other goroutine is blocked, so a close that does not wait for
+		// the request has been made by now, however late its goroutine would have been scheduled.
+		synctest.Wait()
+		if oldCloser.isClosed() {
+			t.Fatal("old generation closed while its request was still running")
+		}
+
+		release()
+		select {
+		case got := <-done:
+			if got != "old" {
+				t.Fatalf("request in progress got %q, want old", got)
+			}
+		case <-time.After(genWait):
+			t.Fatal("request in progress did not finish")
+		}
+		oldCloser.waitClosed(t)
+		if !oldCloser.finishedAtEnd {
+			t.Fatal("old generation closed before its request finished")
+		}
+	})
 }
 
 func TestLiveSeveralReplacesCloseEveryOldGenerationOnce(t *testing.T) {
@@ -211,41 +218,55 @@ func TestLiveCloseReturnsCurrentCloseError(t *testing.T) {
 
 func TestLiveCloseWaitsForRequestsInProgress(t *testing.T) {
 	t.Parallel()
-	started := make(chan struct{})
-	release := make(chan struct{})
-	closer := newGenCloser(nil)
-	handlers := newLive(&generation{
-		handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-			close(started)
-			<-release
-		}),
-		closer: closer,
-	}, discardLogger())
+	synctest.Test(t, func(t *testing.T) {
+		started := make(chan struct{})
+		unblock := make(chan struct{})
+		// A failed check must still release the handler, or the bubble reports a deadlock
+		// instead of the failure.
+		release := sync.OnceFunc(func() { close(unblock) })
+		defer release()
+		var finished atomic.Bool
+		closer := newGenCloser(nil)
+		closer.finished = &finished
+		handlers := newLive(&generation{
+			handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				close(started)
+				<-unblock
+				finished.Store(true)
+			}),
+			closer: closer,
+		}, discardLogger())
 
-	go genGet(handlers)
-	select {
-	case <-started:
-	case <-time.After(genWait):
-		t.Fatal("request did not start")
-	}
-	result := make(chan error)
-	go func() { result <- handlers.close() }()
-	time.Sleep(5 * time.Millisecond)
-	if closer.isClosed() {
-		t.Fatal("current generation closed while its request was still running")
-	}
-	close(release)
-	select {
-	case err := <-result:
-		if err != nil {
-			t.Fatalf("close returned %v", err)
+		go genGet(handlers)
+		select {
+		case <-started:
+		case <-time.After(genWait):
+			t.Fatal("request did not start")
 		}
-	case <-time.After(genWait):
-		t.Fatal("close did not return")
-	}
-	if !closer.isClosed() {
-		t.Fatal("current generation not closed")
-	}
+		result := make(chan error, 1)
+		go func() { result <- handlers.close() }()
+		// Wait returns when every other goroutine is blocked, so a close that does not wait for
+		// the request has been made by now.
+		synctest.Wait()
+		if closer.isClosed() {
+			t.Fatal("current generation closed while its request was still running")
+		}
+		release()
+		select {
+		case err := <-result:
+			if err != nil {
+				t.Fatalf("close returned %v", err)
+			}
+		case <-time.After(genWait):
+			t.Fatal("close did not return")
+		}
+		if !closer.isClosed() {
+			t.Fatal("current generation not closed")
+		}
+		if !closer.finishedAtEnd {
+			t.Fatal("current generation closed before its request finished")
+		}
+	})
 }
 
 func TestGenerationPanicReleasesRequestCount(t *testing.T) {

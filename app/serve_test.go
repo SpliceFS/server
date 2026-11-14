@@ -190,6 +190,10 @@ func TestServeWaitsForRequestsWithinTheGrace(t *testing.T) {
 	defer cancel()
 	served := make(chan error, 1)
 	r := newRunner(handler, Options{})
+	// The server calls this when its shutdown has begun, which is the point the request must
+	// still be running at.
+	shuttingDown := make(chan struct{})
+	r.srv.RegisterOnShutdown(func() { close(shuttingDown) })
 	go func() { served <- r.serve(ctx, []*endpoint{listener}, time.Minute) }()
 
 	type result struct {
@@ -215,8 +219,11 @@ func TestServeWaitsForRequestsWithinTheGrace(t *testing.T) {
 	}()
 	<-started
 	cancel()
-	// Shutdown has stopped accepting by now or will in a moment; either way the
-	// handler is still allowed to finish.
+	select {
+	case <-shuttingDown:
+	case <-time.After(testTimeout):
+		t.Fatal("the server did not begin a graceful shutdown")
+	}
 	close(finish)
 	if r := <-results; r.err != nil || r.body != "done" {
 		t.Errorf("request: %q, %v", r.body, r.err)
