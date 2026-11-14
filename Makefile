@@ -18,7 +18,7 @@ PACKAGE_RUN := docker run --rm -e VERSION=$(VERSION) -e PACKAGE_DATE=$(PACKAGE_D
 	-v "$(CURDIR)":/src:ro -v "$(CURDIR)/dist":/out -v splicefs-gomod:/go/pkg/mod
 
 .PHONY: script-modes all build check check-linux fmt fmt-check vet test cover fuzz lint package-lib-test \
-	package package-order-test package-test service-test service-test-host repo repo-test \
+	upgrade-diff-test package package-order-test package-test upgrade-test service-test service-test-host repo repo-test \
 	publish-fetch publish publish-check publish-test release-assets clean
 
 all: check build
@@ -27,7 +27,7 @@ build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/splicefsd ./cmd/splicefsd
 
 # Everything CI runs except the linter.
-check: fmt-check vet cover package-lib-test script-modes tracked-files
+check: fmt-check vet cover package-lib-test upgrade-diff-test script-modes tracked-files
 
 # A script that lost its executable bit fails only where it is run directly, which for the
 # publishing script is the release job. This finds it in every check. Libraries (-lib.sh) are
@@ -157,6 +157,11 @@ package-freebsd:
 package-lib-test:
 	scripts/package-lib-test.sh
 
+# The part of the upgrade test that decides whether the packaging changed, checked against small
+# hand-made package listings. It needs no Docker, so it is part of check.
+upgrade-diff-test:
+	scripts/upgrade-diff-test.sh
+
 # Checks in a Debian, a Rocky Linux and an Alpine container that those versions sort the way
 # a release needs (a pre-release before its release) and that apk accepts them. It is a
 # prerequisite of package-test, not of check, because it needs Docker; package-test is what CI
@@ -168,6 +173,16 @@ package-order-test:
 # packaging/test-systems (CI reads the same list) and reports each system's result.
 package-test: package-order-test
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) PLATFORM=$(PLATFORM) scripts/package-test.sh
+
+# Upgrades from the newest published version to the packages in ./dist, but only when the
+# packaging changed: for each format it downloads the newest published package from the GitHub
+# release into ./dist/published and compares it with the new one (the program and the changelog
+# change in every version and are left out). Equal means no test is needed. Different means it
+# installs the published package in a container of the format's first system in
+# packaging/test-systems, writes a configuration line and a data file, installs the new package
+# over it and checks that both survived. It needs the packages in ./dist from make package.
+upgrade-test:
+	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) PLATFORM=$(PLATFORM) scripts/upgrade-test.sh
 
 # Proves the service, not only the files: in a container per system in packaging/test-systems
 # that runs that system's own service manager, installs the package and checks that the

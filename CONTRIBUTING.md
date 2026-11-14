@@ -27,6 +27,8 @@ make fmt          # rewrite files with gofmt
 `make check` is what CI runs, and CI runs golangci-lint the way `make lint` does. `make lint` also
 runs ShellCheck, which CI runs as its own job.
 
+After `make package`, `make upgrade-test` runs the upgrade from the newest published version in a container, but only when the files, scripts or dependencies of the package differ from the published one (the program and the changelog are left out).
+
 ## Branches and pull requests
 
 There is one long-lived branch, `main`. It is protected: no direct pushes, no force pushes, no
