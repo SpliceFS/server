@@ -175,23 +175,12 @@ jobs:
           GH_TOKEN: ${{ secrets.MERGE_BOT_TOKEN }}
         run: gh api repos/SpliceFS/homebrew-tap/dispatches -f event_type=release-published
 
-  # The client follows the server to a new version of the shared code: when this release was
-  # built with a newer one than the client has, the pull request that moves the client is
-  # opened now. The server is released first, so that no client is ever newer than every server.
-  client:
-    needs: release
-    uses: SpliceFS/.github/.github/workflows/follow-common-v1.yml@main
-    with:
-      repository: client
-    secrets:
-      merge-bot-token: ${{ secrets.MERGE_BOT_TOKEN }}
-
   # A failed run of this workflow opens an issue assigned to the account in the repository
   # variable ALERT_ASSIGNEE, so that someone gets an email; GitHub sends none for runs the
   # bots start. Pull requests are left out: their author sees the failed check there.
   alert:
     name: Report a failure
-    needs: [wait, release, website, homebrew, client]
+    needs: [wait, release, website, homebrew]
     if: ${{ failure() && github.event_name != 'pull_request' }}
     permissions:
       issues: write
