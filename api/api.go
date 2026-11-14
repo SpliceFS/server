@@ -113,6 +113,7 @@ func NewHandler(opts Options) http.Handler {
 		log:        log,
 	}
 	handler := noSniff(srv.routes())
+	handler = reportVersion(opts.Version, handler)
 	handler = recoverPanics(log, handler)
 	handler = logAccess(log, now, handler)
 	return resolveClient(opts.TrustedProxies, handler)

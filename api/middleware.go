@@ -24,6 +24,20 @@ const (
 // forwardedFor is the header that carries the client address behind a reverse proxy.
 const forwardedFor = "X-Forwarded-For"
 
+// serverVersionHeader carries the version of splicefsd. Clients compare it with their own
+// to refuse a server that is too old for them. It is spelled the way net/http writes
+// header names (the docs say X-SpliceFS-Server-Version); header names are case-insensitive.
+const serverVersionHeader = "X-Splicefs-Server-Version"
+
+// reportVersion sets the version header before next runs, so that answers next writes
+// itself and the 404, 405 and 500 answers around it all carry it.
+func reportVersion(version string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(serverVersionHeader, version)
+		next.ServeHTTP(w, r)
+	})
+}
+
 // noSniff tells browsers to believe the Content-Type of every response.
 func noSniff(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

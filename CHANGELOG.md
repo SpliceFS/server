@@ -6,6 +6,13 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.4.0] - 2026-11-14
+
+- Every response of the server now carries its version in the header `X-SpliceFS-Server-Version`. A
+  client uses it to refuse a server that is older than it needs.
+- The server moves to 0.4. With the same first version number, a client works with every server
+  whose second number is equal or higher.
+
 ## [0.3.3] - 2026-11-13
 
 - Documentation: the change log now has one entry per version, back to 0.1.0. All parts of SpliceFS
