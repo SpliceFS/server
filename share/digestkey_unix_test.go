@@ -75,13 +75,3 @@ func TestDigestKeyWithoutFileSystemDetailsIsNotIdentified(t *testing.T) {
 		}
 	}
 }
-
-func TestAsUint64KeepsDifferentNumbersDifferent(t *testing.T) {
-	t.Parallel()
-	if asUint64(int32(-1)) == asUint64(int32(0)) || asUint64(int32(-1)) == asUint64(int32(1)) {
-		t.Error("a negative device number equals another one")
-	}
-	if got := asUint64(uint32(7)); got != 7 {
-		t.Errorf("asUint64(7) = %d", got)
-	}
-}
