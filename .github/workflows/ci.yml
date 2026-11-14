@@ -156,6 +156,8 @@ jobs:
         run: make package
       - name: Install and remove each package in a clean system of its kind
         run: make package-test
+      - name: Upgrade from the last published version, when the packaging changed
+        run: make upgrade-test
       # The containers above have no service manager running. These do: process 1 is
       # systemd or OpenRC, and the service must start by itself, come back after a reboot
       # and stop when the package is removed.
