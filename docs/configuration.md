@@ -76,7 +76,7 @@ log:
 |---------------------|------------------------------------------|-------------------|-------------------------|
 | `listen`            | List of listeners                        | one, see below    | at least one entry      |
 | `listen[].address`  | IP address to bind                       | `::`              | an IPv4 or IPv6 address, not a host name |
-| `listen[].port`     | TCP port                                 | `8480`            | 1 to 65535              |
+| `listen[].port`     | TCP port, `0` lets the system choose a free one | `8480`     | 0 to 65535              |
 | `listen[].tls`      | Your own certificate for this listener   | none              | `cert_file` and `key_file` both or neither |
 | `listen[].plain`    | Serve without TLS                        | `false`           | must not be `true` together with `tls` |
 | `base_path`         | URL prefix of the API                    | `/api`            | must start with `/`; a trailing `/` is dropped; `/` serves at the root |
@@ -97,6 +97,8 @@ Notes on the table:
 - `cluster.url` should be the address clients type, including the base path, for example
   `https://east.example.com:8480/api`. See "Data" for what the server does with it.
 - Two entries in `listen` must not have the same address and port.
+- With port `0` the system picks a free port when the server starts. The server logs the port
+  it got in a `listening` line, and keeps it across reloads that leave the entry as it is.
 
 ### Listeners and TLS
 

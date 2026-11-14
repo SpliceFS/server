@@ -219,6 +219,8 @@ func TestLoadDirAccepts(t *testing.T) {
 	t.Parallel()
 	tests := map[string]files{
 		"plain":     conf("listen: [{address: '::', port: 80, plain: true}]"),
+		"port 0":    conf("listen: [{address: '::', port: 0, plain: true}]"),
+		"top port":  conf("listen: [{address: '::', port: 65535, plain: true}]"),
 		"tls":       conf("listen: [{address: '::', port: 80, tls: {cert_file: c, key_file: k}}]"),
 		"url ok":    conf("cluster: {url: 'https://example.com:8443/x/'}"),
 		"node good": conf("cluster: {node: n-1.x}"),
@@ -251,10 +253,11 @@ func TestLoadDirRejects(t *testing.T) {
 			conf("listen: [{address: '::', port: 80, tls: {cert_file: c}}]"),
 			[]string{"cert_file and key_file must both be set", "(file a.yaml)"},
 		},
-		"key only":     {conf("listen: [{address: '::', port: 80, tls: {key_file: k}}]"), []string{"both be set"}},
-		"empty listen": {conf("listen: []"), []string{"listen: at least one entry"}},
-		"no address":   {conf("listen: [{port: 80}]"), []string{"listen[0].address"}},
-		"bad port":     {conf("listen: [{address: '::', port: 0}]"), []string{"listen[0].port"}},
+		"key only":      {conf("listen: [{address: '::', port: 80, tls: {key_file: k}}]"), []string{"both be set"}},
+		"empty listen":  {conf("listen: []"), []string{"listen: at least one entry"}},
+		"no address":    {conf("listen: [{port: 80}]"), []string{"listen[0].address"}},
+		"bad port":      {conf("listen: [{address: '::', port: 65536}]"), []string{"listen[0].port"}},
+		"negative port": {conf("listen: [{address: '::', port: -1}]"), []string{"listen[0].port"}},
 		"dup listener": {
 			conf("listen: [{address: '::', port: 1}, {address: '::', port: 1}]"),
 			[]string{"already listed"},
@@ -321,7 +324,7 @@ func TestLoadDirReasons(t *testing.T) {
 		"short ttl":     {conf("auth: {token_ttl: 1s}"), ErrDurationTooShort},
 		"short min age": {share("path: /a\nmin_age: unlimited"), ErrDurationTooShort},
 		"no listener":   {conf("listen: []"), ErrNoListener},
-		"port":          {conf("listen: [{address: '::', port: 0}]"), ErrPortOutOfRange},
+		"port":          {conf("listen: [{address: '::', port: 65536}]"), ErrPortOutOfRange},
 		"duplicate":     {conf("listen: [{address: '::', port: 1}, {address: '::', port: 1}]"), ErrDuplicateListener},
 		"half tls":      {conf("listen: [{address: '::', port: 80, tls: {cert_file: c}}]"), ErrTLSPairIncomplete},
 		"plain and tls": {

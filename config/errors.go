@@ -22,7 +22,7 @@ var (
 	// ErrNoListener is the reason a configuration without a listener is refused.
 	ErrNoListener = errors.New("listen: at least one entry is required")
 	// ErrPortOutOfRange is the reason a listener port that is not a TCP port is refused.
-	ErrPortOutOfRange = errors.New("is not between 1 and 65535")
+	ErrPortOutOfRange = errors.New("is not between 0 and 65535")
 	// ErrDuplicateListener is the reason a second listener on the same address and port is
 	// refused. The position of the first one follows it.
 	ErrDuplicateListener = errors.New("is already listed in")

@@ -34,10 +34,10 @@ const (
 	defaultLoginRatePeriod = time.Minute
 )
 
-// The range of a TCP port. Port 0 asks the system to choose one, which a server that
-// announces its address cannot allow.
+// The range of a TCP port. Port 0 asks the system to choose one. The server reports the
+// address it really bound, in the log and to Options.Ready, so that the choice is not hidden.
 const (
-	minPort = 1
+	minPort = 0
 	maxPort = math.MaxUint16
 )
 
