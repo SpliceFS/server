@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -274,24 +274,6 @@ func TestLogListening(t *testing.T) {
 	}
 }
 
-// freePort returns a loopback port that nothing listens on.
-func freePort(t *testing.T) int {
-	t.Helper()
-	var lc net.ListenConfig
-	listener, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("listener address is a %T, want a TCP address", listener.Addr())
-	}
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return addr.Port
-}
-
 // writeFiles creates the files, given by their path below dir, with their content.
 func writeFiles(t *testing.T, dir string, files map[string]string) {
 	t.Helper()
@@ -316,28 +298,22 @@ func lowCostHash(password string) string {
 		enc.EncodeToString(salt), enc.EncodeToString(key))
 }
 
-// serverSetup is where a test server reads its configuration and keeps its state, and the
-// port it listens on.
+// serverSetup is where a test server reads its configuration and keeps its state.
 type serverSetup struct {
 	configDir, stateDir string
-	port                int
 }
 
-// healthURL is the address of the health check of the server.
-func (setup serverSetup) healthURL() string {
-	return "http://127.0.0.1:" + strconv.Itoa(setup.port) + "/api/v1/health"
-}
-
-// setUpServer writes a configuration directory for a server on a free loopback port, and a
-// state directory that holds only what an administrator makes (a user). The server makes
-// everything else on its first start, so the tests that need other files write them.
+// setUpServer writes a configuration directory for a server on a loopback port that the
+// system chooses when the server binds, and a state directory that holds only what an
+// administrator makes (a user). The address the server got is in its "listening" log line.
+// The server makes everything else on its first start, so the tests that need other files
+// write them.
 func setUpServer(t *testing.T) serverSetup {
 	t.Helper()
-	port := freePort(t)
 	root := t.TempDir()
 	configDir, stateDir := filepath.Join(root, "config"), filepath.Join(root, "state")
 	writeFiles(t, configDir, map[string]string{
-		"conf.d/10-server.yaml": "listen:\n  - address: 127.0.0.1\n    port: " + strconv.Itoa(port) + "\n" +
+		"conf.d/10-server.yaml": "listen:\n  - address: 127.0.0.1\n    port: 0\n" +
 			"    plain: true\n" +
 			"cluster:\n  name: example\n  node: east\nlog:\n  level: info\n  format: json\n",
 		"shares.d/media.yaml": "path: " + filepath.Join(root, "media") + "\n",
@@ -347,25 +323,35 @@ func setUpServer(t *testing.T) serverSetup {
 		"shared/users/alice.yaml": "password_hash: \"" + lowCostHash("secret") + "\"\n" +
 			"shares: [media]\n",
 	})
-	return serverSetup{configDir: configDir, stateDir: stateDir, port: port}
+	return serverSetup{configDir: configDir, stateDir: stateDir}
 }
 
-// watchedLog collects what the server logs, and tells when it has started listening.
+// watchedLog collects what the server logs, and tells when it has started listening and on
+// which address.
 type watchedLog struct {
-	mu    sync.Mutex
-	buf   bytes.Buffer
-	ready chan struct{}
-	once  sync.Once
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	address string        // of the first "listening" line, set before ready is closed
+	ready   chan struct{} // closed by that line
+	once    sync.Once
 }
 
 func newWatchedLog() *watchedLog { return &watchedLog{ready: make(chan struct{})} }
 
+// Write takes one log record, which is how the server's handler calls it.
 func (w *watchedLog) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	written, err := w.buf.Write(data)
-	if strings.Contains(w.buf.String(), `"msg":"listening"`) {
-		w.once.Do(func() { close(w.ready) })
+	var record struct {
+		Msg     string `json:"msg"`
+		Address string `json:"address"`
+	}
+	if json.Unmarshal(data, &record) == nil && record.Msg == "listening" {
+		w.once.Do(func() {
+			w.address = record.Address
+			close(w.ready)
+		})
 	}
 	return written, err
 }
@@ -376,10 +362,24 @@ func (w *watchedLog) String() string {
 	return w.buf.String()
 }
 
+// listeningAddress is the address the server said it listens on. It is empty before the
+// server has said so.
+func (w *watchedLog) listeningAddress() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.address
+}
+
 // runningServer is a server that a test started in the background.
 type runningServer struct {
-	logs   *watchedLog
-	status <-chan int // receives the exit status when the server has stopped
+	logs    *watchedLog
+	status  <-chan int // receives the exit status when the server has stopped
+	address string     // host and port the server reported when it started listening
+}
+
+// healthURL is the address of the health check of the server.
+func (server runningServer) healthURL() string {
+	return "http://" + server.address + "/api/v1/health"
 }
 
 // startServer runs the server in the background and waits until it listens.
@@ -396,7 +396,7 @@ func startServer(ctx context.Context, t *testing.T, setup serverSetup) runningSe
 	case code := <-status:
 		t.Fatalf("the server exited with status %d: %s", code, logs)
 	}
-	return runningServer{logs: logs, status: status}
+	return runningServer{logs: logs, status: status, address: logs.listeningAddress()}
 }
 
 func TestServerRunsUntilCancelled(t *testing.T) {
@@ -406,7 +406,7 @@ func TestServerRunsUntilCancelled(t *testing.T) {
 	defer cancel()
 	server := startServer(ctx, t, setup)
 
-	body := fetch(t, setup.healthURL())
+	body := fetch(t, server.healthURL())
 	want := `"version":"` + version.String() + `"`
 	if !strings.Contains(body, want) || !strings.Contains(body, `"node":"east"`) {
 		t.Errorf("health = %s", body)

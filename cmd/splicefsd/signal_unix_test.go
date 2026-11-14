@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -25,7 +24,7 @@ func TestServerStopsOnSignal(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			setup := setUpServer(t)
 			server := startServer(context.Background(), t, setup)
-			if body := fetch(t, setup.healthURL()); body == "" {
+			if body := fetch(t, server.healthURL()); body == "" {
 				t.Error("empty health response")
 			}
 			if err := syscall.Kill(syscall.Getpid(), sig); err != nil {
@@ -63,8 +62,9 @@ func waitForLog(t *testing.T, logs *watchedLog, text string) {
 
 // reloadServer is a running server whose configuration a reload test changes.
 type reloadServer struct {
+	runningServer
+
 	setup serverSetup
-	logs  *watchedLog
 }
 
 // startReloadServer starts a server whose user may use every share.
@@ -81,7 +81,7 @@ func startReloadServer(t *testing.T) reloadServer {
 		cancel()
 		<-server.status
 	})
-	return reloadServer{setup: setup, logs: server.logs}
+	return reloadServer{runningServer: server, setup: setup}
 }
 
 // apiRequest sends a request to the API of a test server and returns the response,
@@ -116,10 +116,10 @@ func login(t *testing.T, base string) string {
 }
 
 // shareNames logs in as the user of setUpServer and returns the names of the shares the
-// server lists.
-func shareNames(t *testing.T, port int) []string {
+// server at address lists.
+func shareNames(t *testing.T, address string) []string {
 	t.Helper()
-	base := "http://127.0.0.1:" + strconv.Itoa(port) + "/api/v1/"
+	base := "http://" + address + "/api/v1/"
 	resp := apiRequest(t, http.MethodGet, base+"tree/", http.NoBody, login(t, base))
 	defer closeBody(t, resp)
 	var listing wire.Listing
@@ -136,7 +136,7 @@ func shareNames(t *testing.T, port int) []string {
 //nolint:paralleltest // a signal goes to the whole test process
 func TestSIGHUPAppliesANewShare(t *testing.T) {
 	server := startReloadServer(t)
-	if got := shareNames(t, server.setup.port); strings.Join(got, ",") != "media" {
+	if got := shareNames(t, server.address); strings.Join(got, ",") != "media" {
 		t.Fatalf("shares before the reload = %v", got)
 	}
 	music := t.TempDir()
@@ -145,7 +145,7 @@ func TestSIGHUPAppliesANewShare(t *testing.T) {
 	hangUp(t)
 	waitForLog(t, server.logs, `"msg":"configuration applied"`)
 
-	if got := shareNames(t, server.setup.port); strings.Join(got, ",") != "media,music" {
+	if got := shareNames(t, server.address); strings.Join(got, ",") != "media,music" {
 		t.Errorf("shares after the reload = %v", got)
 	}
 }
@@ -158,10 +158,10 @@ func TestSIGHUPWithAnInvalidFileKeepsServing(t *testing.T) {
 	hangUp(t)
 	waitForLog(t, server.logs, "configuration not applied")
 
-	if got := shareNames(t, server.setup.port); strings.Join(got, ",") != "media" {
+	if got := shareNames(t, server.address); strings.Join(got, ",") != "media" {
 		t.Errorf("shares after the refused reload = %v", got)
 	}
-	if body := fetch(t, server.setup.healthURL()); body == "" {
+	if body := fetch(t, server.healthURL()); body == "" {
 		t.Error("empty health response")
 	}
 }
@@ -180,7 +180,7 @@ func TestSIGHUPChangesTheLogLevel(t *testing.T) {
 	// The share shows that the reload took effect. The next reload starts only after this
 	// one has finished, so the level is already the new one when it logs.
 	deadline := time.Now().Add(reloadLimit)
-	for len(shareNames(t, server.setup.port)) != 2 {
+	for len(shareNames(t, server.address)) != 2 {
 		if time.Now().After(deadline) {
 			t.Fatalf("the reload did not take effect:\n%s", server.logs)
 		}
