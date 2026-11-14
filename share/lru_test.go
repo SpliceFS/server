@@ -5,7 +5,7 @@ import "testing"
 func TestLRU(t *testing.T) {
 	t.Parallel()
 	cache := newLRU(2)
-	keyOf := func(name string) digestKey { return digestKey{path: name} }
+	keyOf := func(name string) digestKey { return digestKey{path: name, identified: true} }
 	pairOf := func(value string) FileDigests { return FileDigests{Head: value, Tail: "tail" + value} }
 	cache.put(keyOf("a"), pairOf("1"))
 	cache.put(keyOf("b"), pairOf("2"))
@@ -33,7 +33,7 @@ func TestLRU(t *testing.T) {
 func TestLRUReplacesAnElementThatIsNotAnEntry(t *testing.T) {
 	t.Parallel()
 	cache := newLRU(1)
-	foreign := digestKey{path: "foreign"}
+	foreign := digestKey{path: "foreign", identified: true}
 	cache.entries[foreign] = cache.order.PushFront("not an entry")
 	if digests, ok := cache.get(foreign); ok {
 		t.Errorf("get(foreign) = %+v, want a miss", digests)
@@ -43,8 +43,33 @@ func TestLRUReplacesAnElementThatIsNotAnEntry(t *testing.T) {
 		t.Errorf("get(foreign) after put = %+v, %v", digests, ok)
 	}
 	// The limit is 1, so this put evicts the oldest element, which is the foreign one.
-	cache.put(digestKey{path: "other"}, FileDigests{Head: "2", Tail: "2"})
+	cache.put(digestKey{path: "other", identified: true}, FileDigests{Head: "2", Tail: "2"})
 	if cache.order.Len() != 1 {
 		t.Errorf("order holds %d elements, want 1", cache.order.Len())
+	}
+}
+
+// TestLRUIgnoresAKeyThatIsNotIdentified covers a key built from a file description without
+// a device, inode and change time: it says too little about the file, so nothing is
+// stored or found under it.
+func TestLRUIgnoresAKeyThatIsNotIdentified(t *testing.T) {
+	t.Parallel()
+	cache := newLRU(2)
+	weak := digestKey{path: "f", size: 5}
+	cache.put(weak, FileDigests{Head: "1", Tail: "1"})
+	if cache.order.Len() != 0 || len(cache.entries) != 0 {
+		t.Errorf("a key that is not identified was stored: %d/%d entries", cache.order.Len(), len(cache.entries))
+	}
+	if digests, ok := cache.get(weak); ok {
+		t.Errorf("get = %+v, want a miss", digests)
+	}
+	identified := weak
+	identified.identified = true
+	cache.put(identified, FileDigests{Head: "2", Tail: "2"})
+	if digests, ok := cache.get(weak); ok {
+		t.Errorf("get(weak) after the identified key was stored = %+v, want a miss", digests)
+	}
+	if _, ok := cache.get(identified); !ok {
+		t.Error("the identified key was not stored")
 	}
 }
