@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.20] - 2026-11-15
+
+- A listener added by a configuration reload now logs "listening" with its address, as listeners do
+  at startup.
+
 ## [0.5.19] - 2026-11-15
 
 - Internal: the password tests hash at the production cost only once.
