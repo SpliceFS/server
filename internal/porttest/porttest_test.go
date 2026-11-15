@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"slices"
 	"strconv"
 	"syscall"
 	"testing"
@@ -13,8 +14,10 @@ import (
 
 // recorder is a Reporter that keeps what it was told, and does not stop the test on Fatal.
 type recorder struct {
-	logs  []string
-	fatal []any
+	logs     []string
+	fatal    []any
+	errors   []string
+	cleanups []func()
 }
 
 func (*recorder) Helper() {}
@@ -24,6 +27,17 @@ func (r *recorder) Logf(format string, args ...any) {
 }
 
 func (r *recorder) Fatal(args ...any) { r.fatal = args }
+
+func (r *recorder) Error(args ...any) { r.errors = append(r.errors, fmt.Sprint(args...)) }
+
+func (r *recorder) Cleanup(cleanup func()) { r.cleanups = append(r.cleanups, cleanup) }
+
+// finish runs the cleanups in the order a test does: last registered first.
+func (r *recorder) finish() {
+	for _, cleanup := range slices.Backward(r.cleanups) {
+		cleanup()
+	}
+}
 
 // scripted returns a pick that hands out the ports 1, 2, 3 and so on.
 func scripted() func(count int) ([]int, error) {
@@ -361,5 +375,49 @@ func TestPickOneFailsWhenNoPortCanBePicked(t *testing.T) {
 	port, err := pickOne(func(int) ([]int, error) { return nil, broken })
 	if port != 0 || !errors.Is(err, broken) {
 		t.Errorf("pickOne = %d, %v", port, err)
+	}
+}
+
+func TestHoldKeepsAPortOpenUntilTheTestEnds(t *testing.T) {
+	t.Parallel()
+	rec := &recorder{}
+	port := Hold(rec)
+	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	if port <= 0 || len(rec.fatal) != 0 {
+		t.Fatalf("Hold = %d, Fatal %v", port, rec.fatal)
+	}
+	if _, err := listenOn(t, address); !errors.Is(err, syscall.EADDRINUSE) {
+		t.Errorf("a bind on the held port failed with %v, want an address in use error", err)
+	}
+	rec.finish()
+	listener, err := listenOn(t, address)
+	if err != nil {
+		t.Fatalf("the port is still held after the test ended: %v", err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHoldFromReportsWhyAPortCannotBeHeld(t *testing.T) {
+	t.Parallel()
+	taken := fmt.Errorf("listen: %w", syscall.EADDRINUSE)
+	rec := &recorder{}
+	err := holdFrom(rec, func(context.Context, string, string) (net.Listener, error) { return nil, taken }, 4000)
+	if !errors.Is(err, taken) || len(rec.cleanups) != 0 {
+		t.Errorf("holdFrom = %v with %d cleanups, want %v and none", err, len(rec.cleanups), taken)
+	}
+}
+
+func TestHoldFromReportsAListenerThatDoesNotClose(t *testing.T) {
+	t.Parallel()
+	closeFails := errors.New("close failed")
+	rec := &recorder{}
+	err := holdFrom(rec, func(context.Context, string, string) (net.Listener, error) {
+		return fakeListener{closeErr: closeFails}, nil
+	}, 4000)
+	rec.finish()
+	if err != nil || !reflect.DeepEqual(rec.errors, []string{closeFails.Error()}) {
+		t.Errorf("holdFrom = %v, errors %q, want the close error reported", err, rec.errors)
 	}
 }

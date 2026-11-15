@@ -154,3 +154,34 @@ func tryPorts(
 	}
 	return nil, fmt.Errorf("no port opened in %d attempts, the last one failed: %w", attempts, inUse)
 }
+
+// Holder is a Reporter that can also run a function when the test ends, and report a failure
+// without stopping the test, which *testing.T satisfies.
+type Holder interface {
+	Reporter
+	Cleanup(cleanup func())
+	Error(args ...any)
+}
+
+// Hold takes a loopback port and keeps it open until the test ends, so that every attempt to
+// listen on it fails with "address in use". A test that needs that failure holds the port
+// with Hold, which asks for another port when the one it picked is taken. It returns the port.
+func Hold(t Holder) int {
+	t.Helper()
+	var listenConfig net.ListenConfig
+	return Try(t, func(port int) error { return holdFrom(t, listenConfig.Listen, port) })
+}
+
+// holdFrom listens on port and closes the listener when the test ends.
+func holdFrom(t Holder, listen listenFunc, port int) error {
+	listener, err := listen(context.Background(), "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		return fmt.Errorf("hold port %d: %w", port, err)
+	}
+	t.Cleanup(func() {
+		if err := listener.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return nil
+}
