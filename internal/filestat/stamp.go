@@ -3,6 +3,7 @@
 package filestat
 
 import (
+	"errors"
 	"io/fs"
 	"syscall"
 )
@@ -28,7 +29,7 @@ type Stamp struct {
 // fileMode converts the mode bits of a stat result to the type and permission bits Go uses,
 // the way os.Stat does, so a Stamp agrees with the FileInfo of the same file.
 func fileMode(raw uint32) fs.FileMode {
-	mode := fs.FileMode(raw&0o777) | typeMode(raw)
+	mode := fs.FileMode(raw)&fs.ModePerm | typeMode(raw)
 	if raw&syscall.S_ISUID != 0 {
 		mode |= fs.ModeSetuid
 	}
@@ -58,5 +59,15 @@ func typeMode(raw uint32) fs.FileMode {
 		return fs.ModeSocket
 	default:
 		return 0
+	}
+}
+
+// retryInterrupted calls call again for as long as a signal interrupts the system call it
+// makes, as os.Stat does, so Stat fails for the same reasons os.Stat does.
+func retryInterrupted(call func() error) error {
+	for {
+		if err := call(); !errors.Is(err, syscall.EINTR) {
+			return err
+		}
 	}
 }

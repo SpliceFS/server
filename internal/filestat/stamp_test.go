@@ -3,6 +3,7 @@
 package filestat
 
 import (
+	"errors"
 	"io/fs"
 	"syscall"
 	"testing"
@@ -33,5 +34,32 @@ func TestFileModeMatchesWhatOsStatReports(t *testing.T) {
 				t.Errorf("fileMode(%#o) = %v, want %v", tt.raw, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRetryInterruptedCallsAgainUntilItIsNotInterrupted(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	err := retryInterrupted(func() error {
+		calls++
+		if calls < 3 {
+			return syscall.EINTR
+		}
+		return nil
+	})
+	if err != nil || calls != 3 {
+		t.Errorf("retryInterrupted = %v after %d calls, want nil after 3", err, calls)
+	}
+}
+
+func TestRetryInterruptedReturnsAnyOtherErrorAtOnce(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	err := retryInterrupted(func() error {
+		calls++
+		return syscall.ENOENT
+	})
+	if !errors.Is(err, syscall.ENOENT) || calls != 1 {
+		t.Errorf("retryInterrupted = %v after %d calls, want ENOENT after 1", err, calls)
 	}
 }
