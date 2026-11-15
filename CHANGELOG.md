@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.21] - 2026-11-15
+
+- Internal: a single system call reads everything that tells file versions apart, including the
+  creation time.
+
 ## [0.5.20] - 2026-11-15
 
 - A listener added by a configuration reload now logs "listening" with its address, as listeners do
