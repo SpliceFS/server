@@ -14,12 +14,7 @@ import (
 
 func listenLoopback(t *testing.T) *endpoint {
 	t.Helper()
-	listener, err := openEndpoint(context.Background(), "127.0.0.1:0", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { closeQuietly(listener) })
-	return listener
+	return openLoopback(t, nil)
 }
 
 // newRunner is the serving loop of a run without what surrounds it: a server and its

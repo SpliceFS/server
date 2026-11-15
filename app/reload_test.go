@@ -131,6 +131,13 @@ func (reloader *reloading) refuse(t *testing.T, next loaded) error {
 	return err
 }
 
+// onFirstListener returns entry with the port of the first listener of the fixture. A reload
+// knows a listener by its configured address, so the entry is that listener.
+func onFirstListener(fix *fixture, entry config.Endpoint) config.Endpoint {
+	entry.Port = fix.cfg.Listen[0].Port
+	return entry
+}
+
 // addListener reloads to the configuration of the fixture with a second, plain listener, and
 // returns the entry of that listener. Its port is one that the reload could open: a reload
 // that fails because another process holds the port is made again with another port.
@@ -364,8 +371,9 @@ func TestReloadLogsTheAddressOfAnAddedListenerOnly(t *testing.T) {
 func TestReloadRemovesAListenerAndKeepsTheOthers(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t)
+	fix.cfg.Listen = []config.Endpoint{fix.cfg.Listen[0], configEndpoint(nil, true)}
 	reloader := startReloading(t, fix)
-	kept, removed := reloader.addrs[0], listenAddress(reloader.addListener(t, fix))
+	kept, removed := reloader.addrs[0], reloader.addrs[1]
 	servesPlain(t, removed)
 
 	reloader.apply(t, reconfigured(fix, fix.cfg.Listen[:1], fix.cfg.Shares))
@@ -388,7 +396,7 @@ func TestReloadChangesTheTLSOfAKeptListener(t *testing.T) {
 	address := reloader.addrs[0]
 	reload := func(entry config.Endpoint) {
 		t.Helper()
-		reloader.apply(t, reconfigured(fix, []config.Endpoint{entry}, fix.cfg.Shares))
+		reloader.apply(t, reconfigured(fix, []config.Endpoint{onFirstListener(fix, entry)}, fix.cfg.Shares))
 	}
 	servesPlain(t, address)
 
@@ -464,7 +472,7 @@ func refuseMissingCertificate(
 ) refusal {
 	t.Helper()
 	missing := filepath.Join(t.TempDir(), "missing")
-	entry := configEndpoint(&config.TLS{CertFile: missing, KeyFile: missing}, false)
+	entry := onFirstListener(fix, configEndpoint(&config.TLS{CertFile: missing, KeyFile: missing}, false))
 	next := reconfigured(fix, []config.Endpoint{entry}, shares)
 	return refusal{err: reloader.refuse(t, loaded{cfg: next}), want: "load certificate"}
 }
@@ -475,7 +483,7 @@ func refuseAddressInUse(
 	t *testing.T, reloader *reloading, fix *fixture, shares map[string]config.Share,
 ) refusal {
 	t.Helper()
-	busy := plainOn(holdPort(t))
+	busy := plainOn(porttest.Hold(t))
 	// The free address comes first, so it is open when the busy one fails.
 	free, err := failsAfterOpening(t, func(free config.Endpoint) error {
 		listen := []config.Endpoint{fix.cfg.Listen[0], free, busy}

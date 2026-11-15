@@ -373,9 +373,7 @@ func TestRunWithoutLogger(t *testing.T) {
 	fix := newFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := Run(ctx, fix.cfg, fix.state, Options{}); err != nil {
-		t.Errorf("Run = %v", err)
-	}
+	onFreePorts(t, fix, func() error { return Run(ctx, fix.cfg, fix.state, Options{}) })
 }
 
 func TestRunFailsAtStart(t *testing.T) {
@@ -424,6 +422,7 @@ func TestRunFailsAtStart(t *testing.T) {
 			t.Parallel()
 			fix := newFixture(t)
 			tt.mutate(fix)
+			givePorts(t, fix)
 			listening := newEventLog(slog.DiscardHandler)
 			err := Run(context.Background(), fix.cfg, fix.state, Options{Logger: slog.New(listening)})
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
@@ -434,28 +433,21 @@ func TestRunFailsAtStart(t *testing.T) {
 	}
 }
 
-// The listeners of the configuration that is started with log where they are: the one with
-// port 0 the port the system chose, and the one with a port of the test that port.
+// Every listener of the configuration logs the address it was started on, which is the one
+// the test chose for it.
 func TestEveryListenerLogsItsAddressAtStart(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t)
-	var srv *running
-	var chosen config.Endpoint
-	porttest.Try(t, func(port int) error {
-		chosen = plainOn(port)
-		fix.cfg.Listen = []config.Endpoint{configEndpoint(nil, true), chosen}
-		var err error
-		srv, err = tryStart(t, fix, nil)
-		return err
-	})
+	fix.cfg.Listen = []config.Endpoint{configEndpoint(nil, true), configEndpoint(nil, true)}
+	srv := start(t, fix)
 
-	if got, want := srv.addrs[1], listenAddress(chosen); got != want {
-		t.Errorf("listening address = %q, want the configured %q", got, want)
+	if len(srv.addrs) != len(fix.cfg.Listen) {
+		t.Fatalf("%d listening records for %d listeners", len(srv.addrs), len(fix.cfg.Listen))
 	}
-	if srv.addrs[0] == listenAddress(fix.cfg.Listen[0]) {
-		t.Errorf("listening address = %q, want the port that the system chose", srv.addrs[0])
-	}
-	for _, address := range srv.addrs {
+	for i, address := range srv.addrs {
+		if want := listenAddress(fix.cfg.Listen[i]); fix.cfg.Listen[i].Port == 0 || address != want {
+			t.Errorf("listening address = %q, want %q on a port the test chose", address, want)
+		}
 		servesPlain(t, address)
 		if logs := srv.logs.String(); !strings.Contains(logs, "msg=listening address="+address) {
 			t.Errorf("the log has no listening line for %s:\n%s", address, logs)
@@ -466,7 +458,7 @@ func TestEveryListenerLogsItsAddressAtStart(t *testing.T) {
 func TestRunFailsWhenAPortIsTaken(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t)
-	taken := plainOn(holdPort(t))
+	taken := plainOn(porttest.Hold(t))
 	events := newEventLog(slog.DiscardHandler)
 	// The free address comes first, so it is open when the taken one fails.
 	free, err := failsAfterOpening(t, func(free config.Endpoint) error {

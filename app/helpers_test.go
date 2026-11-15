@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -89,16 +90,6 @@ func respondText(w io.Writer, text string) {
 	_, _ = io.WriteString(w, text) //nolint:errcheck // see above
 }
 
-// portOf returns the port of a TCP address.
-func portOf(t *testing.T, addr net.Addr) int {
-	t.Helper()
-	tcp, ok := addr.(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("%v is a %T, not a TCP address", addr, addr)
-	}
-	return tcp.Port
-}
-
 // loadConfig writes the files to a new configuration directory and loads it. A test needs
 // a free port, which the validation refuses to take as 0, so the listener is replaced.
 func loadConfig(t *testing.T, conf, shares map[string]string) *config.Config {
@@ -118,12 +109,47 @@ func loadConfig(t *testing.T, conf, shares map[string]string) *config.Config {
 	return cfg
 }
 
-// configEndpoint is a listener entry on a free loopback port.
+// configEndpoint is a listener entry on the loopback address, with its port left unset. The
+// server of a test is started through startWith, which gives every listener a port that
+// porttest chose, and a test that runs the server by itself gives them with onFreePorts.
 func configEndpoint(tlsFiles *config.TLS, plain bool) config.Endpoint {
 	return config.Endpoint{
 		Listener: config.Listener{Address: netip.MustParseAddr("127.0.0.1"), TLS: tlsFiles},
 		Plain:    plain,
 	}
+}
+
+// withPorts returns entries with the given ports, one for each. The entries it is given stay
+// as they are.
+func withPorts(entries []config.Endpoint, ports []int) []config.Endpoint {
+	given := slices.Clone(entries)
+	for i := range given {
+		given[i].Port = ports[i]
+	}
+	return given
+}
+
+// onFreePorts gives the listeners of the fixture ports that porttest chose and calls attempt,
+// which runs the server with them and returns why it did not start. When the failure is that
+// a port is in use, the listeners get other ports and attempt runs again. The fixture keeps
+// the ports of the attempt that succeeded.
+func onFreePorts(t *testing.T, fix *fixture, attempt func() error) {
+	t.Helper()
+	porttest.TryMany(t, len(fix.cfg.Listen), func(ports []int) error {
+		fix.cfg.Listen = withPorts(fix.cfg.Listen, ports)
+		return attempt()
+	})
+}
+
+// givePorts gives the listeners of the fixture ports for a Run that has to fail before it
+// opens any, so that nothing can take them first.
+func givePorts(t *testing.T, fix *fixture) {
+	t.Helper()
+	ports, err := porttest.PickMany(len(fix.cfg.Listen))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fix.cfg.Listen = withPorts(fix.cfg.Listen, ports)
 }
 
 // plainOn is a plain listener entry on a loopback port. A test that gives a reload a second
@@ -133,19 +159,6 @@ func plainOn(port int) config.Endpoint {
 	entry := configEndpoint(nil, true)
 	entry.Port = port
 	return entry
-}
-
-// holdPort takes a loopback port and keeps it until the test ends, so that every attempt to
-// listen on it fails with "address in use". It returns the port.
-func holdPort(t *testing.T) int {
-	t.Helper()
-	var listenConfig net.ListenConfig
-	held, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { closeQuietly(held) })
-	return portOf(t, held.Addr())
 }
 
 // failsAfterOpening calls attempt with a plain listener entry on a port that nothing holds.
@@ -362,16 +375,17 @@ func start(t *testing.T, fix *fixture) *running {
 // startWith is start, with the chance to set more options of Run.
 func startWith(t *testing.T, fix *fixture, adjust func(*Options)) *running {
 	t.Helper()
-	r, err := tryStart(t, fix, adjust)
-	if err != nil {
-		t.Fatal(err)
-	}
+	var r *running
+	onFreePorts(t, fix, func() error {
+		var err error
+		r, err = tryStart(t, fix, adjust)
+		return err
+	})
 	return r
 }
 
-// tryStart is startWith for a test that has to know why the server did not start, such as one
-// that starts it on a port that may be taken. It returns the error of a Run that ended before
-// every listener was serving.
+// tryStart makes one attempt to start the server with the ports the listeners have. It returns
+// the error of a Run that ended before every listener was serving.
 func tryStart(t *testing.T, fix *fixture, adjust func(*Options)) (*running, error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())

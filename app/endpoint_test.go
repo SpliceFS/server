@@ -6,9 +6,12 @@ import (
 	"crypto/x509"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/SpliceFS/server/internal/porttest"
 )
 
 // testTimeout bounds every connection a test makes.
@@ -52,10 +55,12 @@ func openLoopback(t *testing.T, cfg *tls.Config) *endpoint {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	listener, err := openEndpoint(ctx, "127.0.0.1:0", cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	var listener *endpoint
+	porttest.Try(t, func(port int) error {
+		var err error
+		listener, err = openEndpoint(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), cfg)
+		return err
+	})
 	t.Cleanup(func() { closeQuietly(listener) })
 	return listener
 }

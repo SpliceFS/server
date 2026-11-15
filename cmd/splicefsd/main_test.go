@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -424,24 +423,7 @@ func exitedBeforeListening(code int, output string) error {
 // to try another port.
 func TestAServerThatStopsBeforeItListensReportsWhetherThePortWasTaken(t *testing.T) {
 	t.Parallel()
-	var listenConfig net.ListenConfig
-	held, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if closeErr := held.Close(); closeErr != nil {
-			t.Error(closeErr)
-		}
-	})
-	_, portText, err := net.SplitHostPort(held.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	heldPort, err := strconv.Atoi(portText)
-	if err != nil {
-		t.Fatal(err)
-	}
+	heldPort := porttest.Hold(t)
 	tests := []struct {
 		name      string
 		port      int

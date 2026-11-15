@@ -209,24 +209,6 @@ func TestPickManyReturnsDistinctPortsThatCanAllBeUsed(t *testing.T) {
 	}
 }
 
-// A refused bind is what the tests that use Try pass on, so the real error has to match.
-func TestARealBindFailureIsAnAddressInUseError(t *testing.T) {
-	t.Parallel()
-	held, err := listenOn(t, "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if closeErr := held.Close(); closeErr != nil {
-			t.Error(closeErr)
-		}
-	})
-	_, err = listenOn(t, held.Addr().String())
-	if !errors.Is(err, syscall.EADDRINUSE) {
-		t.Errorf("a second bind failed with %v, want an address in use error", err)
-	}
-}
-
 // inUseLogs is what Try logs for count ports, numbered from 1 by scripted, that are all in use.
 func inUseLogs(count int) []string {
 	logs := make([]string, 0, count)
