@@ -180,7 +180,7 @@ folders it needs. It must be able to write to the state folder.
 
 | File                         | Written by            | Content                                 |
 |------------------------------|-----------------------|-----------------------------------------|
-| `local/node-id`              | the server, once      | 16 lower-case hex characters            |
+| `local/node-id`              | the server, once      | a UUIDv7 in lower case                  |
 | `local/tls/cert.pem`, `key.pem` | the server, once   | the certificate the server made for itself |
 | `shared/users/<name>.yaml`   | you                   | one user                                |
 | `shared/keys/<node-id>.yaml` | that server only      | token signing keys                      |
@@ -190,9 +190,11 @@ folders it needs. It must be able to write to the state folder.
 
 Never copy or sync `local/`. It belongs to this machine.
 
-- `node-id` is made on the first start and never changes. It names this server's files in
-  `shared/`. Do not edit it. If you delete it, the server makes a new one, and the files of
-  the old id stay in `shared/` until you remove them.
+- `node-id` is a UUIDv7 in lower case, such as `017f22e2-79b0-7cc3-98c4-dc0c0c07398f`, made on
+  the first start and never changed. It names this server's files in `shared/`. Do not edit it.
+  If you delete it, the server makes a new one, and the files of the old id stay in `shared/`
+  until you remove them. If the file holds anything else, the server does not start and names
+  the file; it never replaces an id it cannot read.
 - `tls/` holds a self-signed certificate (ECDSA P-256, valid for 10 years) made on the first
   start for the host name, `localhost`, `127.0.0.1` and `::1`. Files that exist are never
   replaced. To use your own certificate, set `tls` on the listener instead.
