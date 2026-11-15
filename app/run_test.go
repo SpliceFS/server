@@ -11,12 +11,9 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/netip"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +21,7 @@ import (
 	"github.com/SpliceFS/common/wire"
 	"github.com/SpliceFS/server/config"
 	"github.com/SpliceFS/server/internal/datadir"
+	"github.com/SpliceFS/server/internal/porttest"
 	"github.com/SpliceFS/server/share"
 )
 
@@ -426,7 +424,7 @@ func TestRunFailsAtStart(t *testing.T) {
 			t.Parallel()
 			fix := newFixture(t)
 			tt.mutate(fix)
-			listening := newListeningLog(slog.DiscardHandler)
+			listening := newEventLog(slog.DiscardHandler)
 			err := Run(context.Background(), fix.cfg, fix.state, Options{Logger: slog.New(listening)})
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("Run = %v, want an error containing %q", err, tt.want)
@@ -436,35 +434,53 @@ func TestRunFailsAtStart(t *testing.T) {
 	}
 }
 
+// The listeners of the configuration that is started with log where they are: the one with
+// port 0 the port the system chose, and the one with a port of the test that port.
+func TestEveryListenerLogsItsAddressAtStart(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t)
+	var srv *running
+	var chosen config.Endpoint
+	porttest.Try(t, func(port int) error {
+		chosen = plainOn(port)
+		fix.cfg.Listen = []config.Endpoint{configEndpoint(nil, true), chosen}
+		var err error
+		srv, err = tryStart(t, fix, nil)
+		return err
+	})
+
+	if got, want := srv.addrs[1], listenAddress(chosen); got != want {
+		t.Errorf("listening address = %q, want the configured %q", got, want)
+	}
+	if srv.addrs[0] == listenAddress(fix.cfg.Listen[0]) {
+		t.Errorf("listening address = %q, want the port that the system chose", srv.addrs[0])
+	}
+	for _, address := range srv.addrs {
+		servesPlain(t, address)
+		if logs := srv.logs.String(); !strings.Contains(logs, "msg=listening address="+address) {
+			t.Errorf("the log has no listening line for %s:\n%s", address, logs)
+		}
+	}
+}
+
 func TestRunFailsWhenAPortIsTaken(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t)
-	var listenConfig net.ListenConfig
-	taken, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { closeQuietly(taken) })
-	free, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	freePort := portOf(t, free.Addr())
-	closeQuietly(free)
+	taken := plainOn(holdPort(t))
+	events := newEventLog(slog.DiscardHandler)
+	// The free address comes first, so it is open when the taken one fails.
+	free, err := failsAfterOpening(t, func(free config.Endpoint) error {
+		fix.cfg.Listen = []config.Endpoint{free, taken}
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		return Run(ctx, fix.cfg, fix.state, Options{Logger: slog.New(events)})
+	})
 
-	loopback := netip.MustParseAddr("127.0.0.1")
-	takenPort := portOf(t, taken.Addr())
-	fix.cfg.Listen = []config.Endpoint{
-		{Listener: config.Listener{Address: loopback, Port: freePort}, Plain: true},
-		{Listener: config.Listener{Address: loopback, Port: takenPort}, Plain: true},
+	if want := "listen on " + listenAddress(taken); !strings.Contains(err.Error(), want) {
+		t.Errorf("Run = %v, want an error containing %q", err, want)
 	}
-	listening := newListeningLog(slog.DiscardHandler)
-	err = Run(context.Background(), fix.cfg, fix.state, Options{Logger: slog.New(listening)})
-	if err == nil || !strings.Contains(err.Error(), "listen on 127.0.0.1:") {
-		t.Fatalf("Run = %v", err)
-	}
-	assertNotListening(t, listening)
-	if isOpen(net.JoinHostPort("127.0.0.1", strconv.Itoa(freePort))) {
+	assertNotListening(t, events)
+	if isOpen(listenAddress(free)) {
 		t.Error("the listener opened before the failure was left open")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,12 +18,14 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"golang.org/x/crypto/argon2"
 
 	"github.com/SpliceFS/server/config"
+	"github.com/SpliceFS/server/internal/porttest"
 )
 
 // fixture is a complete server: a configuration directory loaded the way the program
@@ -123,6 +126,52 @@ func configEndpoint(tlsFiles *config.TLS, plain bool) config.Endpoint {
 	}
 }
 
+// plainOn is a plain listener entry on a loopback port. A test that gives a reload a second
+// listener needs a port of its own, because a reload knows a listener by its configured
+// address and port 0 on the loopback address is the one of the fixture.
+func plainOn(port int) config.Endpoint {
+	entry := configEndpoint(nil, true)
+	entry.Port = port
+	return entry
+}
+
+// holdPort takes a loopback port and keeps it until the test ends, so that every attempt to
+// listen on it fails with "address in use". It returns the port.
+func holdPort(t *testing.T) int {
+	t.Helper()
+	var listenConfig net.ListenConfig
+	held, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closeQuietly(held) })
+	return portOf(t, held.Addr())
+}
+
+// failsAfterOpening calls attempt with a plain listener entry on a port that nothing holds.
+// The attempt has to fail on purpose, after it opened that entry, and returns its failure. A
+// failure of the entry itself because its port is in use means that another process took the
+// port first, so the attempt is made again on another port. It returns the entry that was
+// open when the attempt failed, and the failure.
+func failsAfterOpening(t *testing.T, attempt func(opened config.Endpoint) error) (config.Endpoint, error) {
+	t.Helper()
+	var opened config.Endpoint
+	var failure error
+	porttest.Try(t, func(port int) error {
+		opened = plainOn(port)
+		failure = attempt(opened)
+		if errors.Is(failure, syscall.EADDRINUSE) &&
+			strings.Contains(failure.Error(), "listen on "+listenAddress(opened)+": ") {
+			return failure
+		}
+		return nil
+	})
+	if failure == nil {
+		t.Fatal("the attempt did not fail")
+	}
+	return opened, failure
+}
+
 // testSettings names the cluster, gives this node its public URL and allows many logins, so
 // that tests do not wait for the rate limit.
 const testSettings = "cluster:\n  name: example\n  node: east\n  url: https://east.example.com/api\n" +
@@ -194,58 +243,85 @@ func (b *syncBuffer) waitFor(t *testing.T, text string, count int) {
 	}
 }
 
-// listeningLog is a log handler that passes every record on to next and sends the address
-// of each "listening" record on addresses, in the order the server logged them. The address
-// is sent after next has written the record, so a test that received it finds the line in
-// the log. A test learns where a listener is by receiving, never by waiting for time to pass.
-// The channel holds listeningBuffered addresses, so that the server never waits for the test.
-type listeningLog struct {
+// eventLog is a log handler that passes every record on to next and tells a test about two
+// of them: the address of each "listening" record goes on listening, and the error of each
+// "configuration not applied" record on refusals, in the order the server logged them. A
+// value is sent after next has written the record, so a test that received it finds the line
+// in the log. A test learns what the server did by receiving, never by waiting for time to
+// pass. The channels hold eventBuffered values, so that the server never waits for the test.
+type eventLog struct {
 	next      slog.Handler
-	addresses chan string
+	listening chan string
+	refusals  chan error
 }
 
-// listeningBuffered is more listeners than any test starts.
-const listeningBuffered = 16
+// eventBuffered is more of either record than any test causes.
+const eventBuffered = 16
 
-func newListeningLog(next slog.Handler) *listeningLog {
-	return &listeningLog{next: next, addresses: make(chan string, listeningBuffered)}
+func newEventLog(next slog.Handler) *eventLog {
+	return &eventLog{
+		next:      next,
+		listening: make(chan string, eventBuffered),
+		refusals:  make(chan error, eventBuffered),
+	}
 }
 
-// Enabled lets info records through even when next discards everything, because the
-// "listening" record is one and a test that discards the log still needs its address.
-func (l *listeningLog) Enabled(ctx context.Context, level slog.Level) bool {
+// Enabled lets info records and above through even when next discards everything, because
+// the records of a test are among them and a test that discards the log still needs them.
+func (l *eventLog) Enabled(ctx context.Context, level slog.Level) bool {
 	return level >= slog.LevelInfo || l.next.Enabled(ctx, level)
 }
 
 //nolint:gocritic // slog.Handler fixes the signature
-func (l *listeningLog) Handle(ctx context.Context, record slog.Record) error {
+func (l *eventLog) Handle(ctx context.Context, record slog.Record) error {
 	err := l.next.Handle(ctx, record)
-	if record.Message == "listening" {
-		record.Attrs(func(attr slog.Attr) bool {
-			if attr.Key == "address" {
-				l.addresses <- attr.Value.String()
-			}
-			return true
-		})
+	switch record.Message {
+	case "listening":
+		l.listening <- attribute(record, "address").String()
+	case "configuration not applied":
+		l.refusals <- errorOf(attribute(record, "error"))
+	default:
+		// Every other record is only logged.
 	}
 	return err
 }
 
-func (l *listeningLog) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &listeningLog{next: l.next.WithAttrs(attrs), addresses: l.addresses}
+func (l *eventLog) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &eventLog{next: l.next.WithAttrs(attrs), listening: l.listening, refusals: l.refusals}
 }
 
-func (l *listeningLog) WithGroup(name string) slog.Handler {
-	return &listeningLog{next: l.next.WithGroup(name), addresses: l.addresses}
+func (l *eventLog) WithGroup(name string) slog.Handler {
+	return &eventLog{next: l.next.WithGroup(name), listening: l.listening, refusals: l.refusals}
 }
 
-// receive returns the address of the next "listening" record that was not received yet. It
-// waits only for the server to log it, and fails the test if that does not happen within
-// testTimeout.
-func (l *listeningLog) receive(t *testing.T) string {
+//nolint:gocritic // slog.Record is passed by value everywhere in slog
+func attribute(record slog.Record, key string) slog.Value {
+	var found slog.Value
+	record.Attrs(func(attr slog.Attr) bool {
+		if attr.Key == key {
+			found = attr.Value
+		}
+		return true
+	})
+	return found
+}
+
+// errorOf returns the error a record carries as a value, which is what lets a test ask it
+// what it wraps and not what it says.
+func errorOf(value slog.Value) error {
+	if err, ok := value.Any().(error); ok {
+		return err
+	}
+	return errors.New(value.String())
+}
+
+// nextListening returns the address of the next "listening" record that the test did not
+// receive yet. It waits only for the server to log it, and fails the test if that does not
+// happen within testTimeout.
+func (l *eventLog) nextListening(t *testing.T) string {
 	t.Helper()
 	select {
-	case address := <-l.addresses:
+	case address := <-l.listening:
 		return address
 	case <-time.After(testTimeout):
 		t.Fatal("the server did not log a listening address in time")
@@ -256,10 +332,10 @@ func (l *listeningLog) receive(t *testing.T) string {
 // assertNotListening fails the test if the server logged a listening address that the test
 // did not receive. A test calls it after the step that could have logged one has returned,
 // so a record that was ever going to come is already there.
-func assertNotListening(t *testing.T, listening *listeningLog) {
+func assertNotListening(t *testing.T, events *eventLog) {
 	t.Helper()
 	select {
-	case address := <-listening.addresses:
+	case address := <-events.listening:
 		t.Errorf("the server logged that it listens on %s", address)
 	default:
 	}
@@ -267,13 +343,13 @@ func assertNotListening(t *testing.T, listening *listeningLog) {
 
 // running is a server started with Run.
 type running struct {
-	addrs     []string // where the listeners of the configuration are, in its order
-	listening *listeningLog
-	cancel    context.CancelFunc
-	done      chan error
-	logs      *syncBuffer
-	once      sync.Once
-	err       error
+	addrs  []string // where the listeners of the configuration are, in its order
+	events *eventLog
+	cancel context.CancelFunc
+	done   chan error
+	logs   *syncBuffer
+	once   sync.Once
+	err    error
 }
 
 // start runs the server and waits until it is serving. The server is stopped when the test
@@ -286,28 +362,40 @@ func start(t *testing.T, fix *fixture) *running {
 // startWith is start, with the chance to set more options of Run.
 func startWith(t *testing.T, fix *fixture, adjust func(*Options)) *running {
 	t.Helper()
+	r, err := tryStart(t, fix, adjust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// tryStart is startWith for a test that has to know why the server did not start, such as one
+// that starts it on a port that may be taken. It returns the error of a Run that ended before
+// every listener was serving.
+func tryStart(t *testing.T, fix *fixture, adjust func(*Options)) (*running, error) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &running{cancel: cancel, done: make(chan error, 1), logs: newSyncBuffer()}
-	r.listening = newListeningLog(slog.NewTextHandler(r.logs, nil))
-	opts := Options{Version: "test", Logger: slog.New(r.listening)}
+	r.events = newEventLog(slog.NewTextHandler(r.logs, nil))
+	opts := Options{Version: "test", Logger: slog.New(r.events)}
 	if adjust != nil {
 		adjust(&opts)
 	}
 	go func() { r.done <- Run(ctx, fix.cfg, fix.state, opts) }()
 	for range fix.cfg.Listen {
 		select {
-		case address := <-r.listening.addresses:
+		case address := <-r.events.listening:
 			r.addrs = append(r.addrs, address)
 		case err := <-r.done:
 			cancel()
-			t.Fatalf("Run returned before every listener was serving: %v", err)
+			return nil, fmt.Errorf("run returned before every listener was serving: %w", err)
 		case <-time.After(testTimeout):
 			cancel()
 			t.Fatalf("not every listener is serving in time:\n%s", r.logs)
 		}
 	}
 	t.Cleanup(func() { r.stopForCleanup() })
-	return r
+	return r, nil
 }
 
 // stop cancels the server, waits for Run and returns what it returned. It can be called

@@ -5,7 +5,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/SpliceFS/common/wire"
 	"github.com/SpliceFS/server/config"
+	"github.com/SpliceFS/server/internal/porttest"
 )
 
 // loaded is what the Load function of a test returns.
@@ -33,7 +33,6 @@ type reloading struct {
 	signals chan os.Signal
 	loads   chan loaded
 	applied chan *config.Config
-	refused int // how many refusals the test has asked for
 }
 
 // startReloading starts the fixture. The server reports each applied configuration on the
@@ -90,31 +89,60 @@ func (reloader *reloading) send(t *testing.T, next loaded) {
 	}
 }
 
-// apply reloads to cfg and returns when the server has applied it.
-func (reloader *reloading) apply(t *testing.T, cfg *config.Config) {
+// reload makes the server load next and returns when the server has decided: nil when it
+// applied the configuration, and otherwise the error it refused it with.
+func (reloader *reloading) reload(t *testing.T, next loaded) error {
 	t.Helper()
-	reloader.send(t, loaded{cfg: cfg})
+	reloader.send(t, next)
 	select {
 	case got := <-reloader.applied:
-		if got != cfg {
-			t.Fatalf("Applied got %p, want the loaded configuration %p", got, cfg)
+		if got != next.cfg {
+			t.Fatalf("Applied got %p, want the loaded configuration %p", got, next.cfg)
 		}
+		return nil
+	case err := <-reloader.events.refusals:
+		return err
 	case <-time.After(testTimeout):
-		t.Fatalf("the configuration was not applied in time:\n%s", reloader.logs)
+		t.Fatalf("the server did not decide on the configuration in time:\n%s", reloader.logs)
+		return nil
 	}
 }
 
-// refuse reloads to next and returns when the server has logged that it did not apply it.
-func (reloader *reloading) refuse(t *testing.T, next loaded) {
+// apply reloads to cfg and returns when the server has applied it.
+func (reloader *reloading) apply(t *testing.T, cfg *config.Config) {
 	t.Helper()
-	reloader.send(t, next)
-	reloader.refused++
-	reloader.logs.waitFor(t, "configuration not applied", reloader.refused)
+	if err := reloader.reload(t, loaded{cfg: cfg}); err != nil {
+		t.Fatalf("the configuration was not applied: %v\n%s", err, reloader.logs)
+	}
+}
+
+// refuse reloads to next and returns the error the server refused it with.
+func (reloader *reloading) refuse(t *testing.T, next loaded) error {
+	t.Helper()
+	err := reloader.reload(t, next)
+	if err == nil {
+		t.Fatal("the configuration was applied, want it refused")
+	}
 	select {
 	case <-reloader.applied:
 		t.Error("Applied was called for a configuration that was refused")
 	default:
 	}
+	return err
+}
+
+// addListener reloads to the configuration of the fixture with a second, plain listener, and
+// returns the entry of that listener. Its port is one that the reload could open: a reload
+// that fails because another process holds the port is made again with another port.
+func (reloader *reloading) addListener(t *testing.T, fix *fixture) config.Endpoint {
+	t.Helper()
+	var added config.Endpoint
+	porttest.Try(t, func(port int) error {
+		added = plainOn(port)
+		listen := []config.Endpoint{fix.cfg.Listen[0], added}
+		return reloader.reload(t, loaded{cfg: reconfigured(fix, listen, fix.cfg.Shares)})
+	})
+	return added
 }
 
 // addAdmin adds a user who may use every share, so that a test can ask for a share without
@@ -166,23 +194,6 @@ func reconfigured(fix *fixture, listen []config.Endpoint, shares map[string]conf
 	next.Listen = listen
 	next.Shares = shares
 	return &next
-}
-
-// freeEndpoint is a plain listener entry on a loopback port that nothing uses now.
-func freeEndpoint(t *testing.T) config.Endpoint {
-	t.Helper()
-	var listenConfig net.ListenConfig
-	listener, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := portOf(t, listener.Addr())
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	entry := configEndpoint(nil, true)
-	entry.Port = port
-	return entry
 }
 
 // probed is the answer to a probe: the status, and whether TLS carried it.
@@ -318,12 +329,7 @@ func TestReloadAddsAListener(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t)
 	reloader := startReloading(t, fix)
-	added := freeEndpoint(t)
-	address := listenAddress(added)
-	if isOpen(address) {
-		t.Fatalf("%s is in use before the reload", address)
-	}
-	reloader.apply(t, reconfigured(fix, []config.Endpoint{fix.cfg.Listen[0], added}, fix.cfg.Shares))
+	address := listenAddress(reloader.addListener(t, fix))
 	servesPlain(t, address)
 	servesPlain(t, reloader.addrs[0])
 	if err := reloader.stop(); err != nil {
@@ -334,12 +340,32 @@ func TestReloadAddsAListener(t *testing.T) {
 	}
 }
 
+// A listener that a reload adds logs where it is, like one that exists at the start, and a
+// reload that keeps its listeners has nothing new to say.
+func TestReloadLogsTheAddressOfAnAddedListenerOnly(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t)
+	reloader := startReloading(t, fix)
+	added := reloader.addListener(t, fix)
+
+	want := listenAddress(added)
+	if got := reloader.events.nextListening(t); got != want {
+		t.Errorf("listening address = %q, want the configured %q", got, want)
+	}
+	if logs := reloader.logs.String(); !strings.Contains(logs, "msg=listening address="+want) {
+		t.Errorf("the log has no listening line for %s:\n%s", want, logs)
+	}
+	assertNotListening(t, reloader.events)
+
+	reloader.apply(t, reconfigured(fix, []config.Endpoint{fix.cfg.Listen[0], added}, fix.cfg.Shares))
+	assertNotListening(t, reloader.events)
+}
+
 func TestReloadRemovesAListenerAndKeepsTheOthers(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t)
-	fix.cfg.Listen = []config.Endpoint{fix.cfg.Listen[0], freeEndpoint(t)}
 	reloader := startReloading(t, fix)
-	kept, removed := reloader.addrs[0], reloader.addrs[1]
+	kept, removed := reloader.addrs[0], listenAddress(reloader.addListener(t, fix))
 	servesPlain(t, removed)
 
 	reloader.apply(t, reconfigured(fix, fix.cfg.Listen[:1], fix.cfg.Shares))
@@ -399,10 +425,12 @@ func TestReloadKeepsServingWhenLoadFails(t *testing.T) {
 	reloader := startReloading(t, fix)
 	base := "http://" + reloader.addrs[0]
 
-	reloader.refuse(t, loaded{err: errors.New("configuration folder is unreadable")})
+	unreadable := errors.New("configuration folder is unreadable")
+	if err := reloader.refuse(t, loaded{err: unreadable}); !errors.Is(err, unreadable) {
+		t.Errorf("the refusal is %v, want %v", err, unreadable)
+	}
 	logs := reloader.logs.String()
-	if !strings.Contains(logs, "level=ERROR") ||
-		!strings.Contains(logs, "configuration folder is unreadable") {
+	if !strings.Contains(logs, "level=ERROR") || !strings.Contains(logs, unreadable.Error()) {
 		t.Errorf("the failure is not logged:\n%s", logs)
 	}
 	expectShares(t, base, http.StatusOK, http.StatusNotFound)
@@ -416,58 +444,77 @@ func TestReloadKeepsServingWhenLoadFails(t *testing.T) {
 	}
 }
 
-// refusal is a configuration that cannot be applied, the error the log must name, and the
-// addresses that the attempt may have opened and must have closed again.
+// refusal is what the server did with a configuration that cannot be applied: the error it
+// refused it with, the text the error must contain, and the addresses that the attempt
+// opened and must have closed again.
 type refusal struct {
-	cfg   *config.Config
+	err   error
 	want  string
 	freed []string
 }
 
-// refusalPlan makes a refusal. Every configuration of a plan drops the media share and adds
-// the extra one, so that a configuration that was applied in part would show.
-type refusalPlan func(t *testing.T, fix *fixture, shares map[string]config.Share) refusal
+// refusalPlan makes a configuration that cannot be applied, reloads to it and returns what
+// the server did. Every configuration of a plan drops the media share and adds the extra one,
+// so that a configuration that was applied in part would show.
+type refusalPlan func(t *testing.T, reloader *reloading, fix *fixture, shares map[string]config.Share) refusal
 
 // refuseMissingCertificate is a configuration whose certificate file does not exist.
-func refuseMissingCertificate(t *testing.T, fix *fixture, shares map[string]config.Share) refusal {
+func refuseMissingCertificate(
+	t *testing.T, reloader *reloading, fix *fixture, shares map[string]config.Share,
+) refusal {
 	t.Helper()
 	missing := filepath.Join(t.TempDir(), "missing")
 	entry := configEndpoint(&config.TLS{CertFile: missing, KeyFile: missing}, false)
-	return refusal{
-		cfg:  reconfigured(fix, []config.Endpoint{entry}, shares),
-		want: "load certificate",
-	}
+	next := reconfigured(fix, []config.Endpoint{entry}, shares)
+	return refusal{err: reloader.refuse(t, loaded{cfg: next}), want: "load certificate"}
 }
 
-// refuseAddressInUse is a configuration with an address that something else holds.
-func refuseAddressInUse(t *testing.T, fix *fixture, shares map[string]config.Share) refusal {
+// refuseAddressInUse is a configuration with an address that something else holds. The test
+// holds that address for as long as it runs.
+func refuseAddressInUse(
+	t *testing.T, reloader *reloading, fix *fixture, shares map[string]config.Share,
+) refusal {
 	t.Helper()
-	var listenConfig net.ListenConfig
-	taken, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { closeQuietly(taken) })
-	busy := configEndpoint(nil, true)
-	busy.Port = portOf(t, taken.Addr())
+	busy := plainOn(holdPort(t))
 	// The free address comes first, so it is open when the busy one fails.
-	free := freeEndpoint(t)
-	listen := []config.Endpoint{fix.cfg.Listen[0], free, busy}
-	return refusal{
-		cfg:  reconfigured(fix, listen, shares),
-		want: "listen on " + listenAddress(busy), freed: []string{listenAddress(free)},
-	}
+	free, err := failsAfterOpening(t, func(free config.Endpoint) error {
+		listen := []config.Endpoint{fix.cfg.Listen[0], free, busy}
+		return reloader.refuse(t, loaded{cfg: reconfigured(fix, listen, shares)})
+	})
+	return refusal{err: err, want: "listen on " + listenAddress(busy), freed: []string{listenAddress(free)}}
 }
 
 // refuseMissingShareFolder is a configuration with a share whose folder does not exist.
-func refuseMissingShareFolder(t *testing.T, fix *fixture, shares map[string]config.Share) refusal {
+func refuseMissingShareFolder(
+	t *testing.T, reloader *reloading, fix *fixture, shares map[string]config.Share,
+) refusal {
 	t.Helper()
 	shares["zzz"] = config.Share{Path: filepath.Join(t.TempDir(), "missing")}
-	free := freeEndpoint(t)
-	return refusal{
-		cfg:  reconfigured(fix, []config.Endpoint{fix.cfg.Listen[0], free}, shares),
-		want: "zzz", freed: []string{listenAddress(free)},
+	// The free address is opened before the shares are, and closed again with the refusal.
+	free, err := failsAfterOpening(t, func(free config.Endpoint) error {
+		listen := []config.Endpoint{fix.cfg.Listen[0], free}
+		return reloader.refuse(t, loaded{cfg: reconfigured(fix, listen, shares)})
+	})
+	return refusal{err: err, want: "zzz", freed: []string{listenAddress(free)}}
+}
+
+// expectRefused fails the test unless the refusal names what it must, in its error and in
+// the log, nothing was announced as listening, and everything the attempt opened is closed.
+func expectRefused(t *testing.T, reloader *reloading, got refusal) {
+	t.Helper()
+	if !strings.Contains(got.err.Error(), got.want) {
+		t.Errorf("the refusal %q does not name %q", got.err, got.want)
 	}
+	if logs := reloader.logs.String(); !strings.Contains(logs, "level=ERROR") ||
+		!strings.Contains(logs, got.want) {
+		t.Errorf("the log does not name %q:\n%s", got.want, logs)
+	}
+	for _, address := range got.freed {
+		if isOpen(address) {
+			t.Errorf("%s was opened for the configuration and is still open", address)
+		}
+	}
+	assertNotListening(t, reloader.events)
 }
 
 func TestReloadRefusesAConfigurationThatCannotBeApplied(t *testing.T) {
@@ -487,18 +534,9 @@ func TestReloadRefusesAConfigurationThatCannotBeApplied(t *testing.T) {
 			addAdmin(t, fix)
 			reloader := startReloading(t, fix)
 			base := "http://" + reloader.addrs[0]
-			got := tt.plan(t, fix, map[string]config.Share{"extra": extraShare(t, fix)})
+			got := tt.plan(t, reloader, fix, map[string]config.Share{"extra": extraShare(t, fix)})
 
-			reloader.refuse(t, loaded{cfg: got.cfg})
-			if logs := reloader.logs.String(); !strings.Contains(logs, "level=ERROR") ||
-				!strings.Contains(logs, got.want) {
-				t.Errorf("the log does not name %q:\n%s", got.want, logs)
-			}
-			for _, address := range got.freed {
-				if isOpen(address) {
-					t.Errorf("%s was opened for the configuration and is still open", address)
-				}
-			}
+			expectRefused(t, reloader, got)
 			servesPlain(t, reloader.addrs[0])
 			expectShares(t, base, http.StatusOK, http.StatusNotFound)
 			if err := reloader.stop(); err != nil {

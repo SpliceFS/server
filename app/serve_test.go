@@ -37,8 +37,8 @@ func newRunner(handler http.Handler, opts Options) *runner {
 
 // watchListening makes r log through a handler that reports each "listening" address, and
 // returns that handler.
-func watchListening(r *runner) *listeningLog {
-	listening := newListeningLog(slog.DiscardHandler)
+func watchListening(r *runner) *eventLog {
+	listening := newEventLog(slog.DiscardHandler)
 	r.logger = slog.New(listening)
 	return listening
 }
@@ -65,7 +65,7 @@ func TestServeStopsEverythingWhenAListenerFails(t *testing.T) {
 	}
 	// serve logs every listener before it returns, so both addresses are already there.
 	for _, want := range []string{good.Addr().String(), broken.Addr().String()} {
-		if got := listening.receive(t); got != want {
+		if got := listening.nextListening(t); got != want {
 			t.Errorf("listening address = %q, want %q", got, want)
 		}
 	}
@@ -102,8 +102,8 @@ func TestServeIgnoresARetiredEndpointAndKeepsTheOthers(t *testing.T) {
 	r := newRunner(http.NotFoundHandler(), Options{})
 	listening := watchListening(r)
 	go func() { served <- r.serve(ctx, []*endpoint{retired, kept}, time.Second) }()
-	listening.receive(t)
-	listening.receive(t)
+	listening.nextListening(t)
+	listening.nextListening(t)
 
 	if err := retired.retire(); err != nil {
 		t.Fatal(err)
