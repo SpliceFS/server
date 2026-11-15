@@ -21,9 +21,18 @@ func stampFromStat(stat *syscall.Stat_t) Stamp {
 		Size:  stat.Size,
 		Mtime: stat.Mtimespec.Nano(),
 		Ctime: changeTime(stat),
-		Btime: stat.Birthtimespec.Nano(),
+		Btime: birthTime(stat.Birthtimespec),
 		Dev:   asUint64(stat.Dev),
 		Ino:   asUint64(stat.Ino),
 		Mode:  fileMode(uint32(stat.Mode)),
 	}
+}
+
+// birthTime is the creation time in nanoseconds, or 0 when the file system does not record
+// one: FreeBSD then reports -1 seconds.
+func birthTime(birth syscall.Timespec) int64 {
+	if birth.Sec < 0 {
+		return 0
+	}
+	return birth.Nano()
 }

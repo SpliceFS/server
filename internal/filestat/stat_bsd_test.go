@@ -31,3 +31,14 @@ func TestStampFromStatReadsEveryField(t *testing.T) {
 		t.Errorf("stampFromStat = %+v, want %+v", got, want)
 	}
 }
+
+// FreeBSD reports a birth time of -1 seconds for a file system that does not record one.
+// The Stamp says 0 for an unknown birth time on every system.
+func TestStampFromStatGivesZeroForAnUnreportedBirthTime(t *testing.T) {
+	t.Parallel()
+	var stat syscall.Stat_t
+	stat.Birthtimespec.Sec = -1
+	if got := stampFromStat(&stat).Btime; got != 0 {
+		t.Errorf("Btime = %d, want 0", got)
+	}
+}
