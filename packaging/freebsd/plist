@@ -1,0 +1,6 @@
+bin/splicefsd
+etc/rc.d/splicefsd
+@dir etc/splicefs/server/conf.d
+@dir etc/splicefs/server/shares.d
+@dir etc/splicefs/server
+@dir etc/splicefs
