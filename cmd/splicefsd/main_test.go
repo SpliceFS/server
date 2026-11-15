@@ -260,20 +260,6 @@ func TestFollowLevel(t *testing.T) {
 	}
 }
 
-func TestLogListening(t *testing.T) {
-	t.Parallel()
-	var buf bytes.Buffer
-	logListening(slog.New(slog.NewTextHandler(&buf, nil)), []net.Addr{
-		&net.TCPAddr{IP: net.IPv4(192, 0, 2, 10), Port: 8480},
-		&net.TCPAddr{IP: net.IPv4(192, 0, 2, 11), Port: 8481},
-	})
-	out := buf.String()
-	if strings.Count(out, "listening") != 2 || !strings.Contains(out, "192.0.2.10:8480") ||
-		!strings.Contains(out, "192.0.2.11:8481") {
-		t.Errorf("log = %q", out)
-	}
-}
-
 // freePort returns a loopback port that nothing listens on.
 func freePort(t *testing.T) int {
 	t.Helper()

@@ -194,17 +194,89 @@ func (b *syncBuffer) waitFor(t *testing.T, text string, count int) {
 	}
 }
 
-// running is a server started with Run.
-type running struct {
-	addrs  []net.Addr
-	cancel context.CancelFunc
-	done   chan error
-	logs   *syncBuffer
-	once   sync.Once
-	err    error
+// listeningLog is a log handler that passes every record on to next and sends the address
+// of each "listening" record on addresses, in the order the server logged them. The address
+// is sent after next has written the record, so a test that received it finds the line in
+// the log. A test learns where a listener is by receiving, never by waiting for time to pass.
+// The channel holds listeningBuffered addresses, so that the server never waits for the test.
+type listeningLog struct {
+	next      slog.Handler
+	addresses chan string
 }
 
-// start runs the server and waits until it is ready. The server is stopped when the test
+// listeningBuffered is more listeners than any test starts.
+const listeningBuffered = 16
+
+func newListeningLog(next slog.Handler) *listeningLog {
+	return &listeningLog{next: next, addresses: make(chan string, listeningBuffered)}
+}
+
+// Enabled lets info records through even when next discards everything, because the
+// "listening" record is one and a test that discards the log still needs its address.
+func (l *listeningLog) Enabled(ctx context.Context, level slog.Level) bool {
+	return level >= slog.LevelInfo || l.next.Enabled(ctx, level)
+}
+
+//nolint:gocritic // slog.Handler fixes the signature
+func (l *listeningLog) Handle(ctx context.Context, record slog.Record) error {
+	err := l.next.Handle(ctx, record)
+	if record.Message == "listening" {
+		record.Attrs(func(attr slog.Attr) bool {
+			if attr.Key == "address" {
+				l.addresses <- attr.Value.String()
+			}
+			return true
+		})
+	}
+	return err
+}
+
+func (l *listeningLog) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &listeningLog{next: l.next.WithAttrs(attrs), addresses: l.addresses}
+}
+
+func (l *listeningLog) WithGroup(name string) slog.Handler {
+	return &listeningLog{next: l.next.WithGroup(name), addresses: l.addresses}
+}
+
+// receive returns the address of the next "listening" record that was not received yet. It
+// waits only for the server to log it, and fails the test if that does not happen within
+// testTimeout.
+func (l *listeningLog) receive(t *testing.T) string {
+	t.Helper()
+	select {
+	case address := <-l.addresses:
+		return address
+	case <-time.After(testTimeout):
+		t.Fatal("the server did not log a listening address in time")
+		return ""
+	}
+}
+
+// assertNotListening fails the test if the server logged a listening address that the test
+// did not receive. A test calls it after the step that could have logged one has returned,
+// so a record that was ever going to come is already there.
+func assertNotListening(t *testing.T, listening *listeningLog) {
+	t.Helper()
+	select {
+	case address := <-listening.addresses:
+		t.Errorf("the server logged that it listens on %s", address)
+	default:
+	}
+}
+
+// running is a server started with Run.
+type running struct {
+	addrs     []string // where the listeners of the configuration are, in its order
+	listening *listeningLog
+	cancel    context.CancelFunc
+	done      chan error
+	logs      *syncBuffer
+	once      sync.Once
+	err       error
+}
+
+// start runs the server and waits until it is serving. The server is stopped when the test
 // ends, if the test has not already stopped it.
 func start(t *testing.T, fix *fixture) *running {
 	t.Helper()
@@ -216,21 +288,23 @@ func startWith(t *testing.T, fix *fixture, adjust func(*Options)) *running {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &running{cancel: cancel, done: make(chan error, 1), logs: newSyncBuffer()}
-	ready := make(chan []net.Addr, 1)
-	opts := Options{
-		Version: "test",
-		Logger:  slog.New(slog.NewTextHandler(r.logs, nil)),
-		Ready:   func(addrs []net.Addr) { ready <- addrs },
-	}
+	r.listening = newListeningLog(slog.NewTextHandler(r.logs, nil))
+	opts := Options{Version: "test", Logger: slog.New(r.listening)}
 	if adjust != nil {
 		adjust(&opts)
 	}
 	go func() { r.done <- Run(ctx, fix.cfg, fix.state, opts) }()
-	select {
-	case r.addrs = <-ready:
-	case err := <-r.done:
-		cancel()
-		t.Fatalf("Run returned before it was ready: %v", err)
+	for range fix.cfg.Listen {
+		select {
+		case address := <-r.listening.addresses:
+			r.addrs = append(r.addrs, address)
+		case err := <-r.done:
+			cancel()
+			t.Fatalf("Run returned before every listener was serving: %v", err)
+		case <-time.After(testTimeout):
+			cancel()
+			t.Fatalf("not every listener is serving in time:\n%s", r.logs)
+		}
 	}
 	t.Cleanup(func() { r.stopForCleanup() })
 	return r
@@ -254,7 +328,7 @@ func (r *running) stopForCleanup() {
 
 // url returns the plain HTTP URL of path on the first listener.
 func (r *running) url(path string) string {
-	return "http://" + r.addrs[0].String() + path
+	return "http://" + r.addrs[0] + path
 }
 
 // certFiles is a certificate and key on disk, and a pool that trusts the certificate.

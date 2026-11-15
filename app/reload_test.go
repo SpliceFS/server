@@ -285,7 +285,7 @@ func TestReloadChangesTheShares(t *testing.T) {
 	addAdmin(t, fix)
 	media, extra := fix.cfg.Shares["media"], extraShare(t, fix)
 	reloader := startReloading(t, fix)
-	base := "http://" + reloader.addrs[0].String()
+	base := "http://" + reloader.addrs[0]
 	expectShares(t, base, http.StatusOK, http.StatusNotFound)
 
 	steps := []shareStep{
@@ -325,7 +325,7 @@ func TestReloadAddsAListener(t *testing.T) {
 	}
 	reloader.apply(t, reconfigured(fix, []config.Endpoint{fix.cfg.Listen[0], added}, fix.cfg.Shares))
 	servesPlain(t, address)
-	servesPlain(t, reloader.addrs[0].String())
+	servesPlain(t, reloader.addrs[0])
 	if err := reloader.stop(); err != nil {
 		t.Errorf("Run = %v", err)
 	}
@@ -339,7 +339,7 @@ func TestReloadRemovesAListenerAndKeepsTheOthers(t *testing.T) {
 	fix := newFixture(t)
 	fix.cfg.Listen = []config.Endpoint{fix.cfg.Listen[0], freeEndpoint(t)}
 	reloader := startReloading(t, fix)
-	kept, removed := reloader.addrs[0].String(), reloader.addrs[1].String()
+	kept, removed := reloader.addrs[0], reloader.addrs[1]
 	servesPlain(t, removed)
 
 	reloader.apply(t, reconfigured(fix, fix.cfg.Listen[:1], fix.cfg.Shares))
@@ -359,7 +359,7 @@ func TestReloadChangesTheTLSOfAKeptListener(t *testing.T) {
 	fix := newFixture(t)
 	filesA, filesB := selfSigned(t), selfSigned(t)
 	reloader := startReloading(t, fix)
-	address := reloader.addrs[0].String()
+	address := reloader.addrs[0]
 	reload := func(entry config.Endpoint) {
 		t.Helper()
 		reloader.apply(t, reconfigured(fix, []config.Endpoint{entry}, fix.cfg.Shares))
@@ -397,7 +397,7 @@ func TestReloadKeepsServingWhenLoadFails(t *testing.T) {
 	fix := newFixture(t)
 	addAdmin(t, fix)
 	reloader := startReloading(t, fix)
-	base := "http://" + reloader.addrs[0].String()
+	base := "http://" + reloader.addrs[0]
 
 	reloader.refuse(t, loaded{err: errors.New("configuration folder is unreadable")})
 	logs := reloader.logs.String()
@@ -406,7 +406,7 @@ func TestReloadKeepsServingWhenLoadFails(t *testing.T) {
 		t.Errorf("the failure is not logged:\n%s", logs)
 	}
 	expectShares(t, base, http.StatusOK, http.StatusNotFound)
-	servesPlain(t, reloader.addrs[0].String())
+	servesPlain(t, reloader.addrs[0])
 
 	// The server still reloads after a refusal.
 	reloader.apply(t, reconfigured(fix, fix.cfg.Listen, map[string]config.Share{"extra": extraShare(t, fix)}))
@@ -486,7 +486,7 @@ func TestReloadRefusesAConfigurationThatCannotBeApplied(t *testing.T) {
 			fix := newFixture(t)
 			addAdmin(t, fix)
 			reloader := startReloading(t, fix)
-			base := "http://" + reloader.addrs[0].String()
+			base := "http://" + reloader.addrs[0]
 			got := tt.plan(t, fix, map[string]config.Share{"extra": extraShare(t, fix)})
 
 			reloader.refuse(t, loaded{cfg: got.cfg})
@@ -499,7 +499,7 @@ func TestReloadRefusesAConfigurationThatCannotBeApplied(t *testing.T) {
 					t.Errorf("%s was opened for the configuration and is still open", address)
 				}
 			}
-			servesPlain(t, reloader.addrs[0].String())
+			servesPlain(t, reloader.addrs[0])
 			expectShares(t, base, http.StatusOK, http.StatusNotFound)
 			if err := reloader.stop(); err != nil {
 				t.Errorf("Run = %v", err)
@@ -518,7 +518,7 @@ func TestReloadWithoutAppliedCallback(t *testing.T) {
 	reloader.send(t, loaded{cfg: reconfigured(fix, fix.cfg.Listen, next)})
 	// Without the callback the log is the only sign that the reload is done.
 	reloader.logs.waitFor(t, "configuration applied", 1)
-	expectShares(t, "http://"+reloader.addrs[0].String(), http.StatusNotFound, http.StatusOK)
+	expectShares(t, "http://"+reloader.addrs[0], http.StatusNotFound, http.StatusOK)
 	if err := reloader.stop(); err != nil {
 		t.Errorf("Run = %v", err)
 	}
