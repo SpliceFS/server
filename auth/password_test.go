@@ -68,6 +68,9 @@ func TestHashPasswordRoundTrip(t *testing.T) {
 // TestHashPasswordUsesProductionCost is the only test that pays the production cost. It
 // proves that HashPassword hashes with the documented parameters and that a verifier
 // accepts the result.
+// TestHashPasswordUsesProductionCost is the one test that pays for a production hash. It
+// does not verify the hash again: VerifyPassword takes its cost from the string, so the
+// cheap round trip already proves that path.
 func TestHashPasswordUsesProductionCost(t *testing.T) {
 	t.Parallel()
 	hash, err := HashPassword("correct horse", bytes.NewReader([]byte("0123456789abcdef")))
@@ -76,10 +79,6 @@ func TestHashPasswordUsesProductionCost(t *testing.T) {
 	}
 	if got := strings.Split(hash, "$")[3]; got != "m=65536,t=3,p=4" {
 		t.Errorf("parameters = %q, want m=65536,t=3,p=4", got)
-	}
-	ok, err := VerifyPassword(hash, "correct horse")
-	if err != nil || !ok {
-		t.Fatalf("verify = %v, %v", ok, err)
 	}
 }
 
