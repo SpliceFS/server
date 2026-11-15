@@ -6,6 +6,10 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.19] - 2026-11-15
+
+- Internal: the password tests hash at the production cost only once.
+
 ## [0.5.18] - 2026-11-15
 
 - A file in a data directory that is replaced with one of the same size and modification time is now
