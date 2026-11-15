@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"testing"
 	"testing/iotest"
+	"time"
 
 	"github.com/SpliceFS/server/auth"
 	"github.com/SpliceFS/server/config"
@@ -377,15 +378,19 @@ func startServer(
 			prepare(setup)
 		}
 		var err error
-		server, err = tryStartServer(ctx, setup)
+		server, err = tryStartServer(ctx, setup, startLimit)
 		return err
 	})
 	return setup, server
 }
 
+// startLimit is how long a start may take before the test fails. It only turns a server that
+// never logs "listening" and never stops into a failure with a message; it orders nothing.
+const startLimit = 10 * time.Second
+
 // tryStartServer runs the server in the background and waits until it listens. It returns the
-// error of a server that stopped first.
-func tryStartServer(ctx context.Context, setup serverSetup) (runningServer, error) {
+// error of a server that stopped first, or of one that did neither within limit.
+func tryStartServer(ctx context.Context, setup serverSetup, limit time.Duration) (runningServer, error) {
 	logs := newWatchedLog()
 	status := make(chan int, 1)
 	go func() {
@@ -397,6 +402,9 @@ func tryStartServer(ctx context.Context, setup serverSetup) (runningServer, erro
 		return runningServer{logs: logs, status: status}, nil
 	case code := <-status:
 		return runningServer{}, exitedBeforeListening(code, logs.String())
+	case <-time.After(limit):
+		return runningServer{}, fmt.Errorf(
+			"the server did not log listening and did not stop within %s:\n%s", limit, logs)
 	}
 }
 
@@ -452,7 +460,7 @@ func TestAServerThatStopsBeforeItListensReportsWhetherThePortWasTaken(t *testing
 			t.Parallel()
 			setup := setUpServer(t, tt.port)
 			tt.mutate(t, setup)
-			_, err := tryStartServer(context.Background(), setup)
+			_, err := tryStartServer(context.Background(), setup, startLimit)
 			if err == nil {
 				t.Fatal("the server started")
 			}
@@ -460,6 +468,31 @@ func TestAServerThatStopsBeforeItListensReportsWhetherThePortWasTaken(t *testing
 				t.Errorf("address in use = %v, want %v: %v", got, tt.wantInUse, err)
 			}
 		})
+	}
+}
+
+// noLogLimit is short because the server of the test below never logs what the start waits for.
+const noLogLimit = 50 * time.Millisecond
+
+// A server that neither logs that it listens nor stops has to fail the test with a message
+// that says so, and not leave it to the time limit of the whole test binary. The server here
+// logs errors only, and "listening" is an info record, so it never writes it.
+func TestAServerThatNeverLogsListeningFailsTheStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	var failure error
+	porttest.Try(t, func(port int) error {
+		setup := setUpServer(t, port)
+		writeFiles(t, setup.configDir, map[string]string{"conf.d/20-quiet.yaml": "log:\n  level: error\n"})
+		_, failure = tryStartServer(ctx, setup, noLogLimit)
+		if errors.Is(failure, syscall.EADDRINUSE) {
+			return failure
+		}
+		return nil
+	})
+	if failure == nil || !strings.Contains(failure.Error(), "listening") {
+		t.Errorf("the start failed with %v, want an error that says the server never logged listening", failure)
 	}
 }
 
