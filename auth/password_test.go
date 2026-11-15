@@ -18,6 +18,12 @@ func smallHash(password string) string {
 		phcEncoding().EncodeToString(salt), phcEncoding().EncodeToString(key))
 }
 
+// cheapCost is the cost of every hash these tests create. The hashing code behaves the same
+// at any cost, and only TestHashPasswordUsesProductionCost checks the production cost.
+func cheapCost() cost {
+	return cost{time: 1, memory: 8, threads: 1}
+}
+
 type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("entropy exhausted") }
@@ -25,12 +31,12 @@ func (failingReader) Read([]byte) (int, error) { return 0, errors.New("entropy e
 func TestHashPasswordFormat(t *testing.T) {
 	t.Parallel()
 	salt := []byte("0123456789abcdef")
-	hash, err := HashPassword("correct horse", bytes.NewReader(salt))
+	hash, err := hashWith(cheapCost(), "correct horse", bytes.NewReader(salt))
 	if err != nil {
 		t.Fatal(err)
 	}
 	fields := strings.Split(hash, "$")
-	if len(fields) != 6 || fields[1] != "argon2id" || fields[2] != "v=19" || fields[3] != "m=65536,t=3,p=4" {
+	if len(fields) != 6 || fields[1] != "argon2id" || fields[2] != "v=19" || fields[3] != "m=8,t=1,p=1" {
 		t.Fatalf("unexpected format: %q", hash)
 	}
 	if got := phcEncoding().EncodeToString(salt); fields[4] != got {
@@ -49,7 +55,7 @@ func isUnpaddedKey(field string) bool {
 
 func TestHashPasswordRoundTrip(t *testing.T) {
 	t.Parallel()
-	hash, err := HashPassword("correct horse", bytes.NewReader([]byte("0123456789abcdef")))
+	hash, err := hashWith(cheapCost(), "correct horse", bytes.NewReader([]byte("0123456789abcdef")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,19 +65,37 @@ func TestHashPasswordRoundTrip(t *testing.T) {
 	}
 }
 
+// TestHashPasswordUsesProductionCost is the only test that pays the production cost. It
+// proves that HashPassword hashes with the documented parameters and that a verifier
+// accepts the result.
+func TestHashPasswordUsesProductionCost(t *testing.T) {
+	t.Parallel()
+	hash, err := HashPassword("correct horse", bytes.NewReader([]byte("0123456789abcdef")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Split(hash, "$")[3]; got != "m=65536,t=3,p=4" {
+		t.Errorf("parameters = %q, want m=65536,t=3,p=4", got)
+	}
+	ok, err := VerifyPassword(hash, "correct horse")
+	if err != nil || !ok {
+		t.Fatalf("verify = %v, %v", ok, err)
+	}
+}
+
 func TestHashPasswordErrors(t *testing.T) {
 	t.Parallel()
-	if _, err := HashPassword("", bytes.NewReader(make([]byte, 16))); !errors.Is(err, errEmptyPassword) {
+	if _, err := hashWith(cheapCost(), "", bytes.NewReader(make([]byte, 16))); !errors.Is(err, errEmptyPassword) {
 		t.Errorf("empty password: err = %v, want errEmptyPassword", err)
 	}
-	_, err := HashPassword("secret-password", failingReader{})
+	_, err := hashWith(cheapCost(), "secret-password", failingReader{})
 	if err == nil {
 		t.Fatal("failing reader: want error")
 	}
 	if strings.Contains(err.Error(), "secret-password") {
 		t.Errorf("error leaks the password: %v", err)
 	}
-	if _, err := HashPassword("secret-password", bytes.NewReader(make([]byte, 5))); err == nil {
+	if _, err := hashWith(cheapCost(), "secret-password", bytes.NewReader(make([]byte, 5))); err == nil {
 		t.Error("short random source: want error")
 	}
 }
