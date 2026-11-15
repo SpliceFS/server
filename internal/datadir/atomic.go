@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/SpliceFS/server/internal/uuid7"
 )
 
 // tempPrefix starts with a dot so that Dir ignores a temporary file left by a crash.
@@ -39,22 +41,6 @@ func writeTemp(f *os.File, data []byte, mode os.FileMode) error {
 	return errors.Join(f.Chmod(mode), writeErr, f.Sync(), f.Close())
 }
 
-// IsNodeID reports whether s is a node id: 16 lowercase hexadecimal characters.
-func IsNodeID(s string) bool {
-	if len(s) != nodeIDLength {
-		return false
-	}
-	for i := range len(s) {
-		if c := s[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
-}
-
-// nodeIDLength is the length of a node id.
-const nodeIDLength = 16
-
 // FileExt is the extension of the files that Dir reads.
 const FileExt = ".yaml"
 
@@ -64,8 +50,8 @@ func NodeFile(id string) string {
 	return id + FileExt
 }
 
-// NodeOfFile returns the node id in a file name of the form "<node id>.yaml".
+// NodeOfFile returns the node id, a UUIDv7, in a file name of the form "<node id>.yaml".
 func NodeOfFile(name string) (string, bool) {
 	id, ok := strings.CutSuffix(name, FileExt)
-	return id, ok && IsNodeID(id)
+	return id, ok && uuid7.Valid(id)
 }

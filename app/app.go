@@ -119,7 +119,7 @@ func newHandler(
 	if err := data.makeFolders(); err != nil {
 		return nil, err
 	}
-	nodeID, err := data.nodeID(rand.Reader)
+	nodeID, err := data.nodeID(time.Now, rand.Reader)
 	if err != nil {
 		return nil, err
 	}
