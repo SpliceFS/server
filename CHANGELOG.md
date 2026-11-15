@@ -6,6 +6,10 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.21] - 2026-11-15
+
+- Internal: proposed design for identity, keys and encryption.
+
 ## [0.5.20] - 2026-11-15
 
 - A listener added by a configuration reload now logs "listening" with its address, as listeners do
