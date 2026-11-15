@@ -23,8 +23,7 @@ import (
 func TestServerStopsOnSignal(t *testing.T) {
 	for name, sig := range map[string]syscall.Signal{"SIGTERM": syscall.SIGTERM, "SIGINT": syscall.SIGINT} {
 		t.Run(name, func(t *testing.T) {
-			setup := setUpServer(t)
-			server := startServer(context.Background(), t, setup)
+			setup, server := startServer(context.Background(), t, nil)
 			if body := fetch(t, setup.healthURL()); body == "" {
 				t.Error("empty health response")
 			}
@@ -70,12 +69,12 @@ type reloadServer struct {
 // startReloadServer starts a server whose user may use every share.
 func startReloadServer(t *testing.T) reloadServer {
 	t.Helper()
-	setup := setUpServer(t)
-	writeFiles(t, setup.stateDir, map[string]string{
-		"shared/users/alice.yaml": "password_hash: \"" + lowCostHash("secret") + "\"\nshares: [\"*\"]\n",
-	})
 	ctx, cancel := context.WithCancel(context.Background())
-	server := startServer(ctx, t, setup)
+	setup, server := startServer(ctx, t, func(setup serverSetup) {
+		writeFiles(t, setup.stateDir, map[string]string{
+			"shared/users/alice.yaml": "password_hash: \"" + lowCostHash("secret") + "\"\nshares: [\"*\"]\n",
+		})
+	})
 	// A stopped server no longer asks for SIGHUP, so no later test reloads it.
 	t.Cleanup(func() {
 		cancel()
