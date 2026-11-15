@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.15] - 2026-11-15
+
+- Internal: the FreeBSD test proves a reload was applied before it checks the service. Nothing
+  changes for users.
+
 ## [0.5.14] - 2026-11-14
 
 - Internal: the file identity code moves to its own code folder. Nothing changes for users.
