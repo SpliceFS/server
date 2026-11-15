@@ -37,6 +37,7 @@ linters:
             - github.com/SpliceFS/common
             - go.yaml.in/yaml/v3
             - golang.org/x/crypto
+            - golang.org/x/sys
     errcheck:
       check-type-assertions: true
       check-blank: true

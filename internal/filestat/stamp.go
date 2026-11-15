@@ -26,6 +26,17 @@ type Stamp struct {
 	Mode fs.FileMode
 }
 
+// Stat reads the Stamp of the file at path with one system call, whatever its size. It
+// follows a symbolic link and fails for the same reasons os.Stat does, with an error that
+// names the path and wraps the cause.
+func Stat(path string) (Stamp, error) {
+	stamp, err := systemStat(path)
+	if err != nil {
+		return Stamp{}, &fs.PathError{Op: "stat", Path: path, Err: err}
+	}
+	return stamp, nil
+}
+
 // fileMode converts the mode bits of a stat result to the type and permission bits Go uses,
 // the way os.Stat does, so a Stamp agrees with the FileInfo of the same file.
 func fileMode(raw uint32) fs.FileMode {
