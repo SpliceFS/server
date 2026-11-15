@@ -36,18 +36,15 @@ pull_image() {
 # Split it into core (1.2.3), pre (rc.1, may be empty) and extra (dirty, or empty), which is
 # what makes a build something other than the released version. Anything else is refused: a
 # version that is not in this form would be packaged under a number that sorts wrongly.
-tag="$VERSION"
+release="${VERSION%-dirty}"
 extra=""
-case "$tag" in
-    *-dirty) extra=dirty; tag="${tag%-dirty}" ;;
-    *) ;; # a clean tree has nothing to strip
-esac
-printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-.+)?$' ||
+if [ "$release" != "$VERSION" ]; then extra=dirty; fi
+printf '%s' "$release" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-.+)?$' ||
     fail "version $VERSION is not vMAJOR.MINOR.PATCH[-pre-release]"
-core="${tag#v}"
+core="${release#v}"
 core="${core%%-*}"
 pre=""
-if [ "$core" != "${tag#v}" ]; then pre="${tag#v"$core"-}"; fi
+if [ "$core" != "${release#v}" ]; then pre="${release#v"$core"-}"; fi
 # Alpine takes only these pre-release words, so nothing else can be published.
 if [ -n "$pre" ]; then
     printf '%s' "$pre" | grep -Eq '^(alpha|beta|pre|rc)(\.?[0-9]+)?$' ||
