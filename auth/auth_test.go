@@ -226,12 +226,13 @@ func TestLoginWithRealPasswordHash(t *testing.T) {
 
 func TestDummyHashHasRealParameters(t *testing.T) {
 	t.Parallel()
-	h, err := parseHash(dummyHash)
+	got, err := parseHash(dummyHash)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.memory != hashMemory || h.time != hashTime || h.threads != hashThreads || len(h.key) != keyLength {
-		t.Errorf("dummy hash parameters = %+v", h)
+	want := productionCost()
+	if got.memory != want.memory || got.time != want.time || got.threads != want.threads || len(got.key) != keyLength {
+		t.Errorf("dummy hash parameters = %+v", got)
 	}
 }
 

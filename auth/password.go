@@ -12,14 +12,30 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-// Argon2id parameters for new hashes: the second recommended parameter set of RFC 9106.
+// Argon2id cost of new hashes: the second recommended parameter set of RFC 9106.
 const (
-	hashTime    = 3
-	hashMemory  = 64 * 1024 // KiB, so 64 MiB
-	hashThreads = 4
-	saltLength  = 16
-	keyLength   = 32
+	productionTime    = 3
+	productionMemory  = 64 * 1024 // KiB, so 64 MiB
+	productionThreads = 4
 )
+
+const (
+	saltLength = 16
+	keyLength  = 32
+)
+
+// cost is the set of argon2id parameters a hash is computed with.
+type cost struct {
+	time    uint32
+	memory  uint32 // KiB
+	threads uint8
+}
+
+// productionCost is the cost of new hashes. It is a function so that no package variable
+// exists for anything to change.
+func productionCost() cost {
+	return cost{time: productionTime, memory: productionMemory, threads: productionThreads}
+}
 
 // Upper bounds accepted when verifying, so that a hostile user file cannot make the
 // server allocate or compute without limit.
@@ -60,6 +76,12 @@ type hashParams struct {
 // HashPassword returns the argon2id hash of password as a PHC string. The salt is read
 // from random. An empty password is an error.
 func HashPassword(password string, random io.Reader) (string, error) {
+	return hashWith(productionCost(), password, random)
+}
+
+// hashWith is the one implementation of HashPassword. It takes the cost as an argument so
+// that tests can hash cheaply without a way to weaken the production cost.
+func hashWith(costs cost, password string, random io.Reader) (string, error) {
 	if password == "" {
 		return "", fmt.Errorf("hash password: %w", errEmptyPassword)
 	}
@@ -67,9 +89,9 @@ func HashPassword(password string, random io.Reader) (string, error) {
 	if _, err := io.ReadFull(random, salt); err != nil {
 		return "", fmt.Errorf("hash password: read salt: %w", err)
 	}
-	key := argon2.IDKey([]byte(password), salt, hashTime, hashMemory, hashThreads, keyLength)
+	key := argon2.IDKey([]byte(password), salt, costs.time, costs.memory, costs.threads, keyLength)
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
-		argon2.Version, hashMemory, hashTime, hashThreads,
+		argon2.Version, costs.memory, costs.time, costs.threads,
 		phcEncoding().EncodeToString(salt), phcEncoding().EncodeToString(key)), nil
 }
 
