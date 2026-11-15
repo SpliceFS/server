@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -226,7 +225,6 @@ func runServer(ctx context.Context, opts options, defaults defaultDirs, stderr i
 	err = app.Run(ctx, cfg, stateDir, app.Options{
 		Version: version.String(),
 		Logger:  logger,
-		Ready:   func(addrs []net.Addr) { logListening(logger, addrs) },
 		Reload:  reload,
 		Load:    func() (*config.Config, error) { return config.LoadDir(configDir) },
 		Applied: followLevel(&level),
@@ -235,13 +233,6 @@ func runServer(ctx context.Context, opts options, defaults defaultDirs, stderr i
 		return fail(stderr, err)
 	}
 	return exitOK
-}
-
-// logListening tells the operator where the server is reachable.
-func logListening(logger *slog.Logger, addrs []net.Addr) {
-	for _, addr := range addrs {
-		logger.Info("listening", slog.String("address", addr.String()))
-	}
 }
 
 // levelOf returns the log level the settings name. The configuration loader has already

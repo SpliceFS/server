@@ -10,12 +10,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
-	"net"
+	"log/slog"
 	"net/http"
-	"net/netip"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +21,7 @@ import (
 	"github.com/SpliceFS/common/wire"
 	"github.com/SpliceFS/server/config"
 	"github.com/SpliceFS/server/internal/datadir"
+	"github.com/SpliceFS/server/internal/porttest"
 	"github.com/SpliceFS/server/share"
 )
 
@@ -259,7 +258,7 @@ func TestShutdownClosesThePortAndTheLogHidesSecrets(t *testing.T) {
 	if err := session.srv.stop(); err != nil {
 		t.Fatalf("Run returned %v after cancellation, want nil", err)
 	}
-	if isOpen(session.srv.addrs[0].String()) {
+	if isOpen(session.srv.addrs[0]) {
 		t.Error("the port is still open after Run returned")
 	}
 	logs := session.srv.logs.String()
@@ -297,16 +296,13 @@ func startListenerKinds(t *testing.T) listenerKinds {
 		configEndpoint(nil, false),
 	}
 	srv := start(t, fix)
-	if len(srv.addrs) != 3 {
-		t.Fatalf("Ready got %d addresses, want 3", len(srv.addrs))
-	}
 	return listenerKinds{srv: srv, state: fix.state, configured: files.pool}
 }
 
 // health requests the health of the listener at index, as a client that trusts pool.
 func (k listenerKinds) health(t *testing.T, scheme string, index int, pool *x509.CertPool) response {
 	t.Helper()
-	url := scheme + "://" + k.srv.addrs[index].String() + "/api/v1/health"
+	url := scheme + "://" + k.srv.addrs[index] + "/api/v1/health"
 	return call(t, client(pool), http.MethodGet, url, "", nil, "")
 }
 
@@ -341,7 +337,7 @@ func TestListenerWithTheOwnCertificate(t *testing.T) {
 func TestTLSListenerRefusesAClientThatDoesNotTrustTheCertificate(t *testing.T) {
 	t.Parallel()
 	kinds := startListenerKinds(t)
-	url := "https://" + kinds.srv.addrs[configuredListener].String() + "/api/v1/health"
+	url := "https://" + kinds.srv.addrs[configuredListener] + "/api/v1/health"
 	untrusted, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, http.NoBody)
 	if err != nil {
 		t.Fatal(err)
@@ -372,14 +368,12 @@ func TestRunWithoutShares(t *testing.T) {
 	}
 }
 
-func TestRunWithoutLoggerOrReadyCallback(t *testing.T) {
+func TestRunWithoutLogger(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := Run(ctx, fix.cfg, fix.state, Options{}); err != nil {
-		t.Errorf("Run = %v", err)
-	}
+	onFreePorts(t, fix, func() error { return Run(ctx, fix.cfg, fix.state, Options{}) })
 }
 
 func TestRunFailsAtStart(t *testing.T) {
@@ -428,47 +422,57 @@ func TestRunFailsAtStart(t *testing.T) {
 			t.Parallel()
 			fix := newFixture(t)
 			tt.mutate(fix)
-			ready := false
-			opts := Options{Ready: func([]net.Addr) { ready = true }}
-			err := Run(context.Background(), fix.cfg, fix.state, opts)
+			givePorts(t, fix)
+			listening := newEventLog(slog.DiscardHandler)
+			err := Run(context.Background(), fix.cfg, fix.state, Options{Logger: slog.New(listening)})
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("Run = %v, want an error containing %q", err, tt.want)
 			}
-			if ready {
-				t.Error("Ready was called")
-			}
+			assertNotListening(t, listening)
 		})
+	}
+}
+
+// Every listener of the configuration logs the address it was started on, which is the one
+// the test chose for it.
+func TestEveryListenerLogsItsAddressAtStart(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t)
+	fix.cfg.Listen = []config.Endpoint{configEndpoint(nil, true), configEndpoint(nil, true)}
+	srv := start(t, fix)
+
+	if len(srv.addrs) != len(fix.cfg.Listen) {
+		t.Fatalf("%d listening records for %d listeners", len(srv.addrs), len(fix.cfg.Listen))
+	}
+	for i, address := range srv.addrs {
+		if want := listenAddress(fix.cfg.Listen[i]); fix.cfg.Listen[i].Port == 0 || address != want {
+			t.Errorf("listening address = %q, want %q on a port the test chose", address, want)
+		}
+		servesPlain(t, address)
+		if logs := srv.logs.String(); !strings.Contains(logs, "msg=listening address="+address) {
+			t.Errorf("the log has no listening line for %s:\n%s", address, logs)
+		}
 	}
 }
 
 func TestRunFailsWhenAPortIsTaken(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t)
-	var listenConfig net.ListenConfig
-	taken, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { closeQuietly(taken) })
-	free, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	freePort := portOf(t, free.Addr())
-	closeQuietly(free)
+	taken := plainOn(porttest.Hold(t))
+	events := newEventLog(slog.DiscardHandler)
+	// The free address comes first, so it is open when the taken one fails.
+	free, err := failsAfterOpening(t, func(free config.Endpoint) error {
+		fix.cfg.Listen = []config.Endpoint{free, taken}
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		return Run(ctx, fix.cfg, fix.state, Options{Logger: slog.New(events)})
+	})
 
-	loopback := netip.MustParseAddr("127.0.0.1")
-	takenPort := portOf(t, taken.Addr())
-	fix.cfg.Listen = []config.Endpoint{
-		{Listener: config.Listener{Address: loopback, Port: freePort}, Plain: true},
-		{Listener: config.Listener{Address: loopback, Port: takenPort}, Plain: true},
+	if want := "listen on " + listenAddress(taken); !strings.Contains(err.Error(), want) {
+		t.Errorf("Run = %v, want an error containing %q", err, want)
 	}
-	opts := Options{Ready: func([]net.Addr) { t.Error("Ready was called") }}
-	err = Run(context.Background(), fix.cfg, fix.state, opts)
-	if err == nil || !strings.Contains(err.Error(), "listen on 127.0.0.1:") {
-		t.Fatalf("Run = %v", err)
-	}
-	if isOpen(net.JoinHostPort("127.0.0.1", strconv.Itoa(freePort))) {
+	assertNotListening(t, events)
+	if isOpen(listenAddress(free)) {
 		t.Error("the listener opened before the failure was left open")
 	}
 }

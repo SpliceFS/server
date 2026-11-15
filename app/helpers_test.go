@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,14 +16,17 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"golang.org/x/crypto/argon2"
 
 	"github.com/SpliceFS/server/config"
+	"github.com/SpliceFS/server/internal/porttest"
 )
 
 // fixture is a complete server: a configuration directory loaded the way the program
@@ -86,16 +90,6 @@ func respondText(w io.Writer, text string) {
 	_, _ = io.WriteString(w, text) //nolint:errcheck // see above
 }
 
-// portOf returns the port of a TCP address.
-func portOf(t *testing.T, addr net.Addr) int {
-	t.Helper()
-	tcp, ok := addr.(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("%v is a %T, not a TCP address", addr, addr)
-	}
-	return tcp.Port
-}
-
 // loadConfig writes the files to a new configuration directory and loads it. A test needs
 // a free port, which the validation refuses to take as 0, so the listener is replaced.
 func loadConfig(t *testing.T, conf, shares map[string]string) *config.Config {
@@ -115,12 +109,80 @@ func loadConfig(t *testing.T, conf, shares map[string]string) *config.Config {
 	return cfg
 }
 
-// configEndpoint is a listener entry on a free loopback port.
+// configEndpoint is a listener entry on the loopback address, with its port left unset. The
+// server of a test is started through startWith, which gives every listener a port that
+// porttest chose, and a test that runs the server by itself gives them with onFreePorts.
 func configEndpoint(tlsFiles *config.TLS, plain bool) config.Endpoint {
 	return config.Endpoint{
 		Listener: config.Listener{Address: netip.MustParseAddr("127.0.0.1"), TLS: tlsFiles},
 		Plain:    plain,
 	}
+}
+
+// withPorts returns entries with the given ports, one for each. The entries it is given stay
+// as they are.
+func withPorts(entries []config.Endpoint, ports []int) []config.Endpoint {
+	given := slices.Clone(entries)
+	for i := range given {
+		given[i].Port = ports[i]
+	}
+	return given
+}
+
+// onFreePorts gives the listeners of the fixture ports that porttest chose and calls attempt,
+// which runs the server with them and returns why it did not start. When the failure is that
+// a port is in use, the listeners get other ports and attempt runs again. The fixture keeps
+// the ports of the attempt that succeeded.
+func onFreePorts(t *testing.T, fix *fixture, attempt func() error) {
+	t.Helper()
+	porttest.TryMany(t, len(fix.cfg.Listen), func(ports []int) error {
+		fix.cfg.Listen = withPorts(fix.cfg.Listen, ports)
+		return attempt()
+	})
+}
+
+// givePorts gives the listeners of the fixture ports for a Run that has to fail before it
+// opens any, so that nothing can take them first.
+func givePorts(t *testing.T, fix *fixture) {
+	t.Helper()
+	ports, err := porttest.PickMany(len(fix.cfg.Listen))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fix.cfg.Listen = withPorts(fix.cfg.Listen, ports)
+}
+
+// plainOn is a plain listener entry on a loopback port. A test that gives a reload a second
+// listener needs a port of its own, because a reload knows a listener by its configured
+// address and port 0 on the loopback address is the one of the fixture.
+func plainOn(port int) config.Endpoint {
+	entry := configEndpoint(nil, true)
+	entry.Port = port
+	return entry
+}
+
+// failsAfterOpening calls attempt with a plain listener entry on a port that nothing holds.
+// The attempt has to fail on purpose, after it opened that entry, and returns its failure. A
+// failure of the entry itself because its port is in use means that another process took the
+// port first, so the attempt is made again on another port. It returns the entry that was
+// open when the attempt failed, and the failure.
+func failsAfterOpening(t *testing.T, attempt func(opened config.Endpoint) error) (config.Endpoint, error) {
+	t.Helper()
+	var opened config.Endpoint
+	var failure error
+	porttest.Try(t, func(port int) error {
+		opened = plainOn(port)
+		failure = attempt(opened)
+		if errors.Is(failure, syscall.EADDRINUSE) &&
+			strings.Contains(failure.Error(), "listen on "+listenAddress(opened)+": ") {
+			return failure
+		}
+		return nil
+	})
+	if failure == nil {
+		t.Fatal("the attempt did not fail")
+	}
+	return opened, failure
 }
 
 // testSettings names the cluster, gives this node its public URL and allows many logins, so
@@ -194,9 +256,108 @@ func (b *syncBuffer) waitFor(t *testing.T, text string, count int) {
 	}
 }
 
+// eventLog is a log handler that passes every record on to next and tells a test about two
+// of them: the address of each "listening" record goes on listening, and the error of each
+// "configuration not applied" record on refusals, in the order the server logged them. A
+// value is sent after next has written the record, so a test that received it finds the line
+// in the log. A test learns what the server did by receiving, never by waiting for time to
+// pass. The channels hold eventBuffered values, so that the server never waits for the test.
+type eventLog struct {
+	next      slog.Handler
+	listening chan string
+	refusals  chan error
+}
+
+// eventBuffered is more of either record than any test causes.
+const eventBuffered = 16
+
+func newEventLog(next slog.Handler) *eventLog {
+	return &eventLog{
+		next:      next,
+		listening: make(chan string, eventBuffered),
+		refusals:  make(chan error, eventBuffered),
+	}
+}
+
+// Enabled lets info records and above through even when next discards everything, because
+// the records of a test are among them and a test that discards the log still needs them.
+func (l *eventLog) Enabled(ctx context.Context, level slog.Level) bool {
+	return level >= slog.LevelInfo || l.next.Enabled(ctx, level)
+}
+
+//nolint:gocritic // slog.Handler fixes the signature
+func (l *eventLog) Handle(ctx context.Context, record slog.Record) error {
+	err := l.next.Handle(ctx, record)
+	switch record.Message {
+	case "listening":
+		l.listening <- attribute(record, "address").String()
+	case "configuration not applied":
+		l.refusals <- errorOf(attribute(record, "error"))
+	default:
+		// Every other record is only logged.
+	}
+	return err
+}
+
+func (l *eventLog) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &eventLog{next: l.next.WithAttrs(attrs), listening: l.listening, refusals: l.refusals}
+}
+
+func (l *eventLog) WithGroup(name string) slog.Handler {
+	return &eventLog{next: l.next.WithGroup(name), listening: l.listening, refusals: l.refusals}
+}
+
+//nolint:gocritic // slog.Record is passed by value everywhere in slog
+func attribute(record slog.Record, key string) slog.Value {
+	var found slog.Value
+	record.Attrs(func(attr slog.Attr) bool {
+		if attr.Key == key {
+			found = attr.Value
+		}
+		return true
+	})
+	return found
+}
+
+// errorOf returns the error a record carries as a value, which is what lets a test ask it
+// what it wraps and not what it says.
+func errorOf(value slog.Value) error {
+	if err, ok := value.Any().(error); ok {
+		return err
+	}
+	return errors.New(value.String())
+}
+
+// nextListening returns the address of the next "listening" record that the test did not
+// receive yet. It waits only for the server to log it, and fails the test if that does not
+// happen within testTimeout.
+func (l *eventLog) nextListening(t *testing.T) string {
+	t.Helper()
+	select {
+	case address := <-l.listening:
+		return address
+	case <-time.After(testTimeout):
+		t.Fatal("the server did not log a listening address in time")
+		return ""
+	}
+}
+
+// assertNotListening fails the test if the server logged a listening address that the test
+// did not receive. A test calls it after the step that could have logged one has returned,
+// so a record that was ever going to come is already there.
+func assertNotListening(t *testing.T, events *eventLog) {
+	t.Helper()
+	select {
+	case address := <-events.listening:
+		t.Errorf("the server logged that it listens on %s", address)
+	default:
+	}
+}
+
 // running is a server started with Run.
 type running struct {
-	addrs  []net.Addr
+	addrs  []string // where the listeners of the configuration are, in its order
+	events *eventLog
 	cancel context.CancelFunc
 	done   chan error
 	logs   *syncBuffer
@@ -204,7 +365,7 @@ type running struct {
 	err    error
 }
 
-// start runs the server and waits until it is ready. The server is stopped when the test
+// start runs the server and waits until it is serving. The server is stopped when the test
 // ends, if the test has not already stopped it.
 func start(t *testing.T, fix *fixture) *running {
 	t.Helper()
@@ -214,26 +375,41 @@ func start(t *testing.T, fix *fixture) *running {
 // startWith is start, with the chance to set more options of Run.
 func startWith(t *testing.T, fix *fixture, adjust func(*Options)) *running {
 	t.Helper()
+	var r *running
+	onFreePorts(t, fix, func() error {
+		var err error
+		r, err = tryStart(t, fix, adjust)
+		return err
+	})
+	return r
+}
+
+// tryStart makes one attempt to start the server with the ports the listeners have. It returns
+// the error of a Run that ended before every listener was serving.
+func tryStart(t *testing.T, fix *fixture, adjust func(*Options)) (*running, error) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &running{cancel: cancel, done: make(chan error, 1), logs: newSyncBuffer()}
-	ready := make(chan []net.Addr, 1)
-	opts := Options{
-		Version: "test",
-		Logger:  slog.New(slog.NewTextHandler(r.logs, nil)),
-		Ready:   func(addrs []net.Addr) { ready <- addrs },
-	}
+	r.events = newEventLog(slog.NewTextHandler(r.logs, nil))
+	opts := Options{Version: "test", Logger: slog.New(r.events)}
 	if adjust != nil {
 		adjust(&opts)
 	}
 	go func() { r.done <- Run(ctx, fix.cfg, fix.state, opts) }()
-	select {
-	case r.addrs = <-ready:
-	case err := <-r.done:
-		cancel()
-		t.Fatalf("Run returned before it was ready: %v", err)
+	for range fix.cfg.Listen {
+		select {
+		case address := <-r.events.listening:
+			r.addrs = append(r.addrs, address)
+		case err := <-r.done:
+			cancel()
+			return nil, fmt.Errorf("run returned before every listener was serving: %w", err)
+		case <-time.After(testTimeout):
+			cancel()
+			t.Fatalf("not every listener is serving in time:\n%s", r.logs)
+		}
 	}
 	t.Cleanup(func() { r.stopForCleanup() })
-	return r
+	return r, nil
 }
 
 // stop cancels the server, waits for Run and returns what it returned. It can be called
@@ -254,7 +430,7 @@ func (r *running) stopForCleanup() {
 
 // url returns the plain HTTP URL of path on the first listener.
 func (r *running) url(path string) string {
-	return "http://" + r.addrs[0].String() + path
+	return "http://" + r.addrs[0] + path
 }
 
 // certFiles is a certificate and key on disk, and a pool that trusts the certificate.

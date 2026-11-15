@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -36,9 +35,6 @@ type Options struct {
 	Version string
 	// Logger receives the server's log. The default discards everything.
 	Logger *slog.Logger
-	// Ready, if set, is called once with the bound address of every listener, in the
-	// order of the configuration, when the server is able to accept connections.
-	Ready func([]net.Addr)
 	// Reload, if set, delivers a signal each time the configuration is to be applied again
 	// without a restart. Load must be set with it.
 	Reload <-chan os.Signal

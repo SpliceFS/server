@@ -8,18 +8,20 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"testing/iotest"
+	"time"
 
 	"github.com/SpliceFS/server/auth"
 	"github.com/SpliceFS/server/config"
+	"github.com/SpliceFS/server/internal/porttest"
 	"github.com/SpliceFS/server/internal/version"
 	"golang.org/x/crypto/argon2"
 )
@@ -260,36 +262,15 @@ func TestFollowLevel(t *testing.T) {
 	}
 }
 
-func TestLogListening(t *testing.T) {
-	t.Parallel()
-	var buf bytes.Buffer
-	logListening(slog.New(slog.NewTextHandler(&buf, nil)), []net.Addr{
-		&net.TCPAddr{IP: net.IPv4(192, 0, 2, 10), Port: 8480},
-		&net.TCPAddr{IP: net.IPv4(192, 0, 2, 11), Port: 8481},
-	})
-	out := buf.String()
-	if strings.Count(out, "listening") != 2 || !strings.Contains(out, "192.0.2.10:8480") ||
-		!strings.Contains(out, "192.0.2.11:8481") {
-		t.Errorf("log = %q", out)
-	}
-}
-
-// freePort returns a loopback port that nothing listens on.
-func freePort(t *testing.T) int {
+// unboundPort is a port for a configuration that no test starts a listening server with, so
+// nothing can take it before the server does.
+func unboundPort(t *testing.T) int {
 	t.Helper()
-	var lc net.ListenConfig
-	listener, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	port, err := porttest.Pick()
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("listener address is a %T, want a TCP address", listener.Addr())
-	}
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return addr.Port
+	return port
 }
 
 // writeFiles creates the files, given by their path below dir, with their content.
@@ -328,12 +309,11 @@ func (setup serverSetup) healthURL() string {
 	return "http://127.0.0.1:" + strconv.Itoa(setup.port) + "/api/v1/health"
 }
 
-// setUpServer writes a configuration directory for a server on a free loopback port, and a
+// setUpServer writes a configuration directory for a server on a loopback port, and a
 // state directory that holds only what an administrator makes (a user). The server makes
 // everything else on its first start, so the tests that need other files write them.
-func setUpServer(t *testing.T) serverSetup {
+func setUpServer(t *testing.T, port int) serverSetup {
 	t.Helper()
-	port := freePort(t)
 	root := t.TempDir()
 	configDir, stateDir := filepath.Join(root, "config"), filepath.Join(root, "state")
 	writeFiles(t, configDir, map[string]string{
@@ -382,9 +362,34 @@ type runningServer struct {
 	status <-chan int // receives the exit status when the server has stopped
 }
 
-// startServer runs the server in the background and waits until it listens.
-func startServer(ctx context.Context, t *testing.T, setup serverSetup) runningServer {
+// startServer sets up a server and runs it in the background on a port that is free, and
+// waits until it listens. prepare, if not nil, is called with the setup before the server
+// starts, for what a test needs besides the standard setup.
+func startServer(
+	ctx context.Context, t *testing.T, prepare func(serverSetup),
+) (serverSetup, runningServer) {
 	t.Helper()
+	var setup serverSetup
+	var server runningServer
+	porttest.Try(t, func(port int) error {
+		setup = setUpServer(t, port)
+		if prepare != nil {
+			prepare(setup)
+		}
+		var err error
+		server, err = tryStartServer(ctx, setup, startLimit)
+		return err
+	})
+	return setup, server
+}
+
+// startLimit is how long a start may take before the test fails. It only turns a server that
+// never logs "listening" and never stops into a failure with a message; it orders nothing.
+const startLimit = 10 * time.Second
+
+// tryStartServer runs the server in the background and waits until it listens. It returns the
+// error of a server that stopped first, or of one that did neither within limit.
+func tryStartServer(ctx context.Context, setup serverSetup, limit time.Duration) (runningServer, error) {
 	logs := newWatchedLog()
 	status := make(chan int, 1)
 	go func() {
@@ -393,18 +398,91 @@ func startServer(ctx context.Context, t *testing.T, setup serverSetup) runningSe
 	}()
 	select {
 	case <-logs.ready:
+		return runningServer{logs: logs, status: status}, nil
 	case code := <-status:
-		t.Fatalf("the server exited with status %d: %s", code, logs)
+		return runningServer{}, exitedBeforeListening(code, logs.String())
+	case <-time.After(limit):
+		return runningServer{}, fmt.Errorf(
+			"the server did not log listening and did not stop within %s:\n%s", limit, logs)
 	}
-	return runningServer{logs: logs, status: status}
+}
+
+// exitedBeforeListening is the error of a server that stopped before it listened. The program
+// reports a failed bind only as text, so the error wraps syscall.EADDRINUSE when the text
+// holds the system's message for it. This is the one place that reads that text.
+func exitedBeforeListening(code int, output string) error {
+	err := fmt.Errorf("the server exited with status %d: %s", code, output)
+	if strings.Contains(output, syscall.EADDRINUSE.Error()) {
+		return errors.Join(err, syscall.EADDRINUSE)
+	}
+	return err
+}
+
+// A bind that failed reaches the output of the program only as text, so the error of a start
+// that failed has to say by its type that the port was taken: that is how porttest.Try knows
+// to try another port.
+func TestAServerThatStopsBeforeItListensReportsWhetherThePortWasTaken(t *testing.T) {
+	t.Parallel()
+	heldPort := porttest.Hold(t)
+	tests := []struct {
+		name      string
+		port      int
+		mutate    func(t *testing.T, setup serverSetup)
+		wantInUse bool
+	}{
+		{"port is taken", heldPort, func(*testing.T, serverSetup) {}, true},
+		{"share directory is missing", unboundPort(t), func(t *testing.T, setup serverSetup) {
+			t.Helper()
+			missing := map[string]string{"shares.d/media.yaml": "path: /nonexistent/media\n"}
+			writeFiles(t, setup.configDir, missing)
+		}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			setup := setUpServer(t, tt.port)
+			tt.mutate(t, setup)
+			_, err := tryStartServer(context.Background(), setup, startLimit)
+			if err == nil {
+				t.Fatal("the server started")
+			}
+			if got := errors.Is(err, syscall.EADDRINUSE); got != tt.wantInUse {
+				t.Errorf("address in use = %v, want %v: %v", got, tt.wantInUse, err)
+			}
+		})
+	}
+}
+
+// noLogLimit is short because the server of the test below never logs what the start waits for.
+const noLogLimit = 50 * time.Millisecond
+
+// A server that neither logs that it listens nor stops has to fail the test with a message
+// that says so, and not leave it to the time limit of the whole test binary. The server here
+// logs errors only, and "listening" is an info record, so it never writes it.
+func TestAServerThatNeverLogsListeningFailsTheStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	var failure error
+	porttest.Try(t, func(port int) error {
+		setup := setUpServer(t, port)
+		writeFiles(t, setup.configDir, map[string]string{"conf.d/20-quiet.yaml": "log:\n  level: error\n"})
+		_, failure = tryStartServer(ctx, setup, noLogLimit)
+		if errors.Is(failure, syscall.EADDRINUSE) {
+			return failure
+		}
+		return nil
+	})
+	if failure == nil || !strings.Contains(failure.Error(), "listening") {
+		t.Errorf("the start failed with %v, want an error that says the server never logged listening", failure)
+	}
 }
 
 func TestServerRunsUntilCancelled(t *testing.T) {
 	t.Parallel()
-	setup := setUpServer(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	server := startServer(ctx, t, setup)
+	setup, server := startServer(ctx, t, nil)
 
 	body := fetch(t, setup.healthURL())
 	want := `"version":"` + version.String() + `"`
@@ -414,6 +492,10 @@ func TestServerRunsUntilCancelled(t *testing.T) {
 	cancel()
 	if code := <-server.status; code != exitOK {
 		t.Errorf("exit status = %d, want 0\n%s", code, server.logs)
+	}
+	if want := `"msg":"listening","address":"127.0.0.1:` + strconv.Itoa(setup.port) + `"`; !strings.Contains(
+		server.logs.String(), want) {
+		t.Errorf("the log has no %s:\n%s", want, server.logs)
 	}
 	if !strings.Contains(server.logs.String(), `"msg":"request"`) {
 		t.Errorf("no access log:\n%s", server.logs)
@@ -460,7 +542,7 @@ func TestServerFailures(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			setup := setUpServer(t)
+			setup := setUpServer(t, unboundPort(t))
 			tt.mutate(t, setup.configDir, setup.stateDir)
 			var out, errOut bytes.Buffer
 			args := []string{"--config", setup.configDir, "--state", setup.stateDir}
@@ -546,7 +628,7 @@ func TestDefaultsThatCannotBeFound(t *testing.T) {
 
 func TestConfigCheck(t *testing.T) {
 	t.Parallel()
-	setup := setUpServer(t)
+	setup := setUpServer(t, unboundPort(t))
 	for _, dir := range []string{setup.configDir, filepath.Join(t.TempDir(), "empty")} {
 		got := execute(t, "--config", dir, "config", "check")
 		if want := (outcome{status: exitOK, stdout: "configuration ok\n"}); got != want {

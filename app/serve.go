@@ -79,12 +79,3 @@ func shutdown(ctx context.Context, srv *http.Server, grace time.Duration) error 
 	}
 	return nil
 }
-
-// addresses returns the bound address of every listener.
-func addresses(listeners []*endpoint) []net.Addr {
-	addrs := make([]net.Addr, 0, len(listeners))
-	for _, listener := range listeners {
-		addrs = append(addrs, listener.Addr())
-	}
-	return addrs
-}

@@ -14,12 +14,7 @@ import (
 
 func listenLoopback(t *testing.T) *endpoint {
 	t.Helper()
-	listener, err := openEndpoint(context.Background(), "127.0.0.1:0", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { closeQuietly(listener) })
-	return listener
+	return openLoopback(t, nil)
 }
 
 // newRunner is the serving loop of a run without what surrounds it: a server and its
@@ -35,6 +30,14 @@ func newRunner(handler http.Handler, opts Options) *runner {
 	}
 }
 
+// watchListening makes r log through a handler that reports each "listening" address, and
+// returns that handler.
+func watchListening(r *runner) *eventLog {
+	listening := newEventLog(slog.DiscardHandler)
+	r.logger = slog.New(listening)
+	return listening
+}
+
 // brokenListener is a listener that cannot accept and cannot be closed cleanly.
 type brokenListener struct {
 	net.Listener
@@ -47,16 +50,19 @@ func (brokenListener) Addr() net.Addr            { return &net.TCPAddr{IP: net.I
 func TestServeStopsEverythingWhenAListenerFails(t *testing.T) {
 	t.Parallel()
 	good := listenLoopback(t)
-	var got []net.Addr
-	r := newRunner(http.NotFoundHandler(), Options{Ready: func(addrs []net.Addr) { got = addrs }})
+	r := newRunner(http.NotFoundHandler(), Options{})
+	listening := watchListening(r)
 	broken := &endpoint{Listener: brokenListener{}}
 	err := r.serve(context.Background(), []*endpoint{good, broken}, time.Second)
 	if err == nil || !strings.Contains(err.Error(), "accept failed") ||
 		!strings.Contains(err.Error(), "127.0.0.1:1") {
 		t.Errorf("serve = %v", err)
 	}
-	if len(got) != 2 || got[0].String() != good.Addr().String() {
-		t.Errorf("Ready got %v", got)
+	// serve logs every listener before it returns, so both addresses are already there.
+	for _, want := range []string{good.Addr().String(), broken.Addr().String()} {
+		if got := listening.nextListening(t); got != want {
+			t.Errorf("listening address = %q, want %q", got, want)
+		}
 	}
 	if isOpen(good.Addr().String()) {
 		t.Error("the healthy listener is still open")
@@ -87,11 +93,12 @@ func TestServeIgnoresARetiredEndpointAndKeepsTheOthers(t *testing.T) {
 	retired, kept := listenLoopback(t), listenLoopback(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ready := make(chan struct{})
 	served := make(chan error, 1)
-	r := newRunner(http.NotFoundHandler(), Options{Ready: func([]net.Addr) { close(ready) }})
+	r := newRunner(http.NotFoundHandler(), Options{})
+	listening := watchListening(r)
 	go func() { served <- r.serve(ctx, []*endpoint{retired, kept}, time.Second) }()
-	<-ready
+	listening.nextListening(t)
+	listening.nextListening(t)
 
 	if err := retired.retire(); err != nil {
 		t.Fatal(err)

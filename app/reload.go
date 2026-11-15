@@ -35,15 +35,12 @@ type listenPlan struct {
 	removed []*endpoint               // open, and no longer configured
 }
 
-// serve runs the server on listeners until ctx is cancelled or a listener fails, calling
-// Ready first, and applies the configuration again on every reload signal. After
-// cancellation it waits up to grace for requests in progress and then closes their
-// connections; that is a clean shutdown and returns nil. After a failure it closes
-// everything at once and returns the failure. It always waits for its goroutines.
+// serve runs the server on listeners until ctx is cancelled or a listener fails, and
+// applies the configuration again on every reload signal. After cancellation it waits up to
+// grace for requests in progress and then closes their connections; that is a clean
+// shutdown and returns nil. After a failure it closes everything at once and returns the
+// failure. It always waits for its goroutines.
 func (r *runner) serve(ctx context.Context, listeners []*endpoint, grace time.Duration) error {
-	if r.opts.Ready != nil {
-		r.opts.Ready(addresses(listeners))
-	}
 	for _, listener := range listeners {
 		r.start(listener)
 	}
@@ -61,9 +58,12 @@ func (r *runner) serve(ctx context.Context, listeners []*endpoint, grace time.Du
 	}
 }
 
-// start serves listener in the background.
+// start serves listener in the background. Every listener begins serving here, at startup
+// and on a reload, so this is the one place that tells the operator where it is reachable.
+// Binding is not serving: a reload binds while it plans and may throw the plan away.
 func (r *runner) start(listener *endpoint) {
 	r.endpoints[listener.address] = listener
+	r.logger.Info("listening", slog.String("address", listener.Addr().String()))
 	r.wg.Go(func() {
 		err := r.srv.Serve(listener)
 		// A retired endpoint was closed on purpose, which is not a failure.
