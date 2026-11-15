@@ -25,8 +25,9 @@ func nodeFile(n int) string { return fmt.Sprintf("%016x.yaml", n) }
 func nodeContent(name, url string) string { return "name: " + name + "\nurl: " + url + "\n" }
 
 // put writes a node file with a modification time of epoch plus offset. The follower of the
-// directory tells a changed file by size and time, and two writes in one test can land in
-// the same clock tick, so the tests set the time themselves.
+// directory tells a changed file by size, time and identity, and two writes in place in one
+// test can land in the same clock tick, which none of those tells apart, so the tests set
+// the time themselves.
 func put(t *testing.T, dir, file, content string, offset time.Duration) {
 	t.Helper()
 	path := filepath.Join(dir, file)

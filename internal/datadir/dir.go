@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/SpliceFS/server/internal/filestat"
 )
 
 // Entry is the content of one file of a directory.
@@ -18,29 +20,36 @@ type Entry[T any] struct {
 	Value T
 }
 
-// stamp is what tells that a file changed: the same two values the server has always used
-// for its single files, so that no file is read twice for nothing.
+// stamp is what tells that a file changed. Size and modification time are not enough: the
+// files of a directory (a password hash, a key, a node's announcement) have a fixed length,
+// the file system clock ticks coarsely, and a sync tool or a program sets the modification
+// time of a file it writes. A rewrite within one tick, or with the old time put back, would
+// then never be read. So the stamp also holds the file's identity: a file renamed over
+// another has another inode, and a file written in place has a later change time.
 type stamp struct {
 	size    int64
 	modTime time.Time
+	id      filestat.Identity
 }
 
-// Dir follows a directory of YAML files. Each use lists the directory, compares names, sizes
-// and modification times with what it has loaded and reads only the files that changed, so
-// no signal is needed when another program changes the directory. It is not safe for
-// concurrent use; the caller serializes calls.
+// Dir follows a directory of YAML files. Each use lists the directory, compares names and
+// stamps with what it has loaded and reads only the files that changed, so no signal is
+// needed when another program changes the directory. It is not safe for concurrent use;
+// the caller serializes calls.
 //
 // A file that cannot be read or parsed is ignored with a warning and the last good content
 // of that file stays in use, so one bad file never affects another and never stops the
 // server. Files whose name does not end in ".yaml", or starts with a dot (sync tools leave
 // temporary files like that), are not files of the directory.
 type Dir[T any] struct {
-	dir    string
-	parse  func(name string, data []byte) (T, error)
-	log    *slog.Logger
-	read   func(path string) ([]byte, error)
-	stamps map[string]stamp
-	values map[string]T
+	dir   string
+	parse func(name string, data []byte) (T, error)
+	log   *slog.Logger
+	read  func(path string) ([]byte, error)
+	// identify is filestat.Of; a test replaces it to set an identity the clock cannot.
+	identify func(fs.FileInfo) (filestat.Identity, bool)
+	stamps   map[string]stamp
+	values   map[string]T
 }
 
 // NewDir returns a Dir for dir. parse turns the content of the named file into a value; its
@@ -49,7 +58,7 @@ func NewDir[T any](
 	dir string, parse func(name string, data []byte) (T, error), log *slog.Logger,
 ) *Dir[T] {
 	return &Dir[T]{
-		dir: dir, parse: parse, log: log, read: os.ReadFile,
+		dir: dir, parse: parse, log: log, read: os.ReadFile, identify: filestat.Of,
 		stamps: map[string]stamp{}, values: map[string]T{},
 	}
 }
@@ -92,7 +101,10 @@ func (d *Dir[T]) scan() (map[string]stamp, bool) {
 		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
-		found[name] = stamp{size: info.Size(), modTime: info.ModTime()}
+		// Stat on a real file always carries an identity. Where it did not, the zero
+		// identity leaves size and time as the whole stamp.
+		id, _ := d.identify(info)
+		found[name] = stamp{size: info.Size(), modTime: info.ModTime(), id: id}
 	}
 	return found, true
 }

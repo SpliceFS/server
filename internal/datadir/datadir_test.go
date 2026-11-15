@@ -3,6 +3,7 @@ package datadir
 import (
 	"bytes"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/SpliceFS/server/internal/filestat"
 )
 
 // epoch is the fixed point in time that the tests measure modification times from.
@@ -19,6 +22,19 @@ func put(t *testing.T, dir, name, content string, offset time.Duration) {
 	t.Helper()
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, epoch(), epoch().Add(offset)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// replace writes a file the way the server's own writers do, through a temporary file
+// renamed over the old one, and then gives it the modification time epoch plus offset.
+func replace(t *testing.T, dir, name, content string, offset time.Duration) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := WriteAtomic(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chtimes(path, epoch(), epoch().Add(offset)); err != nil {
@@ -164,16 +180,20 @@ func TestDirRefreshReadsOnlyChangedFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	follower, buf := newTestDir(dir)
+	var reads int
+	follower.read = func(path string) ([]byte, error) {
+		reads++
+		return os.ReadFile(path)
+	}
 	put(t, dir, "a.yaml", "one", 0)
 	follower.Refresh()
 
-	// Same size and time: not read again. New time or new size: read again.
-	put(t, dir, "a.yaml", "ONE", 0)
+	// An untouched file is not read again. New time or new size: read again.
 	entries, changed := follower.Refresh()
-	if changed {
-		t.Error("unchanged stamp was read again: changed = true")
+	if changed || reads != 1 {
+		t.Errorf("untouched file: changed = %v after %d reads, want false after 1", changed, reads)
 	}
-	checkNames(t, "same size and time", entries, "a.yaml=one")
+	checkNames(t, "untouched", entries, "a.yaml=one")
 	put(t, dir, "a.yaml", "ONE", time.Second)
 	entries, changed = follower.Refresh()
 	if !changed {
@@ -187,6 +207,65 @@ func TestDirRefreshReadsOnlyChangedFiles(t *testing.T) {
 	}
 	checkNames(t, "new size", entries, "a.yaml=ONES")
 	checkNoLog(t, buf)
+}
+
+// A file replaced by one of the same size and the same modification time is the case a
+// coarse clock, or a sync tool that keeps the time, makes. The new file has another inode,
+// whatever the clock says.
+func TestDirRefreshSeesFileReplacedWithSameSizeAndTime(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	follower, buf := newTestDir(dir)
+	put(t, dir, "a.yaml", "one", 0)
+	follower.Refresh()
+
+	replace(t, dir, "a.yaml", "two", 0)
+	entries, changed := follower.Refresh()
+	if !changed {
+		t.Error("a file of the same size and time was replaced but changed = false")
+	}
+	checkNames(t, "replaced", entries, "a.yaml=two")
+	if _, changed = follower.Refresh(); changed {
+		t.Error("nothing changed after the replacement but changed = true")
+	}
+	checkNoLog(t, buf)
+}
+
+// The change time of a file rewritten in place cannot be set by the test, because it
+// is the clock's, so the identity is set by the test and the file keeps its size and time.
+func TestDirStampHoldsTheIdentityOfTheFile(t *testing.T) {
+	t.Parallel()
+	base := filestat.Identity{Dev: 1, Ino: 2, Ctime: 3}
+	tests := map[string]struct {
+		id          filestat.Identity
+		wantChanged bool
+		want        string
+	}{
+		"nothing":     {id: base, want: "a.yaml=one"},
+		"device":      {id: filestat.Identity{Dev: 9, Ino: 2, Ctime: 3}, wantChanged: true, want: "a.yaml=two"},
+		"inode":       {id: filestat.Identity{Dev: 1, Ino: 9, Ctime: 3}, wantChanged: true, want: "a.yaml=two"},
+		"change time": {id: filestat.Identity{Dev: 1, Ino: 2, Ctime: 9}, wantChanged: true, want: "a.yaml=two"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			follower, buf := newTestDir(dir)
+			current := base
+			follower.identify = func(fs.FileInfo) (filestat.Identity, bool) { return current, true }
+			put(t, dir, "a.yaml", "one", 0)
+			follower.Refresh()
+
+			current = test.id
+			put(t, dir, "a.yaml", "two", 0)
+			entries, changed := follower.Refresh()
+			if changed != test.wantChanged {
+				t.Errorf("changed = %v, want %v", changed, test.wantChanged)
+			}
+			checkNames(t, name, entries, test.want)
+			checkNoLog(t, buf)
+		})
+	}
 }
 
 func TestDirRefreshDropsRemovedFile(t *testing.T) {

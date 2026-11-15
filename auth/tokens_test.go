@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/SpliceFS/server/internal/datadir"
 )
 
 // Test secrets, 32 bytes each.
@@ -361,16 +363,32 @@ func (fixture reloadFixture) replace(t *testing.T, content string, when time.Tim
 	}
 }
 
-func TestTokensKeepCachedKeysWhenSizeAndTimeAreSame(t *testing.T) {
+// renameOver puts a new file in place of the keys file the way a sync tool does: it is
+// written beside it and renamed over it, and given modification time when.
+func (fixture reloadFixture) renameOver(t *testing.T, content string, when time.Time) {
+	t.Helper()
+	if err := datadir.WriteAtomic(fixture.path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(fixture.path, when, when); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTokensReloadWhenFileIsReplacedWithSameSizeAndTime(t *testing.T) {
 	t.Parallel()
 	fixture := newReloadFixture(t)
 	replacement := keysYAML([2]string{"two", b64(secretA)})
 	if len(replacement) != fixture.size {
 		t.Fatalf("test setup: replacement is %d bytes, want %d", len(replacement), fixture.size)
 	}
-	fixture.replace(t, replacement, fixture.modTime)
-	if _, err := fixture.tokens.Verify(fixture.token); err != nil {
-		t.Errorf("cached keys not used: %v", err)
+	fixture.renameOver(t, replacement, fixture.modTime)
+	if _, err := fixture.tokens.Verify(fixture.token); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("after a replacement of the same size and time: err = %v, want ErrInvalidToken (key one removed)", err)
+	}
+	fresh := mustIssue(t, fixture.tokens)
+	if _, err := fixture.tokens.Verify(fresh); err != nil {
+		t.Errorf("token signed with the reloaded key: %v", err)
 	}
 }
 
