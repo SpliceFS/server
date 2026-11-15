@@ -1,23 +1,19 @@
 // Command splicefsd is the SpliceFS server. It serves the shares of its configuration
-// directory over HTTP. The config subcommands check and show that configuration, and
-// hash-password makes a password hash for a user file.
+// directory over HTTP. The config subcommands check and show that configuration. What an
+// administrator runs by hand besides that is in splicefsdctl.
 package main
 
 import (
-	"bufio"
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/SpliceFS/server/app"
-	"github.com/SpliceFS/server/auth"
 	"github.com/SpliceFS/server/config"
 	"github.com/SpliceFS/server/internal/cli"
 	"github.com/SpliceFS/server/internal/version"
@@ -28,7 +24,6 @@ const (
 	usage   = `usage: splicefsd [--config DIR] [--state DIR]
        splicefsd [--config DIR] config check
        splicefsd [--config DIR] config show
-       splicefsd hash-password
        splicefsd --version
 
 SIGHUP applies the configuration without a restart.
@@ -43,24 +38,20 @@ var exit = os.Exit //nolint:gochecknoglobals // the one seam that lets a test ru
 // is what the user reads. A message that follows a quoted value holds only the words after
 // that value.
 var (
-	errConfigCommand         = errors.New("config needs one of: check, show")
-	errHashPasswordArguments = errors.New("hash-password takes no arguments")
-	errUnexpectedArgument    = errors.New("unexpected argument")
+	errConfigCommand      = errors.New("config needs one of: check, show")
+	errUnexpectedArgument = errors.New("unexpected argument")
 )
 
 // self is how this program speaks: its name and its usage text.
 func self() cli.Program { return cli.Program{Name: program, Usage: usage} }
 
 func main() {
-	exit(run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+	exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
 }
 
 // run is the whole program. It returns the exit status. The server stops when ctx is
 // cancelled or the process receives SIGINT or SIGTERM.
-func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	if len(args) > 0 && args[0] == "hash-password" {
-		return runHashPassword(args[1:], stdin, stdout, stderr)
-	}
+func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	opts, err := parseArgs(args)
 	if status, handled := self().Handled(stdout, stderr, err, opts.showVersion); handled {
 		return status
@@ -150,36 +141,6 @@ func runConfig(opts options, defaults defaultDirs, stdout, stderr io.Writer) int
 		return self().Fail(stderr, err)
 	}
 	return cli.ExitOK
-}
-
-// runHashPassword implements the hash-password subcommand.
-func runHashPassword(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	if len(args) > 0 {
-		return self().UsageError(stderr, errHashPasswordArguments)
-	}
-	if err := hashPassword(stdin, stdout, rand.Reader); err != nil {
-		return self().Fail(stderr, err)
-	}
-	return cli.ExitOK
-}
-
-// hashPassword reads one line from in and writes the argon2id hash of it to out. The salt
-// comes from random. The password is the line without its line ending.
-func hashPassword(in io.Reader, out io.Writer, random io.Reader) error {
-	line, err := bufio.NewReader(in).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("read password: %w", err)
-	}
-	password := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
-	hash, err := auth.HashPassword(password, random)
-	if err != nil {
-		// The message already says what failed and is printed to the user as it is.
-		return err //nolint:wrapcheck // printed to the user as it is
-	}
-	if _, err := fmt.Fprintln(out, hash); err != nil {
-		return fmt.Errorf("write hash: %w", err)
-	}
-	return nil
 }
 
 // runServer loads the configuration and serves until ctx is cancelled or a termination
