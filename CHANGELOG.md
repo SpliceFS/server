@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.18] - 2026-11-15
+
+- A file in a data directory that is replaced with one of the same size and modification time is now
+  read again.
+
 ## [0.5.17] - 2026-11-15
 
 - Internal: shutdown and configuration swap tests wait for real signals instead of time. Nothing
