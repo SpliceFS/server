@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.17] - 2026-11-15
+
+- Internal: shutdown and configuration swap tests wait for real signals instead of time. Nothing
+  changes for users.
+
 ## [0.5.16] - 2026-11-15
 
 - Internal: contributors are told to merge `main` down to fix a branch the bot cannot rebuild.
