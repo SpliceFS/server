@@ -25,12 +25,16 @@ func (r *recorder) Logf(format string, args ...any) {
 
 func (r *recorder) Fatal(args ...any) { r.fatal = args }
 
-// scripted returns a pickPort that hands out the ports 1, 2, 3 and so on.
-func scripted() func() (int, error) {
+// scripted returns a pick that hands out the ports 1, 2, 3 and so on.
+func scripted() func(count int) ([]int, error) {
 	next := 0
-	return func() (int, error) {
-		next++
-		return next, nil
+	return func(count int) ([]int, error) {
+		ports := make([]int, 0, count)
+		for range count {
+			next++
+			ports = append(ports, next)
+		}
+		return ports, nil
 	}
 }
 
@@ -89,9 +93,9 @@ func TestPickFailures(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			port, err := pickFrom(tt.listen)
-			if err == nil || port != 0 {
-				t.Fatalf("pickFrom = %d, %v, want an error", port, err)
+			ports, err := pickFrom(tt.listen, 1)
+			if err == nil || ports != nil {
+				t.Fatalf("pickFrom = %v, %v, want an error", ports, err)
 			}
 			if !errors.Is(err, tt.want) {
 				t.Errorf("error %v does not wrap %v", err, tt.want)
@@ -103,11 +107,91 @@ func TestPickFailures(t *testing.T) {
 func TestPickReportsThePortOfTheListener(t *testing.T) {
 	t.Parallel()
 	tcp := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4000}
-	port, err := pickFrom(func(context.Context, string, string) (net.Listener, error) {
+	ports, err := pickFrom(func(context.Context, string, string) (net.Listener, error) {
 		return fakeListener{addr: tcp}, nil
-	})
-	if err != nil || port != 4000 {
-		t.Errorf("pickFrom = %d, %v, want 4000", port, err)
+	}, 1)
+	if err != nil || !reflect.DeepEqual(ports, []int{4000}) {
+		t.Errorf("pickFrom = %v, %v, want 4000", ports, err)
+	}
+}
+
+// countingListener counts, in open, how many of its kind are open.
+type countingListener struct {
+	net.Listener
+
+	addr net.Addr
+	open *int
+}
+
+func (c countingListener) Addr() net.Addr { return c.addr }
+
+func (c countingListener) Close() error {
+	*c.open--
+	return nil
+}
+
+// Two ports picked one after the other, each released at once, can be the same number. Every
+// port stays open until the last is chosen, so the numbers differ.
+func TestPickManyHoldsEveryPortUntilAllAreChosen(t *testing.T) {
+	t.Parallel()
+	open := 0
+	var openAtListen []int
+	listen := func(context.Context, string, string) (net.Listener, error) {
+		openAtListen = append(openAtListen, open)
+		open++
+		return countingListener{addr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4000 + open}, open: &open}, nil
+	}
+	ports, err := pickFrom(listen, 3)
+	if err != nil || !reflect.DeepEqual(ports, []int{4001, 4002, 4003}) {
+		t.Fatalf("pickFrom = %v, %v", ports, err)
+	}
+	if !reflect.DeepEqual(openAtListen, []int{0, 1, 2}) {
+		t.Errorf("ports open at each listen = %v, want 0, 1, 2", openAtListen)
+	}
+	if open != 0 {
+		t.Errorf("%d ports are still open", open)
+	}
+}
+
+func TestPickManyClosesWhatItOpenedWhenOneFails(t *testing.T) {
+	t.Parallel()
+	open := 0
+	listenFails := errors.New("no more ports")
+	listen := func(context.Context, string, string) (net.Listener, error) {
+		if open == 2 {
+			return nil, listenFails
+		}
+		open++
+		return countingListener{addr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4000 + open}, open: &open}, nil
+	}
+	ports, err := pickFrom(listen, 3)
+	if !errors.Is(err, listenFails) || ports != nil || open != 0 {
+		t.Errorf("pickFrom = %v, %v with %d ports open, want %v and none open", ports, err, open, listenFails)
+	}
+}
+
+func TestPickManyReturnsDistinctPortsThatCanAllBeUsed(t *testing.T) {
+	t.Parallel()
+	const count = 5
+	ports, err := PickMany(count)
+	if err != nil || len(ports) != count {
+		t.Fatalf("PickMany = %v, %v", ports, err)
+	}
+	seen := make(map[int]bool, count)
+	for _, port := range ports {
+		if seen[port] {
+			t.Errorf("port %d was picked twice in %v", port, ports)
+		}
+		seen[port] = true
+		listener, err := listenOn(t, net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err != nil {
+			t.Fatalf("the picked port %d cannot be used: %v", port, err)
+		}
+		t.Cleanup(func() {
+			if closeErr := listener.Close(); closeErr != nil {
+				t.Error(closeErr)
+			}
+		})
 	}
 }
 
@@ -145,23 +229,24 @@ func TestTry(t *testing.T) {
 	tests := []struct {
 		name      string
 		results   []error // what start returns, in turn; the last one repeats
-		wantPort  int
+		wantPorts []int
 		wantErr   error
 		wantCalls int
 		wantLogs  []string
 	}{
-		{"opens at once", []error{nil}, 1, nil, 1, []string{"port 1 opened"}},
+		{"opens at once", []error{nil}, []int{1}, nil, 1, []string{"port 1 opened"}},
 		{
 			"another port after one in use",
 			[]error{inUse, nil},
-			2, nil, 2,
+			[]int{2},
+			nil, 2,
 			[]string{"port 1 in use, trying another", "port 2 opened"},
 		},
-		{"other error stops at once", []error{other}, 0, other, 1, nil},
+		{"other error stops at once", []error{other}, nil, other, 1, nil},
 		{
 			"every port in use",
 			[]error{inUse},
-			0, syscall.EADDRINUSE, attempts,
+			nil, syscall.EADDRINUSE, attempts,
 			inUseLogs(attempts),
 		},
 	}
@@ -175,10 +260,10 @@ func TestTry(t *testing.T) {
 				calls++
 				return result
 			}
-			port, err := tryPorts(rec, scripted(), start)
-			if port != tt.wantPort || !errors.Is(err, tt.wantErr) || calls != tt.wantCalls {
-				t.Errorf("tryPorts = %d, %v after %d calls; want %d, %v after %d",
-					port, err, calls, tt.wantPort, tt.wantErr, tt.wantCalls)
+			ports, err := tryPorts(rec, 1, scripted(), func(ports []int) error { return start(ports[0]) })
+			if !reflect.DeepEqual(ports, tt.wantPorts) || !errors.Is(err, tt.wantErr) || calls != tt.wantCalls {
+				t.Errorf("tryPorts = %v, %v after %d calls; want %v, %v after %d",
+					ports, err, calls, tt.wantPorts, tt.wantErr, tt.wantCalls)
 			}
 			if !reflect.DeepEqual(rec.logs, tt.wantLogs) {
 				t.Errorf("logs = %q, want %q", rec.logs, tt.wantLogs)
@@ -190,12 +275,12 @@ func TestTry(t *testing.T) {
 func TestTryFailsWhenNoPortCanBePicked(t *testing.T) {
 	t.Parallel()
 	broken := errors.New("no loopback")
-	port, err := tryPorts(&recorder{}, func() (int, error) { return 0, broken }, func(int) error {
+	ports, err := tryPorts(&recorder{}, 1, func(int) ([]int, error) { return nil, broken }, func([]int) error {
 		t.Error("start was called without a port")
 		return nil
 	})
-	if port != 0 || !errors.Is(err, broken) {
-		t.Errorf("tryPorts = %d, %v", port, err)
+	if ports != nil || !errors.Is(err, broken) {
+		t.Errorf("tryPorts = %v, %v", ports, err)
 	}
 }
 
@@ -221,5 +306,60 @@ func TestTryFailsTheTest(t *testing.T) {
 	}
 	if err, ok := rec.fatal[0].(error); !ok || !errors.Is(err, broken) {
 		t.Errorf("Fatal got %v, want an error that wraps %v", rec.fatal[0], broken)
+	}
+}
+
+func TestTryManyGivesStartEveryPort(t *testing.T) {
+	t.Parallel()
+	inUse := fmt.Errorf("listen: %w", syscall.EADDRINUSE)
+	rec := &recorder{}
+	var given [][]int
+	ports, err := tryPorts(rec, 3, scripted(), func(ports []int) error {
+		given = append(given, ports)
+		if len(given) == 1 {
+			return inUse
+		}
+		return nil
+	})
+	wantGiven := [][]int{{1, 2, 3}, {4, 5, 6}}
+	if err != nil || !reflect.DeepEqual(ports, []int{4, 5, 6}) || !reflect.DeepEqual(given, wantGiven) {
+		t.Errorf("tryPorts = %v, %v after start got %v", ports, err, given)
+	}
+	wantLogs := []string{"ports 1, 2, 3 in use, trying another", "ports 4, 5, 6 opened"}
+	if !reflect.DeepEqual(rec.logs, wantLogs) {
+		t.Errorf("logs = %q, want %q", rec.logs, wantLogs)
+	}
+}
+
+func TestTryManyWithATest(t *testing.T) {
+	t.Parallel()
+	var given []int
+	ports := TryMany(t, 3, func(ports []int) error {
+		given = ports
+		return nil
+	})
+	if len(ports) != 3 || !reflect.DeepEqual(ports, given) {
+		t.Errorf("TryMany = %v, start got %v", ports, given)
+	}
+}
+
+func TestTryManyFailsTheTest(t *testing.T) {
+	t.Parallel()
+	rec := &recorder{}
+	broken := errors.New("start failed")
+	if ports := TryMany(rec, 2, func([]int) error { return broken }); ports != nil {
+		t.Errorf("TryMany = %v after a failure", ports)
+	}
+	if len(rec.fatal) != 1 {
+		t.Fatalf("Fatal was called with %v", rec.fatal)
+	}
+}
+
+func TestPickOneFailsWhenNoPortCanBePicked(t *testing.T) {
+	t.Parallel()
+	broken := errors.New("no loopback")
+	port, err := pickOne(func(int) ([]int, error) { return nil, broken })
+	if port != 0 || !errors.Is(err, broken) {
+		t.Errorf("pickOne = %d, %v", port, err)
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -28,24 +30,54 @@ type Reporter interface {
 // Pick returns a loopback TCP port that nothing listens on at this moment. Another process
 // can take it before the caller does, so a caller that starts a server on it uses Try.
 func Pick() (int, error) {
+	return pickOne(PickMany)
+}
+
+// pickOne is Pick with the choice of ports in the caller's hands.
+func pickOne(pick func(count int) ([]int, error)) (int, error) {
+	ports, err := pick(1)
+	if err != nil {
+		return 0, err
+	}
+	return ports[0], nil
+}
+
+// PickMany returns count different loopback TCP ports.
+func PickMany(count int) ([]int, error) {
 	var listenConfig net.ListenConfig
-	return pickFrom(listenConfig.Listen)
+	return pickFrom(listenConfig.Listen, count)
 }
 
 // listenFunc is net.ListenConfig.Listen.
 type listenFunc func(ctx context.Context, network, address string) (net.Listener, error)
 
-// pickFrom binds a port to learn its number and releases it again.
-func pickFrom(listen listenFunc) (int, error) {
-	listener, err := listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, fmt.Errorf("pick a port: %w", err)
+// pickFrom binds count ports to learn their numbers and releases them all again. They are all
+// open until the last is chosen, which is what makes the numbers different.
+func pickFrom(listen listenFunc, count int) ([]int, error) {
+	listeners := make([]net.Listener, 0, count)
+	ports := make([]int, 0, count)
+	var errs []error
+	for range count {
+		listener, err := listen(context.Background(), "tcp", "127.0.0.1:0")
+		if err != nil {
+			errs = append(errs, err)
+			break
+		}
+		listeners = append(listeners, listener)
+		port, err := portOf(listener.Addr())
+		if err != nil {
+			errs = append(errs, err)
+			break
+		}
+		ports = append(ports, port)
 	}
-	port, portErr := portOf(listener.Addr())
-	if err := errors.Join(portErr, listener.Close()); err != nil {
-		return 0, fmt.Errorf("pick a port: %w", err)
+	for _, listener := range listeners {
+		errs = append(errs, listener.Close())
 	}
-	return port, nil
+	if err := errors.Join(errs...); err != nil {
+		return nil, fmt.Errorf("pick %d ports: %w", count, err)
+	}
+	return ports, nil
 }
 
 // portOf returns the port of a TCP address.
@@ -64,34 +96,61 @@ func portOf(addr net.Addr) (int, error) {
 // syscall.EADDRINUSE. Nothing here waits for time to pass: the next try follows the failure.
 func Try(t Reporter, start func(port int) error) int {
 	t.Helper()
-	port, err := tryPorts(t, Pick, start)
+	ports, err := tryPorts(t, 1, PickMany, func(ports []int) error { return start(ports[0]) })
+	if err != nil {
+		t.Fatal(err)
+		return 0
+	}
+	return ports[0]
+}
+
+// TryMany is Try for a server that needs count different ports, such as one with several
+// listeners. start gets all of them, and any one of them being in use means that all of
+// them are picked again.
+func TryMany(t Reporter, count int, start func(ports []int) error) []int {
+	t.Helper()
+	ports, err := tryPorts(t, count, PickMany, start)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return port
+	return ports
 }
 
-// tryPorts is Try with the choice of port in the caller's hands, and with an error to return
+// label names ports in a log line.
+func label(ports []int) string {
+	numbers := make([]string, 0, len(ports))
+	for _, port := range ports {
+		numbers = append(numbers, strconv.Itoa(port))
+	}
+	if len(numbers) == 1 {
+		return "port " + numbers[0]
+	}
+	return "ports " + strings.Join(numbers, ", ")
+}
+
+// tryPorts is Try with the choice of ports in the caller's hands, and with an error to return
 // where Try fails the test.
-func tryPorts(t Reporter, pickPort func() (int, error), start func(port int) error) (int, error) {
+func tryPorts(
+	t Reporter, count int, pick func(count int) ([]int, error), start func(ports []int) error,
+) ([]int, error) {
 	t.Helper()
 	var inUse error
 	for range attempts {
-		port, err := pickPort()
+		ports, err := pick(count)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
-		err = start(port)
+		err = start(ports)
 		switch {
 		case err == nil:
-			t.Logf("port %d opened", port)
-			return port, nil
+			t.Logf("%s opened", label(ports))
+			return ports, nil
 		case errors.Is(err, syscall.EADDRINUSE):
-			t.Logf("port %d in use, trying another", port)
+			t.Logf("%s in use, trying another", label(ports))
 			inUse = err
 		default:
-			return 0, fmt.Errorf("start on port %d: %w", port, err)
+			return nil, fmt.Errorf("start on %s: %w", label(ports), err)
 		}
 	}
-	return 0, fmt.Errorf("no port opened in %d attempts, the last one failed: %w", attempts, inUse)
+	return nil, fmt.Errorf("no port opened in %d attempts, the last one failed: %w", attempts, inUse)
 }
