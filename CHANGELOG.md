@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.16] - 2026-11-15
+
+- Internal: contributors are told to merge `main` down to fix a branch the bot cannot rebuild.
+  Nothing changes for users.
+
 ## [0.5.15] - 2026-11-15
 
 - Internal: the FreeBSD test proves a reload was applied before it checks the service. Nothing
