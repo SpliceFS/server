@@ -1,7 +1,6 @@
 package app
 
 import (
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -9,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/SpliceFS/common/wire"
 	"github.com/SpliceFS/server/api"
 	"github.com/SpliceFS/server/internal/datadir"
+	"github.com/SpliceFS/server/internal/uuid7"
 )
 
 // dataPaths are the directories of the data the server keeps, below the state directory.
@@ -30,9 +31,6 @@ type folder struct {
 	mode os.FileMode
 }
 
-// nodeIDBytes is the number of random bytes of a node id; the id is their hexadecimal form.
-const nodeIDBytes = 8
-
 // nodeIDMode is the mode of the node id file. Only this machine's server reads it.
 const nodeIDMode = 0o600
 
@@ -42,7 +40,7 @@ var ErrNotAFolder = errors.New("exists and is not a folder")
 
 // ErrMalformedNodeID is the cause of a start that fails because the saved node id is not an
 // id. The text goes after the name of the file.
-var ErrMalformedNodeID = errors.New("must hold 16 lowercase hexadecimal characters")
+var ErrMalformedNodeID = errors.New("must hold a UUIDv7 in lowercase")
 
 // layout returns the data paths inside stateDir.
 func layout(stateDir string) dataPaths {
@@ -105,28 +103,27 @@ func checkFolder(path string) error {
 // nodeID returns the id of this node, making and saving it on the first start. An id that
 // is saved but malformed is an error and is never replaced: the id names this node's files
 // in the shared folder, and a new one would orphan them.
-func (d *dataPaths) nodeID(random io.Reader) (string, error) {
+func (d *dataPaths) nodeID(now func() time.Time, random io.Reader) (string, error) {
 	data, err := os.ReadFile(d.nodeIDFile)
 	if errors.Is(err, fs.ErrNotExist) {
-		return d.createNodeID(random)
+		return d.createNodeID(now(), random)
 	}
 	if err != nil {
 		return "", fmt.Errorf("read node id file: %w", err)
 	}
 	id := strings.TrimSpace(string(data))
-	if !datadir.IsNodeID(id) {
+	if !uuid7.Valid(id) {
 		return "", fmt.Errorf("node id file %s %w", d.nodeIDFile, ErrMalformedNodeID)
 	}
 	return id, nil
 }
 
 // createNodeID makes a new id and saves it.
-func (d *dataPaths) createNodeID(random io.Reader) (string, error) {
-	raw := make([]byte, nodeIDBytes)
-	if _, err := io.ReadFull(random, raw); err != nil {
+func (d *dataPaths) createNodeID(now time.Time, random io.Reader) (string, error) {
+	id, err := uuid7.New(now, random)
+	if err != nil {
 		return "", fmt.Errorf("make node id: %w", err)
 	}
-	id := hex.EncodeToString(raw)
 	if err := datadir.WriteAtomic(d.nodeIDFile, []byte(id+"\n"), nodeIDMode); err != nil {
 		return "", fmt.Errorf("write node id file %s: %w", d.nodeIDFile, err)
 	}

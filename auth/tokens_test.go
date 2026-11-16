@@ -37,8 +37,8 @@ func keysYAML(entries ...[2]string) string {
 
 // testNode is the node id of the node under test; other nodes use otherNode.
 const (
-	testNode  = "0123456789abcdef"
-	otherNode = "fedcba9876543210"
+	testNode  = "00000000-0000-7000-8000-000000000001"
+	otherNode = "00000000-0000-7000-8000-000000000002"
 )
 
 // discard returns a logger for tests that do not look at the log.
@@ -673,8 +673,8 @@ func TestTokensIgnoreForeignFiles(t *testing.T) {
 	writeFile(t, dir, testNode+".yaml", keysYAML([2]string{"own", b64(secretA)}))
 	foreign := keysYAML([2]string{"evil", b64(secretB)})
 	for _, name := range []string{
-		".tmp-123.yaml", ".fedcba9876543210.yaml", "fedcba9876543210.yaml.tmp",
-		"fedcba9876543210.yaml~", "notes.txt", "fedcba9876543210",
+		".tmp-123.yaml", "." + otherNode + ".yaml", otherNode + ".yaml.tmp",
+		otherNode + ".yaml~", "notes.txt", otherNode,
 	} {
 		writeFile(t, dir, name, foreign)
 	}
@@ -689,13 +689,16 @@ func TestTokensIgnoreForeignFiles(t *testing.T) {
 		t.Errorf("files that are not key files must be ignored silently:\n%s", buf)
 	}
 
-	// A .yaml file whose name is not a node id is ignored, and the log says so.
-	writeFile(t, dir, "backup.yaml", foreign)
-	if _, err := tokens.Verify(evil); !errors.Is(err, ErrInvalidToken) {
-		t.Errorf("key of a badly named file accepted: %v", err)
-	}
-	if !strings.Contains(buf.String(), "backup.yaml") || strings.Contains(buf.String(), b64(secretB)) {
-		t.Errorf("log = %s", buf)
+	// A .yaml file whose name is not a node id is ignored, and the log says so. The id of
+	// the earlier form, 16 hexadecimal characters, is such a name.
+	for _, name := range []string{"backup.yaml", "fedcba9876543210.yaml"} {
+		writeFile(t, dir, name, foreign)
+		if _, err := tokens.Verify(evil); !errors.Is(err, ErrInvalidToken) {
+			t.Errorf("key of the badly named file %s accepted: %v", name, err)
+		}
+		if !strings.Contains(buf.String(), name) || strings.Contains(buf.String(), b64(secretB)) {
+			t.Errorf("log after %s = %s", name, buf)
+		}
 	}
 }
 

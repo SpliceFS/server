@@ -114,7 +114,7 @@ The state folder holds what the server keeps:
     nodes/<node-id>.yaml
 ```
 
-`local/` holds the node id, a random value made on the first start, and the generated
+`local/` holds the node id, a UUIDv7 made on the first start, and the generated
 certificate. `shared/` is safe to sync with any file sync tool because every file in it has
 exactly one writer: the administrator writes each user file, and each server writes its own key
 file and its own node file, named by its node id. Two servers never write the same file, so

@@ -126,28 +126,19 @@ func TestWriteAtomicFailures(t *testing.T) {
 	}
 }
 
-func TestNodeID(t *testing.T) {
+func TestNodeFile(t *testing.T) {
 	t.Parallel()
-	tests := map[string]bool{
-		"0123456789abcdef": true, "ffffffffffffffff": true,
-		"": false, "0123456789abcde": false, "0123456789abcdef0": false,
-		"0123456789ABCDEF": false, "0123456789abcdeg": false, "0123456789abcde/": false,
-		"0123456789abcdef\n": false,
-		//nolint:gocritic // the trailing space is the case under test
-		"0123456789abcde ": false,
-	}
-	for id, want := range tests {
-		if got := IsNodeID(id); got != want {
-			t.Errorf("IsNodeID(%q) = %v, want %v", id, got, want)
-		}
-	}
-	if got := NodeFile("0123456789abcdef"); got != "0123456789abcdef.yaml" {
+	const id = "017f22e2-79b0-7cc3-98c4-dc0c0c07398f"
+	if got := NodeFile(id); got != id+".yaml" {
 		t.Errorf("NodeFile = %q", got)
 	}
-	if id, ok := NodeOfFile("0123456789abcdef.yaml"); !ok || id != "0123456789abcdef" {
-		t.Errorf("NodeOfFile = %q, %v", id, ok)
+	if got, ok := NodeOfFile(id + ".yaml"); !ok || got != id {
+		t.Errorf("NodeOfFile = %q, %v", got, ok)
 	}
-	for _, name := range []string{"x.yaml", "0123456789abcdef", "0123456789abcdef.yml", ".yaml"} {
+	for _, name := range []string{
+		"x.yaml", id, id + ".yml", ".yaml", strings.ToUpper(id) + ".yaml",
+		"0123456789abcdef.yaml", // the id of the earlier form
+	} {
 		if _, ok := NodeOfFile(name); ok {
 			t.Errorf("NodeOfFile(%q) accepted", name)
 		}

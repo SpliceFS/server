@@ -390,14 +390,17 @@ func TestRunFailsAtStart(t *testing.T) {
 		{"node id file is malformed", func(fix *fixture) {
 			write(t, fix.state, "local/node-id", "not an id\n")
 		}, "node id file"},
-		{"signing key file is invalid", func(fix *fixture) {
+		{"node id file holds the earlier form of an id", func(fix *fixture) {
 			write(t, fix.state, "local/node-id", "0123456789abcdef\n")
-			write(t, fix.state, "shared/keys/0123456789abcdef.yaml", "keys: []\n")
+		}, "must hold a UUIDv7"},
+		{"signing key file is invalid", func(fix *fixture) {
+			write(t, fix.state, "local/node-id", rfcNodeID+"\n")
+			write(t, fix.state, "shared/keys/"+rfcNodeID+".yaml", "keys: []\n")
 		}, "signing key file"},
 		{"node file cannot be written", func(fix *fixture) {
 			// A folder where this node's file belongs cannot be replaced by the file.
-			write(t, fix.state, "local/node-id", "0123456789abcdef\n")
-			node := filepath.Join(fix.state, "shared", "nodes", datadir.NodeFile("0123456789abcdef"))
+			write(t, fix.state, "local/node-id", rfcNodeID+"\n")
+			node := filepath.Join(fix.state, "shared", "nodes", datadir.NodeFile(rfcNodeID))
 			if err := os.MkdirAll(node, 0o755); err != nil {
 				t.Fatal(err)
 			}

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
+	"time"
 
 	"github.com/SpliceFS/common/wire"
 )
@@ -119,6 +121,41 @@ func TestMakeFolderRefusesWhatIsNotAFolder(t *testing.T) {
 	}
 }
 
+// fixedNow is the clock of the node id tests: the time of the UUIDv7 example in RFC 9562.
+func fixedNow() time.Time { return time.UnixMilli(0x017F22E279B0) }
+
+// rfcRandom is the random source that, with fixedNow, gives the UUIDv7 example of RFC 9562.
+func rfcRandom() io.Reader {
+	return bytes.NewReader([]byte{0xFC, 0xC3, 0xD8, 0xC4, 0xDC, 0x0C, 0x0C, 0x07, 0x39, 0x8F})
+}
+
+const rfcNodeID = "017f22e2-79b0-7cc3-98c4-dc0c0c07398f"
+
+func TestNodeIDIsMadeOnceAndKept(t *testing.T) {
+	t.Parallel()
+	paths := layout(t.TempDir())
+	if err := paths.makeFolders(); err != nil {
+		t.Fatal(err)
+	}
+	id, err := paths.nodeID(fixedNow, rfcRandom())
+	if err != nil || id != rfcNodeID {
+		t.Fatalf("first nodeID = %q, %v, want %q", id, err, rfcNodeID)
+	}
+	saved, err := os.ReadFile(paths.nodeIDFile)
+	if err != nil || string(saved) != rfcNodeID+"\n" {
+		t.Errorf("saved node id = %q, %v, want %q", saved, err, rfcNodeID+"\n")
+	}
+	info, err := os.Stat(paths.nodeIDFile)
+	if err != nil || info.Mode().Perm() != nodeIDMode {
+		t.Errorf("node id file = %v, %v, want mode %o", info, err, nodeIDMode)
+	}
+	// The second start reads the file: neither the clock nor the random source is used.
+	again, err := paths.nodeID(func() time.Time { return time.Time{} }, iotest.ErrReader(errors.New("unused")))
+	if err != nil || again != rfcNodeID {
+		t.Errorf("second nodeID = %q, %v, want %q", again, err, rfcNodeID)
+	}
+}
+
 func TestNodeIDErrors(t *testing.T) {
 	t.Parallel()
 	failing := errors.New("injected")
@@ -131,7 +168,32 @@ func TestNodeIDErrors(t *testing.T) {
 		{
 			name:   "no randomness",
 			random: iotest.ErrReader(failing),
-			want:   "make node id: injected",
+			want:   "make node id: read random bytes: injected",
+		},
+		{
+			name: "file holds text that is not an id",
+			setup: func(t *testing.T, paths dataPaths) {
+				t.Helper()
+				writeNodeIDFile(t, paths, "not an id\n")
+			},
+			want: "must hold a UUIDv7",
+		},
+		{
+			// An id of an earlier version is refused, never replaced: other nodes know it.
+			name: "file holds an id of 16 hexadecimal characters",
+			setup: func(t *testing.T, paths dataPaths) {
+				t.Helper()
+				writeNodeIDFile(t, paths, "0123456789abcdef\n")
+			},
+			want: "must hold a UUIDv7",
+		},
+		{
+			name: "file holds a UUIDv7 in upper case",
+			setup: func(t *testing.T, paths dataPaths) {
+				t.Helper()
+				writeNodeIDFile(t, paths, strings.ToUpper(rfcNodeID)+"\n")
+			},
+			want: "must hold a UUIDv7",
 		},
 		{
 			name: "node id path is a folder",
@@ -168,11 +230,22 @@ func TestNodeIDErrors(t *testing.T) {
 			if random == nil {
 				random = zeros{}
 			}
-			id, err := paths.nodeID(random)
+			id, err := paths.nodeID(fixedNow, random)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("nodeID = %q, %v, want an error containing %q", id, err, tt.want)
 			}
 		})
+	}
+}
+
+// writeNodeIDFile saves content as the node id file, as an earlier start would have.
+func writeNodeIDFile(t *testing.T, paths dataPaths, content string) {
+	t.Helper()
+	if err := paths.makeFolders(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.nodeIDFile, []byte(content), nodeIDMode); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -18,8 +18,11 @@ import (
 // epoch is the fixed point in time that the tests measure modification times from.
 func epoch() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) }
 
-// nodeFile is the file name of node number n: a valid node id and the extension.
-func nodeFile(n int) string { return fmt.Sprintf("%016x.yaml", n) }
+// nodeID is the id of node number n: a valid UUIDv7.
+func nodeID(n int) string { return fmt.Sprintf("00000000-0000-7000-8000-%012x", n) }
+
+// nodeFile is the file name of node number n: its id and the extension.
+func nodeFile(n int) string { return nodeID(n) + ".yaml" }
 
 // nodeContent is the content of a node file.
 func nodeContent(name, url string) string { return "name: " + name + "\nurl: " + url + "\n" }
@@ -96,10 +99,10 @@ func TestAnnounceWritesFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	self := wire.Node{Name: "east", URL: "https://east.example.com/api"}
-	if err := Announce(dir, "00000000000000e1", self); err != nil {
+	if err := Announce(dir, nodeID(0xe1), self); err != nil {
 		t.Fatalf("Announce: %v", err)
 	}
-	path := filepath.Join(dir, "00000000000000e1.yaml")
+	path := filepath.Join(dir, nodeFile(0xe1))
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +160,7 @@ func TestAnnounceRewritesOnlyWhenContentDiffers(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if err := Announce(dir, strings.TrimSuffix(nodeFile(1), ".yaml"), tt.self); err != nil {
+		if err := Announce(dir, nodeID(1), tt.self); err != nil {
 			t.Fatalf("%s: Announce: %v", tt.name, err)
 		}
 		got, err := os.ReadFile(path)
@@ -193,7 +196,7 @@ func TestAnnounceEmptyURLRemovesFile(t *testing.T) {
 			other := nodeContent("west", "https://west.example.com")
 			put(t, dir, nodeFile(2), other, 0)
 
-			id := strings.TrimSuffix(nodeFile(1), ".yaml")
+			id := nodeID(1)
 			if err := Announce(dir, id, wire.Node{Name: "east"}); err != nil {
 				t.Fatalf("Announce: %v", err)
 			}
@@ -231,7 +234,7 @@ func TestAnnounceErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			dir := tt.setup(t)
-			err := Announce(dir, strings.TrimSuffix(nodeFile(1), ".yaml"), tt.self)
+			err := Announce(dir, nodeID(1), tt.self)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("Announce: %v, want an error containing %q", err, tt.want)
 			}
@@ -295,10 +298,10 @@ func TestAnnounceThenLoad(t *testing.T) {
 	dir := t.TempDir()
 	west := wire.Node{Name: "west", URL: "http://w/api/"}
 	east := wire.Node{Name: "east", URL: "https://e"}
-	if err := Announce(dir, "0000000000000001", west); err != nil {
+	if err := Announce(dir, nodeID(1), west); err != nil {
 		t.Fatal(err)
 	}
-	if err := Announce(dir, "0000000000000002", east); err != nil {
+	if err := Announce(dir, nodeID(2), east); err != nil {
 		t.Fatal(err)
 	}
 	log, buf := testLog()
@@ -307,7 +310,7 @@ func TestAnnounceThenLoad(t *testing.T) {
 		{Name: "east", URL: "https://e"}, {Name: "west", URL: "http://w/api"},
 	})
 
-	if err := Announce(dir, "0000000000000001", wire.Node{Name: "west"}); err != nil {
+	if err := Announce(dir, nodeID(1), wire.Node{Name: "west"}); err != nil {
 		t.Fatal(err)
 	}
 	checkNodes(t, load(t, loader), []wire.Node{{Name: "east", URL: "https://e"}})
@@ -355,7 +358,9 @@ func TestLoaderIgnoresInvalidFile(t *testing.T) {
 		{"list instead of node", badFile, "- name: a\n", "parse node file"},
 		{"file name is not a node id", "east.yaml", withURL(okURL), "not a node id"},
 		{"short node id", "abc.yaml", withURL(okURL), "not a node id"},
-		{"upper case node id", "00000000000000E9.yaml", withURL(okURL), "not a node id"},
+		{"upper case node id", strings.ToUpper(nodeID(0xe9)) + ".yaml", withURL(okURL), "not a node id"},
+		{"node id of 16 hexadecimal characters", "00000000000000e9.yaml", withURL(okURL), "not a node id"},
+		{"node id without hyphens", "000000000000700080000000000000e9.yaml", withURL(okURL), "not a node id"},
 		{"no name", badFile, "url: " + okURL + "\n", "must match"},
 		{"empty name", badFile, withName("''"), "must match"},
 		{"upper case name", badFile, withName("East"), "must match"},
@@ -395,8 +400,8 @@ func TestLoaderIgnoresForeignNames(t *testing.T) {
 	good := wire.Node{Name: "good", URL: "https://good.example.com"}
 	valid := nodeContent("foreign", "https://foreign.example.com")
 	for _, name := range []string{
-		".tmp-123", ".0000000000000009.yaml", nodeFile(9) + ".tmp", "0000000000000009.yml",
-		"0000000000000009.YAML", "0000000000000009", "README",
+		".tmp-123", "." + nodeFile(9), nodeFile(9) + ".tmp", nodeID(9) + ".yml",
+		nodeID(9) + ".YAML", nodeID(9), "README",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
