@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.24] - 2026-11-16
+
+- Internal: the FreeBSD package build runs every release again (prevents the failure the client
+  release v0.5.27 had).
+
 ## [0.5.23] - 2026-11-16
 
 - The node id is now a UUIDv7. A `local/node-id` file in the old 16-character form is refused;
