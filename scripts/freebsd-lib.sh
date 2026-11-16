@@ -28,7 +28,9 @@ freebsd_checksum() {
 # release. An image is the official one of the FreeBSD project and must match the checksum
 # in the list, so a changed download cannot slip into a build.
 freebsd_each_release() {
-    each="$1"
+    # A name of its own: shell variables are global, and a step that loops with a variable
+    # named like this one would replace the step to call for the next release.
+    freebsd_step="$1"
     # The caller sets out.
     # shellcheck disable=SC2154
     cache="$out/cache/freebsd"
@@ -59,7 +61,7 @@ freebsd_each_release() {
             rm -f "$packed"
         fi
         # The loop reads the list on standard input, which the callback must not consume.
-        "$each" "$release" "$disk" </dev/null
+        "$freebsd_step" "$release" "$disk" </dev/null
     done < packaging/freebsd/images
     [ "$ran" -gt 0 ] || fail "no image in packaging/freebsd/images for ${FREEBSD:-any release} on $machine"
 }
