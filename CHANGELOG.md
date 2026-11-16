@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.22] - 2026-11-16
+
+- Internal: builds take their version from the VERSION file, so pull request packages carry the
+  version they will be released as.
+
 ## [0.5.21] - 2026-11-15
 
 - Internal: a single system call reads everything that tells file versions apart, including the
