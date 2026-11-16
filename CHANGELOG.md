@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.23] - 2026-11-16
+
+- The node id is now a UUIDv7. A `local/node-id` file in the old 16-character form is refused;
+  delete it and the server makes a new one.
+
 ## [0.5.22] - 2026-11-16
 
 - Internal: builds take their version from the VERSION file, so pull request packages carry the
