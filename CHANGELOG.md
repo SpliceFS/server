@@ -8,8 +8,8 @@ The change log of all parts of SpliceFS, side by side: https://splicefs.org/chan
 
 ## [0.5.29] - 2026-11-17
 
-- Internal: package tests run on server images of each target system, with its service manager
-  running.
+- Internal: the FreeBSD build removes the archive with the signing key as soon as the machine has
+  run.
 
 ## [0.5.28] - 2026-11-17
 
