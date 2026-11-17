@@ -149,46 +149,35 @@ jobs:
       - name: Fuzz every target briefly
         run: make fuzz
 
-  # FreeBSD cannot run in a container, so each release runs as a virtual machine under QEMU
-  # (scripts/package-freebsd.sh). On amd64 the runner offers hardware virtualization; on
-  # arm64 the machine is emulated, which is slower and still the real system.
+  # FreeBSD cannot run in a container, so each release runs as a virtual machine under QEMU,
+  # inside the prepared image of that release (scripts/package-freebsd.sh). The runner offers
+  # the hardware virtualization the machine needs, and the job stops at once when it does not.
+  # The machine is amd64 and builds the packages for amd64 and arm64: the amd64 one is
+  # installed and its service started, the arm64 one is checked from the file. Nothing boots
+  # an arm64 machine, so no job needs an arm64 runner.
   freebsd-package:
     needs: tip
-    name: FreeBSD package (${{ matrix.release }}, ${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
+    name: FreeBSD package (${{ matrix.release }})
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         release: ["14.5", "15.1"]
-        arch: [amd64, arm64]
-        include:
-          - arch: amd64
-            runner: ubuntu-latest
-            image: ""
-          # The arm64 machine is emulated, and FreeBSD does not boot under the arm64 UEFI
-          # firmware of Ubuntu 26.04 that the go image carries: the console stops after the
-          # firmware banner. The Debian firmware of golang:1.27 boots it. This stays until the
-          # arm64 packages are built inside the amd64 machine and no arm64 machine is booted.
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            image: golang:1.27
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/go-cache
-      - name: Build the packages on FreeBSD, install one and start the service
-        env:
-          IMAGE: ${{ matrix.image }}
-        run: make package-freebsd FREEBSD=${{ matrix.release }} ${IMAGE:+LINUX_IMAGE=$IMAGE}
+      - name: Build the packages on FreeBSD, install the amd64 one and start the service
+        run: make package-freebsd FREEBSD=${{ matrix.release }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: matrix.arch == 'amd64'
         with:
           name: freebsd-packages-${{ matrix.release }}
           path: dist/freebsd/*/*.pkg
           if-no-files-found: error
 
-  # FreeBSD cannot run in a container, so the tests run in a virtual machine under QEMU
-  # (scripts/check-freebsd.sh). Only amd64: there the runner offers hardware virtualization,
-  # and an emulated machine would take too long for the whole test suite.
+  # FreeBSD cannot run in a container, so the tests run in a virtual machine under QEMU,
+  # inside the prepared image of the release (scripts/check-freebsd.sh). Only amd64: there the
+  # runner offers hardware virtualization, and an emulated machine would take too long for the
+  # whole test suite.
   freebsd-tests:
     needs: tip
     name: FreeBSD tests (${{ matrix.release }})
