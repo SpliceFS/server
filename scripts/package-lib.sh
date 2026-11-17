@@ -23,6 +23,12 @@ package_unit() {
     sed 's|/usr/local/bin/|/usr/bin/|' "packaging/systemd/$program.service" > "$1"
 }
 
+# The file name of the plain program archive (archive-programs.sh) of the system $1, written
+# <os>-<arch>. The version is the one the Makefile made, without the v.
+archive_name() {
+    printf '%s-%s-%s.tar.gz\n' "$name" "${VERSION#v}" "$1"
+}
+
 # Fetches an image for one test system: up to 3 tries, 5 seconds apart, quiet on success.
 # A registry that fails to deliver now and then is not a fault of the package under test, so
 # the callers report a failed download as one. Pulling first also keeps the download out of
