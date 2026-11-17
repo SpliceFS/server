@@ -58,18 +58,36 @@ fi
 log="$(mktemp)"
 old_list="$(mktemp)"
 new_list="$(mktemp)"
-trap 'rm -f "$log" "$old_list" "$new_list"' EXIT
+container="splicefs-upgrade-test-$$"
+cleanup() {
+    rm -f "$log" "$old_list" "$new_list"
+    docker rm -f "$container" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 passed=0
 skipped=0
 failed=0
 
-# Runs scripts/upgrade-test-<format>.sh in a clean container of $image with the repository
-# at /src and dist at /out, both read-only. Arguments: the script name, then its own.
+# Runs scripts/upgrade-test-<format>.sh in a clean, booted container of $image with the
+# repository at /src and dist at /out, both read-only; the container is gone afterwards, so
+# every run starts from the image. Arguments: the script name, then its own.
 in_container() {
     script="$1"
     shift
-    docker run --rm --platform "$platform" -e VERSION -e PACKAGE_DATE \
-        -v "$root":/src:ro -v "$root/dist":/out:ro -w /src "$image" sh "scripts/$script" "$@"
+    # Each step runs only when the one before it worked; the conditions are tests whose
+    # status is the answer.
+    # shellcheck disable=SC2310
+    if boot_system --name "$container" --platform "$platform" -e VERSION -e PACKAGE_DATE \
+        -v "$root":/src:ro -v "$root/dist":/out:ro -w /src "$image" &&
+        wait_booted "$format" "$container"; then
+        status=0
+        docker exec "$container" sh "scripts/$script" "$@" || status=$?
+    else
+        status=1
+    fi
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    return "$status"
 }
 
 for format in deb rpm apk; do
