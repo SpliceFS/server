@@ -24,7 +24,9 @@ check() {
 # alpha for every system, beta for Linux only, so that each archive holds what its own
 # system has.
 tree="$work/tree"
-mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/packaging/deb" "$tree/packaging/plain"
+mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/packaging/deb" "$tree/packaging/plain" \
+    "$tree/packaging/systemd"
+: > "$tree/packaging/systemd/alpha.service"
 cp "$root/scripts/archive-programs.sh" "$root/scripts/package-lib.sh" "$tree/scripts/"
 printf 'Package: splicefs-demo\n' > "$tree/packaging/deb/control"
 printf 'conf.d\n' > "$tree/packaging/config-folders"
