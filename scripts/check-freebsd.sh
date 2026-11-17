@@ -38,7 +38,7 @@ run_tests() {
     results="$out/freebsd-check-results/$release"
     rm -rf "$results" 2>/dev/null || true
     mkdir -p "$results"
-    freebsd_job_folder "$job" freebsd-check-job.sh "${FREEBSD_ONLY:-}"
+    freebsd_job_folder "$release" "$job" freebsd-check-job.sh "${FREEBSD_ONLY:-}"
     if [ -f packaging/freebsd/test-modules ]; then cp packaging/freebsd/test-modules "$job/"; fi
     echo "FreeBSD $release: running the tests"
     freebsd_run "$release" "$job" "$results" "$archive"

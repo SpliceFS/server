@@ -47,17 +47,22 @@ freebsd_each_release() {
     [ "$ran" -gt 0 ] || fail "no release in packaging/freebsd/releases matches ${FREEBSD:-any release}"
 }
 
-# freebsd_job_folder <folder> <job script> [argument ...]
+# freebsd_job_folder <release> <folder> <job script> [argument ...]
 # Makes the folder the machine reads at its first boot: FreeBSD sees it as a small disk named
-# cidata and runs the file user-data from it. The arguments are single words.
+# cidata and runs the file user-data from it. The arguments are single words. user-data is
+# made from the template that the image of the release holds, because the image is what
+# knows how its disk starts a job, and the template is then in one place only.
 freebsd_job_folder() {
-    folder="$1"
-    script="$2"
-    shift 2
+    template_image="$(freebsd_image "$1")"
+    folder="$2"
+    script="$3"
+    shift 3
+    template="$(docker run --rm "$template_image" cat /freebsd/user-data.in)" ||
+        fail "cannot read /freebsd/user-data.in from $template_image"
     rm -rf "$folder"
     mkdir -p "$folder"
     cp "scripts/$script" "$folder/"
-    sed -e "s|@JOB@|$script|" -e "s|@ARGS@|$*|" packaging/freebsd/user-data.in > "$folder/user-data"
+    printf '%s\n' "$template" | sed -e "s|@JOB@|$script|" -e "s|@ARGS@|$*|" > "$folder/user-data"
     printf 'instance-id: %s\nlocal-hostname: build\n' "$(basename "$folder")" > "$folder/meta-data"
 }
 

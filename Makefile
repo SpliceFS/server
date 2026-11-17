@@ -267,7 +267,7 @@ lint-shell:
 		packaging/deb/postinst packaging/deb/prerm packaging/deb/postrm \
 		packaging/alpine/*.post-install packaging/alpine/*.post-upgrade \
 		packaging/alpine/*.pre-deinstall packaging/alpine/*.pre-install \
-		packaging/freebsd/splicefsd.rc packaging/freebsd/user-data.in
+		packaging/freebsd/splicefsd.rc
 
 # Installable packages in ./dist: deb (dpkg-deb), rpm (rpmbuild) and apk (abuild), each
 # for amd64 and arm64. The program is compiled once (build-all) and every format wraps that
