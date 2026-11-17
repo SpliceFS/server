@@ -267,7 +267,7 @@ lint-shell:
 		packaging/deb/postinst packaging/deb/prerm packaging/deb/postrm \
 		packaging/alpine/*.post-install packaging/alpine/*.post-upgrade \
 		packaging/alpine/*.pre-deinstall packaging/alpine/*.pre-install \
-		packaging/freebsd/splicefsd.rc packaging/freebsd/user-data.in
+		packaging/freebsd/splicefsd.rc
 
 # Installable packages in ./dist: deb (dpkg-deb), rpm (rpmbuild) and apk (abuild), each
 # for amd64 and arm64. The program is compiled once (build-all) and every format wraps that
@@ -282,10 +282,23 @@ package: build-all
 # arm64, installs the amd64 one and checks that the service runs. The arm64 package is built in
 # the amd64 machine and checked from the file; it is not installed. This needs Docker and KVM,
 # as check-freebsd does. FREEBSD=15.1 limits the run to one release.
-.PHONY: package-freebsd
-package-freebsd: freebsd-kvm build-all keys
+#
+# The programs it wraps are the ones in ./dist/bin, which CI downloads from the build job, and
+# they are compiled (make build-all) only when one is missing, so a clean tree still builds.
+# The first build makes every program, so the others are there when make comes to them. After a
+# change to the code, make build-all refreshes the programs.
+FREEBSD_PROGRAMS := $(foreach program,$(notdir $(wildcard cmd/*)),\
+	dist/bin/freebsd-amd64/$(program) dist/bin/freebsd-arm64/$(program))
+
+.PHONY: package-freebsd freebsd-programs
+package-freebsd: freebsd-kvm freebsd-programs keys
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) LINUX_IMAGE=$(LINUX_IMAGE) \
 		FREEBSD_IMAGE=$(FREEBSD_IMAGE) FREEBSD=$(FREEBSD) scripts/package-freebsd.sh dist
+
+freebsd-programs: $(FREEBSD_PROGRAMS)
+
+$(FREEBSD_PROGRAMS):
+	$(MAKE) --no-print-directory build-all
 
 # Where the version comes from: the file VERSION, also in a checkout of one commit without
 # tags, which is what CI has. It needs no Docker, so it is part of check.

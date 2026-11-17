@@ -86,6 +86,7 @@ mkdir -p "$work/bin"
 cat >"$work/bin/docker" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$@" >"$STUB_ARGS"
+if [ -n "${STUB_OUTPUT:-}" ]; then cat "$STUB_OUTPUT"; fi
 exit "${STUB_STATUS:-0}"
 EOF
 chmod +x "$work/bin/docker"
@@ -129,6 +130,44 @@ STUB_STATUS=3 freebsd_run 14.5 "$out/job" "$out/results"
 last_argument="$(tail -n 1 "$STUB_ARGS")"
 [ "$last_argument" = "/out/results" ] || fail "the last argument is [$last_argument], not the result folder"
 echo "freebsd-lib: every release ran its step in its own image, and the machine needs the device"
+
+# The file the machine runs at its first boot is made from the template that the image of the
+# release holds, so the template exists in one place only. The stand-in docker prints a
+# template of the test's own (the folder here has no copy to read instead), and the folder
+# must end up with the job script, the file for the machine and the meta-data.
+mkdir -p "$work/scripts"
+printf 'echo the job\n' >"$work/scripts/demo-job.sh"
+printf '#!/bin/sh\nsh /in/@JOB@ @ARGS@\n' >"$work/template"
+# The callers keep their own variables (image is the Go image, release the one being run), and
+# shell variables are global, so the function must leave both as they were.
+image=the-go-image
+release=the-release-of-the-loop
+STUB_STATUS=0 STUB_OUTPUT="$work/template" freebsd_job_folder 15.1 "$out/folder" demo-job.sh one two
+[ "$image" = the-go-image ] || fail "freebsd_job_folder changed image to [$image]"
+[ "$release" = the-release-of-the-loop ] || fail "freebsd_job_folder changed release to [$release]"
+unset image release
+cat >"$work/want-args" <<EOF
+run
+--rm
+registry.invalid/freebsd-15.1:t1
+cat
+/freebsd/user-data.in
+EOF
+cmp -s "$work/want-args" "$STUB_ARGS" ||
+    { diff "$work/want-args" "$STUB_ARGS" >&2 || true; fail "the template was not asked of the image of the release"; }
+printf '#!/bin/sh\nsh /in/demo-job.sh one two\n' >"$work/want-user-data"
+cmp -s "$work/want-user-data" "$out/folder/user-data" ||
+    { diff "$work/want-user-data" "$out/folder/user-data" >&2 || true; fail "user-data is not the template with the job in it"; }
+cmp -s "$work/scripts/demo-job.sh" "$out/folder/demo-job.sh" || fail "the job script is not in the folder"
+printf 'instance-id: folder\nlocal-hostname: build\n' >"$work/want-meta-data"
+cmp -s "$work/want-meta-data" "$out/folder/meta-data" || fail "meta-data is not what the machine expects"
+# An image that cannot give the template stops the run, and no folder is made from nothing.
+job_folder_from_failing_image() {
+    STUB_STATUS=4 freebsd_job_folder 14.5 "$out/none" demo-job.sh
+}
+expect 1 "cannot read /freebsd/user-data.in from registry.invalid/freebsd-14.5:t1" job_folder_from_failing_image
+[ ! -e "$out/none" ] || fail "a folder was made without a template"
+echo "freebsd_job_folder: the file for the machine comes from the image of the release"
 
 # --- freebsd-with-kvm.sh ------------------------------------------------------------------
 
@@ -183,3 +222,53 @@ expect 1 "holds no usr/local/bin/other" sh "$check_package" "$work/arm64.pkg" 15
 expect 1 "cannot unpack $work/missing.pkg" sh "$check_package" "$work/missing.pkg" 15 aarch64 splicefsd
 expect 2 "usage" sh "$check_package" "$work/arm64.pkg" 15 sparc64 splicefsd
 echo "freebsd-package-check: a package is for the CPU type it says"
+
+# --- the programs of the FreeBSD packages -------------------------------------------------
+
+# make package-freebsd wraps the programs in dist/bin. CI downloads them from the build job, so
+# they are compiled only when one is missing. The tree is a copy of the Makefile and the
+# scripts with one program, and docker is a stand-in that counts the builds it is asked for and
+# writes the programs, so nothing is compiled.
+tree="$work/tree"
+mkdir -p "$tree/cmd/demo" "$work/builder"
+cp "$root/Makefile" "$tree/"
+cp -R "$root/scripts" "$tree/scripts"
+cat >"$work/builder/docker" <<'EOF2'
+#!/bin/sh
+echo build >>"$STUB_BUILDS"
+mkdir -p dist/bin/freebsd-amd64 dist/bin/freebsd-arm64
+: >dist/bin/freebsd-amd64/demo
+: >dist/bin/freebsd-arm64/demo
+EOF2
+chmod +x "$work/builder/docker"
+export STUB_BUILDS="$work/builds"
+
+# make_programs runs the rule that package-freebsd depends on for the programs. The version and
+# the date are given, so that make does not ask git for them, which takes longer than the rest.
+make_programs() {
+    PATH="$work/builder:$PATH" make -s --no-print-directory -C "$tree" VERSION=v0.0.1 PACKAGE_DATE=20260101 \
+        freebsd-programs
+}
+# builds_so_far <want> <what happened>
+builds_so_far() {
+    have="$(wc -l <"$STUB_BUILDS" | tr -d ' ')"
+    [ "$have" -eq "$1" ] || fail "after $2 the program was built $have times in all, want $1"
+}
+
+: >"$STUB_BUILDS"
+expect 0 "" make_programs
+builds_so_far 1 "a clean tree"
+[ -f "$tree/dist/bin/freebsd-arm64/demo" ] || fail "a clean tree did not get the arm64 program"
+
+# What the build job uploaded is all there, so nothing is built.
+expect 0 "" make_programs
+builds_so_far 1 "a tree that has every program"
+
+# One program missing is enough to build, and one build makes both.
+rm "$tree/dist/bin/freebsd-arm64/demo"
+expect 0 "" make_programs
+builds_so_far 2 "a tree without the arm64 program"
+rm "$tree/dist/bin/freebsd-amd64/demo" "$tree/dist/bin/freebsd-arm64/demo"
+expect 0 "" make_programs
+builds_so_far 3 "a tree without any program"
+echo "freebsd-programs: built only when a program of the packages is missing"
