@@ -54,8 +54,8 @@ KEYS_MOUNT := -v "$(CURDIR)/dist/keys":/keys:ro
 $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 	mkdir -p $@
 
-.PHONY: script-modes all build check check-in-images fmt fmt-check vet cover fuzz lint package-lib-test \
-	freebsd-lib-test version-test upgrade-diff-test part-test build-all-test package package-order-test \
+.PHONY: script-modes all build check check-in-images fmt fmt-check vet cover lint package-lib-test \
+	freebsd-lib-test version-test upgrade-diff-test part-test build-all-test fuzz-test package package-order-test \
 	package-test upgrade-test service-test service-test-host repo repo-test publish-fetch publish \
 	publish-check publish-test release-assets clean
 
@@ -70,7 +70,7 @@ build:
 # not need each other can run at the same time. A -here target also runs on a machine that
 # has the tools.
 .PHONY: static static-checks static-here lint-go unit unit-here race race-here build-all build-all-here \
-	integration packages package-deb package-rpm package-apk keys
+	integration fuzz fuzz-here fuzz-targets fuzz-packages packages package-deb package-rpm package-apk keys
 
 # gofmt, go vet, golangci-lint and ShellCheck, and the two checks that read the git index.
 # Those run on the host and not in the image: a git worktree keeps its index outside the
@@ -100,7 +100,8 @@ lint-go:
 unit: | $(CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
-unit-here: cover package-lib-test freebsd-lib-test version-test upgrade-diff-test part-test build-all-test
+unit-here: cover package-lib-test freebsd-lib-test version-test upgrade-diff-test part-test build-all-test \
+	fuzz-test
 
 # The same tests with the race detector, which makes them several times slower.
 race: | $(CACHE_DIRS)
@@ -187,16 +188,29 @@ vet:
 cover:
 	scripts/coverage.sh coverage.out
 
-# Go runs one fuzz target per invocation, so the targets are found with go test -list and
-# run one by one; a new Fuzz function is picked up without editing this file.
+# Every fuzz target, each for FUZZTIME one after another. FUZZ_PACKAGE=package limits the run
+# to the targets of one package, FUZZ_TARGET=package:Target to one target; both can be given.
+# make -s fuzz-targets prints the targets as package:Target lines and make -s fuzz-packages the
+# packages that have any. They are found in the code, so a new Fuzz function needs no edit
+# here. CI starts one job for each package, with the same command. A failing input is written
+# to testdata/fuzz in the package's folder.
 FUZZTIME ?= 10s
-fuzz:
-	@set -e; for pkg in $$(go list ./...); do \
-		for target in $$(go test -list '^Fuzz' $$pkg | grep '^Fuzz'); do \
-			echo "fuzz $$pkg $$target ($(FUZZTIME))"; \
-			go test -run '^$$' -fuzz "^$$target\$$" -fuzztime $(FUZZTIME) $$pkg; \
-		done; \
-	done
+FUZZ_PACKAGE ?=
+FUZZ_TARGET ?=
+fuzz: | $(CACHE_DIRS)
+	scripts/part.sh fuzz $(LINUX_RUN) make FUZZTIME=$(FUZZTIME) FUZZ_PACKAGE=$(FUZZ_PACKAGE) \
+		FUZZ_TARGET=$(FUZZ_TARGET) fuzz-here
+
+fuzz-here:
+	scripts/fuzz.sh $(FUZZTIME) $(FUZZ_PACKAGE) $(FUZZ_TARGET)
+
+# Nothing but the lines on standard output, so that CI can read them (it asks with -s, which
+# also keeps make from printing the folders it makes).
+fuzz-targets: | $(CACHE_DIRS)
+	@$(LINUX_RUN) scripts/fuzz-targets.sh
+
+fuzz-packages: | $(CACHE_DIRS)
+	@$(LINUX_RUN) scripts/fuzz-packages.sh
 
 # Proves the compatibility rule from the server's side: with the same first version number, a
 # client works with every server whose second number is equal or higher. It builds this
@@ -282,6 +296,10 @@ part-test:
 
 build-all-test:
 	scripts/build-all-test.sh
+
+# The scripts that find the fuzz targets and run them, against a stand-in for go.
+fuzz-test:
+	scripts/fuzz-test.sh
 
 # The part of the upgrade test that decides whether the packaging changed, checked against small
 # hand-made package listings. It needs no Docker, so it is part of check.

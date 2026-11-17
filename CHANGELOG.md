@@ -6,6 +6,10 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.27] - 2026-11-17
+
+- Internal: fuzzing runs in the go image, one parallel CI job per package.
+
 ## [0.5.26] - 2026-11-17
 
 - Internal: FreeBSD tests and packages run on prepared machine images, require hardware
