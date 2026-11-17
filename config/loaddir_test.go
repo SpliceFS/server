@@ -48,7 +48,7 @@ func load(t *testing.T, f files) (*Config, error) {
 
 func defaultSettings() *Config {
 	return &Config{
-		Listen:   []Endpoint{{Listener: Listener{Address: netip.IPv6Unspecified(), Port: 8480}}},
+		Listen:   []Endpoint{{Address: netip.IPv6Unspecified(), Port: 8480}},
 		BasePath: "/api",
 		Cluster:  Cluster{Name: "default", Node: "test-host"},
 		Auth: Auth{
@@ -115,7 +115,7 @@ func TestLoadDirMerge(t *testing.T) {
 	want := defaultSettings()
 	want.BasePath = "/b"
 	want.Listen = []Endpoint{
-		{Listener: Listener{Address: netip.MustParseAddr("192.0.2.2"), Port: 9000}},
+		{Address: netip.MustParseAddr("192.0.2.2"), Port: 9000},
 	}
 	want.Cluster = Cluster{Name: "x", Node: "n1"}
 	want.Auth = Auth{

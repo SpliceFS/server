@@ -117,7 +117,7 @@ on any system.
 
 ## Building
 
-Requires Go 1.26 or newer.
+Requires Go 1.27 or newer.
 
 ```
 make build      # the binary is ./bin/splicefsd

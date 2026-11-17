@@ -6,6 +6,10 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.31] - 2026-11-17
+
+- Building from source needs Go 1.27 or newer.
+
 ## [0.5.30] - 2026-11-17
 
 - Internal: package tests run on server images of each target system, with its service manager
