@@ -57,7 +57,7 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 .PHONY: script-modes all build check check-in-images fmt fmt-check vet cover lint package-lib-test \
 	freebsd-lib-test freebsd-repo-files-test version-test upgrade-diff-test part-test build-all-test fuzz-test package package-order-test \
 	package-test upgrade-test service-test service-test-host repo repo-test publish-fetch publish \
-	publish-check publish-test release-assets release-pack release-unpack release-parts-test clean \
+	publish-check publish-test release-assets release-pack release-unpack release-parts-test client-compat-test clean \
 	archives archive-programs-test
 
 all: check build
@@ -102,7 +102,7 @@ unit: | $(CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
 unit-here: cover package-lib-test freebsd-lib-test freebsd-repo-files-test version-test upgrade-diff-test part-test build-all-test \
-	archive-programs-test fuzz-test release-parts-test
+	archive-programs-test fuzz-test release-parts-test client-compat-test
 
 # The same tests with the race detector, which makes them several times slower.
 race: | $(CACHE_DIRS)
@@ -126,12 +126,22 @@ archives:
 	$(PACKAGE_VARS) scripts/archive-programs.sh
 
 # The real client against this server, in a container that may mount (FUSE); the client's mount
-# tests need root.
+# tests need root. INTEGRATION_PART=compat runs only the client's compatibility runs, and a
+# group of its cluster scenarios (make -s integration-parts lists the parts) runs only that
+# group; CI runs each part as a job of its own, and empty runs them all.
 integration: RUN_USER = 0
 integration: GO_CACHE = $(ROOT_CACHE)
-integration: RUN_OPTS = --privileged --device /dev/fuse -e CLIENT_TAG -e CLUSTER_ONLY -e CLUSTER_SEED
+integration: RUN_OPTS = --privileged --device /dev/fuse -e CLIENT_TAG -e CLUSTER_ONLY -e CLUSTER_SEED \
+	-e INTEGRATION_PART
 integration: | $(ROOT_CACHE_DIRS)
 	scripts/part.sh integration $(LINUX_RUN) make compat
+
+# Nothing but the parts of the integration test, one per line, so that CI can read them (it asks
+# with -s). The client that is tested lists them, so a part is added there and nowhere else. It
+# runs on the host: it needs git and the network, and builds nothing.
+.PHONY: integration-parts
+integration-parts:
+	@scripts/client-compat.sh parts
 
 # The packages of every format, from the programs in ./dist/bin (make build-all). Each format
 # is a target of its own.
@@ -224,7 +234,8 @@ fuzz-packages: | $(CACHE_DIRS)
 # server and the newest released client that this server must serve, mounts for real and
 # compares every file, so it needs Linux, FUSE and root. scripts/client-compat.sh says which
 # client it uses; CLIENT_TAG replaces that choice. make integration runs it in a container
-# that has FUSE; CLIENT_TAG, CLUSTER_ONLY and CLUSTER_SEED reach the container when set.
+# that has FUSE; CLIENT_TAG, CLUSTER_ONLY, CLUSTER_SEED and INTEGRATION_PART reach the container
+# when set.
 .PHONY: compat
 compat:
 	scripts/client-compat.sh
@@ -263,7 +274,7 @@ lint-shell:
 		packaging/deb/postinst packaging/deb/prerm packaging/deb/postrm \
 		packaging/alpine/*.post-install packaging/alpine/*.post-upgrade \
 		packaging/alpine/*.pre-deinstall packaging/alpine/*.pre-install \
-		packaging/freebsd/splicefsd.rc packaging/freebsd/user-data.in
+		packaging/freebsd/splicefsd.rc
 
 # Installable packages in ./dist: deb (dpkg-deb), rpm (rpmbuild) and apk (abuild), each
 # for amd64 and arm64. The program is compiled once (build-all) and every format wraps that
@@ -278,10 +289,23 @@ package: build-all
 # arm64, installs the amd64 one and checks that the service runs. The arm64 package is built in
 # the amd64 machine and checked from the file; it is not installed. This needs Docker and KVM,
 # as check-freebsd does. FREEBSD=15.1 limits the run to one release.
-.PHONY: package-freebsd
-package-freebsd: freebsd-kvm build-all keys
+#
+# The programs it wraps are the ones in ./dist/bin, which CI downloads from the build job, and
+# they are compiled (make build-all) only when one is missing, so a clean tree still builds.
+# The first build makes every program, so the others are there when make comes to them. After a
+# change to the code, make build-all refreshes the programs.
+FREEBSD_PROGRAMS := $(foreach program,$(notdir $(wildcard cmd/*)),\
+	dist/bin/freebsd-amd64/$(program) dist/bin/freebsd-arm64/$(program))
+
+.PHONY: package-freebsd freebsd-programs
+package-freebsd: freebsd-kvm freebsd-programs keys
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) LINUX_IMAGE=$(LINUX_IMAGE) \
 		FREEBSD_IMAGE=$(FREEBSD_IMAGE) FREEBSD=$(FREEBSD) scripts/package-freebsd.sh dist
+
+freebsd-programs: $(FREEBSD_PROGRAMS)
+
+$(FREEBSD_PROGRAMS):
+	$(MAKE) --no-print-directory build-all
 
 # Where the version comes from: the file VERSION, also in a checkout of one commit without
 # tags, which is what CI has. It needs no Docker, so it is part of check.
@@ -415,6 +439,9 @@ release-unpack:
 
 release-parts-test:
 	scripts/release-parts-test.sh
+
+client-compat-test:
+	scripts/client-compat-test.sh
 
 clean:
 	rm -rf bin dist coverage.out coverage.html

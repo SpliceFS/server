@@ -61,7 +61,7 @@ check_packages() {
 build_and_test() {
     release="$1"
     job="$out/freebsd-job/$release"
-    freebsd_job_folder "$job" freebsd-job.sh "$name" "$program" "$pkgver" "$VERSION"
+    freebsd_job_folder "$release" "$job" freebsd-job.sh "$name" "$program" "$pkgver" "$VERSION"
     for arch in amd64 arm64; do
         cp "$out/bin/freebsd-$arch/$program" "$job/$program-$arch"
     done

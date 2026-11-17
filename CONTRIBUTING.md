@@ -22,7 +22,7 @@ of ghcr.io/splicefs, as your own user, and keeps the Go caches in `./.cache`.
 make build        # build splicefsd into ./bin
 make check        # with the tools installed: format check, vet, module files tidy, both linters, tests with the coverage gate, tests with the race detector
 make check-in-images # the same in our images (Docker); prints how long each part took
-make integration  # runs the newest released client against this server (Docker; make compat on Linux as root)
+make integration  # runs the newest released client against this server (Docker; make compat on Linux as root); INTEGRATION_PART=compat or a group of the client's cluster scenarios runs one part of it, and make -s integration-parts lists the parts
 make lint         # golangci-lint (the configuration CI uses), then ShellCheck with every optional check on
 make fmt          # rewrite files with gofmt
 ```
@@ -30,7 +30,8 @@ make fmt          # rewrite files with gofmt
 The parts of a build are make targets: `make static`, `make unit`, `make race`, `make build-all`,
 `make integration` and `make packages` (or `make package-deb`, `make package-rpm`,
 `make package-apk`). Each runs in an image of ghcr.io/splicefs and prints `part NAME: Ns` when it
-ends; `make build-all` leaves the programs in `./dist/bin`, which the package targets read.
+ends; `make build-all` leaves the programs in `./dist/bin`, which the package targets read
+(`make package-freebsd` compiles them only when one is missing there).
 
 After `make package`, `make upgrade-test` runs the upgrade from the newest published version in a booted server image, but only when the files, scripts or dependencies of the package differ from the published one (the program and the changelog are left out).
 
