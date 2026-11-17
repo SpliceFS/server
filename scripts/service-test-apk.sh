@@ -32,7 +32,7 @@ service_restart() {
 }
 
 # The main process is the one that runs the program, not supervise-daemon, whose command
-# line only mentions it. The owner is read from /proc because the images have no ps.
+# line only mentions it. The owner is read from /proc, which every system has, whatever ps it ships.
 service_user() {
     docker exec "$1" sh -c '
         for dir in /proc/[0-9]*; do

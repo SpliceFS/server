@@ -30,7 +30,7 @@ service_restart() {
     docker exec "$1" systemctl restart "$unit"
 }
 
-# Reads the owner of the running process from /proc because the images have no ps.
+# Reads the owner of the running process from /proc, which every system has, whatever ps it ships.
 service_user() {
     docker exec "$1" sh -c '
         pid="$(systemctl show -p MainPID --value "$1")"
