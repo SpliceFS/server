@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.26] - 2026-11-17
+
+- Internal: FreeBSD tests and packages run on prepared machine images, require hardware
+  virtualization, and build the aarch64 packages in the amd64 machine.
+
 ## [0.5.25] - 2026-11-17
 
 - Internal: every build and test part runs in prebuilt images as its own parallel CI job.
