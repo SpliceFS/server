@@ -88,7 +88,7 @@ func finishSettings(
 // applyDirDefaults fills in the settings keys that no file set.
 func applyDirDefaults(settings *Config, hostname func() (string, error)) []error {
 	if settings.Listen == nil {
-		settings.Listen = []Endpoint{{Listener: Listener{Address: netip.IPv6Unspecified(), Port: defaultPort}}}
+		settings.Listen = []Endpoint{{Address: netip.IPv6Unspecified(), Port: defaultPort}}
 	}
 	if settings.BasePath == "" {
 		settings.BasePath = defaultBasePath

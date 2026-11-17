@@ -114,8 +114,8 @@ func loadConfig(t *testing.T, conf, shares map[string]string) *config.Config {
 // porttest chose, and a test that runs the server by itself gives them with onFreePorts.
 func configEndpoint(tlsFiles *config.TLS, plain bool) config.Endpoint {
 	return config.Endpoint{
-		Listener: config.Listener{Address: netip.MustParseAddr("127.0.0.1"), TLS: tlsFiles},
-		Plain:    plain,
+		Address: netip.MustParseAddr("127.0.0.1"), TLS: tlsFiles,
+		Plain: plain,
 	}
 }
 
