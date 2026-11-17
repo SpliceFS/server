@@ -1,19 +1,24 @@
 #!/bin/sh
-# Wraps the compiled program into Debian packages, one per CPU type, with dpkg-deb. It runs
-# inside a Debian container (make package) after package-binaries.sh.
+# Wraps the compiled programs of OUTPUT_DIR/bin (scripts/build-all.sh) into Debian packages,
+# one per CPU type, with dpkg-deb. It runs in the Go image (make package-deb) and compiles
+# nothing.
 set -eu
 
 out="${1:?usage: package-deb.sh OUTPUT_DIR}"
 # shellcheck source=package-lib.sh
 . scripts/package-lib.sh
 
+unit="$(mktemp)"
+trap 'rm -f "$unit"' EXIT
+package_unit "$unit"
+
 for arch in amd64 arm64; do
     root="$(mktemp -d)"
     chmod 755 "$root"
     install -d "$root/DEBIAN" "$root$confdir"
     for folder in $confsubdirs; do install -d "$root$confdir/$folder"; done
-    install -D -m 755 "$out/stage/$arch/$program" "$root/usr/bin/$program"
-    install -D -m 644 "$out/stage/$program.service" "$root/usr/lib/systemd/system/$program.service"
+    install -D -m 755 "$out/bin/linux-$arch/$program" "$root/usr/bin/$program"
+    install -D -m 644 "$unit" "$root/usr/lib/systemd/system/$program.service"
     install -D -m 644 LICENSE "$root/usr/share/doc/$name/copyright"
     install -m 644 README.md CHANGELOG.md docs/configuration.md "$root/usr/share/doc/$name/"
 
