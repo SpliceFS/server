@@ -72,6 +72,15 @@ refuse() {
     if "$@"; then fail "$message"; fi
 }
 
+# A server that runs a firewall (firewalld on Rocky Linux) refuses the port of the service
+# until its owner opens it, so the test opens it the way a user of that system does, for good
+# so that it holds after the reboot. A system without a running firewalld has nothing to open.
+open_firewall() {
+    docker exec "$1" sh -c '
+        firewall-cmd --state >/dev/null 2>&1 || exit 0
+        firewall-cmd --permanent --add-port="$1/tcp" >/dev/null && firewall-cmd --reload >/dev/null' sh "$port"
+}
+
 active_and_answering() {
     service_active "$1" && answers "$1"
 }
@@ -135,6 +144,7 @@ run_checks() {
         fail "the service manager did not finish booting"
     }
     install_package "$1" || fail "installing the package failed"
+    must "opening the port $port in the firewall failed" open_firewall "$1"
     check_starts_by_itself "$1"
     check_user "$1"
     check_answers "$1"
