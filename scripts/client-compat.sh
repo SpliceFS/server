@@ -13,10 +13,28 @@
 #
 # CLIENT_TAG=v1.2.3 replaces that choice. CLUSTER_ONLY and CLUSTER_SEED, when set, reach the
 # client's cluster test through the environment.
+#
+# INTEGRATION_PART=compat runs only the client's compatibility runs, and INTEGRATION_PART=GROUP
+# only the cluster scenarios of that group, which is how CI runs the test as several jobs.
+# Empty runs it all. "client-compat.sh parts" prints the parts, one per line, and runs nothing
+# else: the client of that tag lists them (scripts/compat.sh parts there). A client that has
+# no parts is one part, "all".
 set -eu
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
+
+# shellcheck source=client-compat-lib.sh
+. "$root/scripts/client-compat-lib.sh"
+
+if [ "${1:-}" = parts ]; then
+    list_parts=yes
+elif [ "$#" -eq 0 ]; then
+    list_parts=no
+else
+    echo "usage: client-compat.sh [parts]" >&2
+    exit 2
+fi
 
 # The version this server is about to get, as the release sets it in VERSION.
 read -r version <VERSION
@@ -46,9 +64,30 @@ if [ -z "$client_tag" ]; then
             'substr($1, 2) == main && $2 + 0 <= minor + 0 { last = $0 } END { print last }')"
 fi
 
+# With no client there is nothing to run, and the one part "all" keeps a list of parts from
+# being empty, which a job matrix does not accept.
 if [ -z "$client_tag" ]; then
-    echo "no released client that this server must serve; nothing to test"
+    if [ "$list_parts" = yes ]; then
+        echo all
+    else
+        echo "no released client that this server must serve; nothing to test"
+    fi
     exit 0
+fi
+
+git -c advice.detachedHead=false clone -q --depth 1 --branch "$client_tag" https://github.com/SpliceFS/client "$tmp/client"
+
+if [ "$list_parts" = yes ]; then
+    client_parts "$tmp/client"
+    exit 0
+fi
+
+# A part that the client does not have is found before anything is built.
+part="${INTEGRATION_PART:-}"
+require_part "$part" "$tmp/client"
+# "all" is what a client without parts lists: the whole test, which is what an empty part runs.
+if [ "$part" = all ]; then
+    part=""
 fi
 
 echo "server v$version against client $client_tag"
@@ -58,7 +97,6 @@ go build -buildvcs=false \
     -ldflags "-X github.com/SpliceFS/server/internal/version.version=v$version" \
     -o "$tmp/splicefsd" ./cmd/splicefsd
 
-git clone -q --depth 1 --branch "$client_tag" https://github.com/SpliceFS/client "$tmp/client"
 cd "$tmp/client"
 go build -buildvcs=false \
     -ldflags "-X github.com/SpliceFS/client/internal/version.version=$client_tag" \
@@ -76,7 +114,19 @@ run_client_script() {
     "scripts/$script" "$@"
 }
 
-run_client_script compat-test.sh works "$tmp/splicefsd" "$tmp/splicefs"
-run_client_script cluster-test.sh "$tmp/splicefsd" "$tmp/splicefs"
+# The client's cluster test runs the scenarios of the group that CLUSTER_GROUP names, or all
+# of them when it is empty. A client without groups does not read it.
+CLUSTER_GROUP="$part"
+export CLUSTER_GROUP
+
+# part_includes is one test whose status is the answer, so set -e being off inside it changes nothing.
+# shellcheck disable=SC2310
+if part_includes compat "$part"; then
+    run_client_script compat-test.sh works "$tmp/splicefsd" "$tmp/splicefs"
+fi
+# shellcheck disable=SC2310
+if part_includes cluster "$part"; then
+    run_client_script cluster-test.sh "$tmp/splicefsd" "$tmp/splicefs"
+fi
 
 echo "client compat: all runs as expected"

@@ -57,7 +57,7 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 .PHONY: script-modes all build check check-in-images fmt fmt-check vet cover lint package-lib-test \
 	freebsd-lib-test version-test upgrade-diff-test part-test build-all-test fuzz-test package package-order-test \
 	package-test upgrade-test service-test service-test-host repo repo-test publish-fetch publish \
-	publish-check publish-test release-assets release-pack release-unpack release-parts-test clean
+	publish-check publish-test release-assets release-pack release-unpack release-parts-test client-compat-test clean
 
 all: check build
 
@@ -101,7 +101,7 @@ unit: | $(CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
 unit-here: cover package-lib-test freebsd-lib-test version-test upgrade-diff-test part-test build-all-test \
-	fuzz-test release-parts-test
+	fuzz-test release-parts-test client-compat-test
 
 # The same tests with the race detector, which makes them several times slower.
 race: | $(CACHE_DIRS)
@@ -119,12 +119,22 @@ build-all-here:
 	LDFLAGS='$(LDFLAGS)' scripts/build-all.sh dist/bin
 
 # The real client against this server, in a container that may mount (FUSE); the client's mount
-# tests need root.
+# tests need root. INTEGRATION_PART=compat runs only the client's compatibility runs, and a
+# group of its cluster scenarios (make -s integration-parts lists the parts) runs only that
+# group; CI runs each part as a job of its own, and empty runs them all.
 integration: RUN_USER = 0
 integration: GO_CACHE = $(ROOT_CACHE)
-integration: RUN_OPTS = --privileged --device /dev/fuse -e CLIENT_TAG -e CLUSTER_ONLY -e CLUSTER_SEED
+integration: RUN_OPTS = --privileged --device /dev/fuse -e CLIENT_TAG -e CLUSTER_ONLY -e CLUSTER_SEED \
+	-e INTEGRATION_PART
 integration: | $(ROOT_CACHE_DIRS)
 	scripts/part.sh integration $(LINUX_RUN) make compat
+
+# Nothing but the parts of the integration test, one per line, so that CI can read them (it asks
+# with -s). The client that is tested lists them, so a part is added there and nowhere else. It
+# runs on the host: it needs git and the network, and builds nothing.
+.PHONY: integration-parts
+integration-parts:
+	@scripts/client-compat.sh parts
 
 # The packages of every format, from the programs in ./dist/bin (make build-all). Each format
 # is a target of its own.
@@ -217,7 +227,8 @@ fuzz-packages: | $(CACHE_DIRS)
 # server and the newest released client that this server must serve, mounts for real and
 # compares every file, so it needs Linux, FUSE and root. scripts/client-compat.sh says which
 # client it uses; CLIENT_TAG replaces that choice. make integration runs it in a container
-# that has FUSE; CLIENT_TAG, CLUSTER_ONLY and CLUSTER_SEED reach the container when set.
+# that has FUSE; CLIENT_TAG, CLUSTER_ONLY, CLUSTER_SEED and INTEGRATION_PART reach the container
+# when set.
 .PHONY: compat
 compat:
 	scripts/client-compat.sh
@@ -400,6 +411,9 @@ release-unpack:
 
 release-parts-test:
 	scripts/release-parts-test.sh
+
+client-compat-test:
+	scripts/client-compat-test.sh
 
 clean:
 	rm -rf bin dist coverage.out coverage.html
