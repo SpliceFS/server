@@ -72,6 +72,8 @@ build_and_test() {
     archive="$out/freebsd-input/$release.tar"
     repo_files input "$major" "freebsd-input/$release.tar"
     freebsd_run "$release" "$job" "$out/freebsd" "$archive"
+    # Removed before the result is looked at, so that a failed run leaves no key file either.
+    repo_files remove-input "freebsd-input/$release.tar"
     [ "$run_status" -eq 0 ] || fail "FreeBSD $release failed"
     check_packages "$major"
     repo_files merge
