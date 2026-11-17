@@ -6,6 +6,10 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.30] - 2026-11-17
+
+- Internal: the server's integration test with the released client runs in parallel parts.
+
 ## [0.5.29] - 2026-11-17
 
 - Internal: the FreeBSD build removes the archive with the signing key as soon as the machine has
