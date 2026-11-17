@@ -35,53 +35,94 @@ jobs:
           fi
           echo "The branch contains the tip of $BASE."
 
-  linux:
+  # Every part is a make target that runs in our images (see the Makefile), so each job is
+  # the command a developer runs on any machine that has Docker. The parts need nothing from
+  # each other and start at once; only the packages wait, for the programs they wrap. The
+  # runners hold no Go and no packages of their own: the images do.
+  static:
     needs: tip
-    name: Linux (Go ${{ matrix.go }})
+    name: Static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/go-cache
+      - name: Format, vet, module files, ShellCheck and golangci-lint for every system
+        run: make static
+
+  unit:
+    needs: tip
+    name: Unit tests
     runs-on: ubuntu-latest
     permissions:
       contents: read
       # Codecov upload signs in with the OIDC token instead of a stored secret.
       id-token: write
-    strategy:
-      fail-fast: false
-      matrix:
-        go: [stable, oldstable]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: ${{ matrix.go }}
-      - name: Module files are tidy
-        run: |
-          go mod tidy
-          git diff --exit-code -- go.mod go.sum
-      # The real client mounts the server's share, which needs the FUSE tools.
-      - name: Install FUSE
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq fuse3
-      # Run as root because that is the configuration the coverage gate is measured
-      # in locally (make check-linux runs as root inside its container).
-      - name: Format, vet, tests with race detector, 100% coverage
-        run: sudo -E env "PATH=$PATH" make check
-      # The rule this proves: with the same first version number, a client works with every
-      # server whose second number is equal or higher. So a change of this server must not
-      # break the newest released client it has to serve. Needs root and FUSE for the mount.
-      - name: The real client against this server
-        run: sudo -E env "PATH=$PATH" make compat
-      # One report per commit is enough, so only the stable Go release uploads. Forks
-      # cannot get an OIDC token for this repository. The upload must never fail the
-      # build, for example before the organization is enabled on Codecov.
+      - uses: ./.github/actions/go-cache
+      - name: Tests with the 100% coverage gate, and the tests of the scripts
+        run: make unit
+      # The upload must never fail the build, for example before the organization is enabled
+      # on Codecov. Forks cannot get an OIDC token for this repository.
       - name: Upload coverage to Codecov
-        if: matrix.go == 'stable' && github.repository == 'SpliceFS/server' && github.event.pull_request.head.repo.fork != true
+        if: github.repository == 'SpliceFS/server' && github.event.pull_request.head.repo.fork != true
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           use_oidc: true
           files: coverage.out
           disable_search: true
           fail_ci_if_error: false
-      - name: Build
-        run: make build
 
+  race:
+    needs: tip
+    name: Tests with the race detector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/go-cache
+      - name: Tests with the race detector
+        run: make race
+
+  # Every program for every system, compiled once. The package jobs wrap these files and
+  # compile nothing, so every package format ships the same binary.
+  build:
+    needs: tip
+    name: Build every program
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/go-cache
+      - name: Build for linux, freebsd and darwin on amd64 and arm64
+        run: make build-all
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bin
+          path: dist/bin
+          if-no-files-found: error
+
+  # The rule this proves: with the same first version number, a client works with every
+  # server whose second number is equal or higher. So a change of this server must not break
+  # the newest released client it has to serve. The client mounts for real, as root, in a
+  # container that has FUSE.
+  integration:
+    needs: tip
+    name: The real client against this server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The container mounts through the /dev/fuse of the runner itself, and that device
+      # appears when the fuse kernel module is loaded.
+      - name: The FUSE device exists
+        run: test -c /dev/fuse || sudo modprobe fuse
+      # This part runs as root and keeps caches of its own (ROOT_CACHE in the Makefile).
+      - uses: ./.github/actions/go-cache
+        with:
+          folder: .cache/root
+      - name: The real client against this server
+        run: make integration
+
+  # A macOS runner cannot run Linux containers, so this is the one part that runs on the
+  # machine itself, with the Go release that is current.
   macos:
     needs: tip
     name: macOS
@@ -91,10 +132,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
-      - name: Format, vet, tests with race detector, 100% coverage
-        run: make check
-      - name: Build
-        run: make build
+      - name: Tests with the 100% coverage gate, then with the race detector
+        run: make unit-here race-here
 
   fuzz:
     needs: tip
@@ -125,61 +164,26 @@ jobs:
         include:
           - arch: amd64
             runner: ubuntu-latest
+            image: ""
+          # The arm64 machine is emulated, and FreeBSD does not boot under the arm64 UEFI
+          # firmware of Ubuntu 26.04 that the go image carries: the console stops after the
+          # firmware banner. The Debian firmware of golang:1.27 boots it. This stays until the
+          # arm64 packages are built inside the amd64 machine and no arm64 machine is booted.
           - arch: arm64
             runner: ubuntu-24.04-arm
+            image: golang:1.27
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/go-cache
       - name: Build the packages on FreeBSD, install one and start the service
-        run: make package-freebsd FREEBSD=${{ matrix.release }}
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: make package-freebsd FREEBSD=${{ matrix.release }} ${IMAGE:+LINUX_IMAGE=$IMAGE}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: matrix.arch == 'amd64'
         with:
           name: freebsd-packages-${{ matrix.release }}
           path: dist/freebsd/*/*.pkg
-          if-no-files-found: error
-
-  package:
-    needs: tip
-    name: Packages (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-latest
-            arch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Build the packages
-        run: make package
-      - name: Install and remove each package in a clean system of its kind
-        run: make package-test
-      - name: Upgrade from the last published version, when the packaging changed
-        run: make upgrade-test
-      # The containers above have no service manager running. These do: process 1 is
-      # systemd or OpenRC, and the service must start by itself, come back after a reboot
-      # and stop when the package is removed.
-      - name: Start the service under the real service manager of every system
-        run: make service-test
-      # The runner is a whole machine that booted the normal way.
-      - name: Install on this machine and start the service
-        run: make service-test-host
-      - name: Build the signed package repositories
-        run: make repo
-      - name: Install from the repositories with signature checks on
-        run: make repo-test
-      - name: Publish and release-file checks against local folders, no server
-        run: make publish-test
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: matrix.arch == 'amd64'
-        with:
-          name: packages
-          path: |
-            dist/*.deb
-            dist/*.rpm
-            dist/alpine/
           if-no-files-found: error
 
   # FreeBSD cannot run in a container, so the tests run in a virtual machine under QEMU
@@ -195,35 +199,177 @@ jobs:
         release: ["14.5", "15.1"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/go-cache
       - name: Tests on FreeBSD, as root, 100% coverage
         run: make check-freebsd FREEBSD=${{ matrix.release }}
 
-  # The scripts build, sign, test and publish the releases. ShellCheck runs with every
-  # optional check on; .shellcheckrc says which two are off and why.
-  shell:
-    needs: tip
-    name: Shell analysis (ShellCheck)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: ShellCheck with every optional check
-        run: make lint-shell
-
-  lint:
-    needs: tip
-    name: Lint (${{ matrix.goos }})
-    runs-on: ubuntu-latest
+  # The packages of every format, from the programs of the build job, once for each CPU type
+  # the runners offer. The repositories are made here too, because they need the packages of
+  # all three formats. The jobs below test what this job leaves in dist.
+  packages:
+    needs: build
+    name: Packages (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        goos: [linux, darwin, freebsd]
-    env:
-      GOOS: ${{ matrix.goos }}
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          go-version: stable
-      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+          name: bin
+          path: dist/bin
+      - name: Build the deb, rpm and apk packages
+        run: make packages
+      - name: Build the signed package repositories
+        run: make repo
+      # The keys are throwaway keys made in this run, because no real key is given to a pull
+      # request; publish-test signs with them. Nothing signed with them is published.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          version: v2.15
+          name: packages-${{ matrix.arch }}
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/alpine/
+            dist/repo/
+            dist/keys/
+          if-no-files-found: error
+
+  # One job for each package format and CPU type. A step that fails does not stop the next
+  # one: each test says what is broken, and one run should show all of it.
+  package-tests:
+    needs: packages
+    name: Package tests (${{ matrix.format }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        format: [deb, rpm, apk]
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages-${{ matrix.arch }}
+          path: dist
+      - name: Install and remove the package in a clean system of every release
+        run: make package-test ONLY=${{ matrix.format }}
+      # The containers above have no service manager running. These do: process 1 is
+      # systemd or OpenRC, and the service must start by itself, come back after a reboot
+      # and stop when the package is removed.
+      - name: Start the service under the real service manager of every release
+        if: ${{ !cancelled() }}
+        run: make service-test ONLY=${{ matrix.format }}
+      - name: Install from the repository with signature checks on
+        if: ${{ !cancelled() }}
+        run: make repo-test ONLY=${{ matrix.format }}
+
+  upgrade-test:
+    needs: packages
+    name: Upgrade (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages-${{ matrix.arch }}
+          path: dist
+      - name: Upgrade from the last published version, when the packaging changed
+        run: make upgrade-test
+
+  # The runner is a whole machine that booted the normal way, which no container is. The
+  # script installs the package on it and refuses to run anywhere but in CI.
+  service-test-host:
+    needs: packages
+    name: Service on the runner (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages-${{ matrix.arch }}
+          path: dist
+      - name: Install on this machine and start the service
+        run: make service-test-host
+
+  publish-test:
+    needs: packages
+    name: Publish checks (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages-${{ matrix.arch }}
+          path: dist
+      - name: Publish and release-file checks against local folders, no server
+        run: make publish-test
+
+  # The one check a branch must pass. A job that did not run counts as failed: a job is
+  # skipped only when one it needs failed. A new job is added to the list when it is added
+  # above, and nowhere else.
+  all-checks:
+    name: All checks
+    needs:
+      - tip
+      - static
+      - unit
+      - race
+      - build
+      - integration
+      - macos
+      - fuzz
+      - freebsd-package
+      - freebsd-tests
+      - packages
+      - package-tests
+      - upgrade-test
+      - service-test-host
+      - publish-test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          printf '%s\n' "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          if printf '%s\n' "$NEEDS" | jq -e 'any(.[]; .result != "success")' >/dev/null; then
+            echo "::error::At least one job did not succeed."
+            exit 1
+          fi

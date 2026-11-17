@@ -27,12 +27,12 @@ jobs:
         if: steps.gate.outputs.enabled == 'true'
         with:
           fetch-depth: 0   # the scanner needs history to attribute new code
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: ./.github/actions/go-cache
         if: steps.gate.outputs.enabled == 'true'
-        with:
-          go-version: stable
+      # The same part that CI runs, in the same image; it leaves coverage.out where
+      # sonar-project.properties looks for it.
       - name: Tests with coverage
         if: steps.gate.outputs.enabled == 'true'
-        run: scripts/coverage.sh coverage.out
+        run: make unit
       - uses: SonarSource/sonarqube-scan-action@e805d875275f728fac1885b413934be6d7c63f65 # v8.4.1
         if: steps.gate.outputs.enabled == 'true'

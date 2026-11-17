@@ -49,7 +49,7 @@ run_tests() {
     fi
     # The profiles name source files, so the gate needs the Go tools and the source: it
     # runs in the Go container like every other build step.
-    docker run --rm -v "$source_dir":/src:ro -v "$out":/out -v splicefs-gomod:/go/pkg/mod "$image" \
+    docker run --rm --user 0 -v "$source_dir":/src:ro -v "$out":/out "$image" \
         sh -c "cd /src && sh scripts/freebsd-coverage.sh '/out/${results#"$out"/}/cover'" ||
         fail "coverage on FreeBSD $release ($machine) is not 100%"
     echo "ok   FreeBSD $release ($machine)"

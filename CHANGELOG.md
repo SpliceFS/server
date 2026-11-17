@@ -6,6 +6,10 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.25] - 2026-11-17
+
+- Internal: every build and test part runs in prebuilt images as its own parallel CI job.
+
 ## [0.5.24] - 2026-11-16
 
 - Internal: the FreeBSD package build runs every release again (prevents the failure the client
