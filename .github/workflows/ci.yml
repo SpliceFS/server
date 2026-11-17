@@ -135,19 +135,55 @@ jobs:
       - name: Tests with the 100% coverage gate, then with the race detector
         run: make unit-here race-here
 
-  fuzz:
+  # One job for each fuzz target, so the fuzzing takes as long as the slowest target and not
+  # the sum of all of them. The targets are found in the code (make fuzz-targets), so a new
+  # Fuzz function gets its job without an edit here.
+  fuzz-targets:
     needs: tip
-    name: Fuzz (short)
+    name: Fuzz targets
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    outputs:
+      targets: ${{ steps.list.outputs.targets }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: ./.github/actions/go-cache
+      - name: List the fuzz targets as JSON
+        id: list
+        run: |
+          lines="$(make -s fuzz-targets)"
+          printf 'targets=%s\n' "$(printf '%s\n' "$lines" | jq -R -n -c '[inputs | select(length > 0)]')" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    needs: fuzz-targets
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.fuzz-targets.outputs.targets) }}
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/go-cache
+      - name: Fuzz the target briefly
+        run: make fuzz FUZZ_TARGET="$TARGET"
+      # Go writes an input that fails a target to testdata/fuzz in the package's folder. The
+      # log shows where; this keeps the file, which is gone with the runner. An artifact name
+      # may not hold : or /.
+      - name: Say where the failing input is
+        id: input
+        if: failure()
+        run: |
+          printf 'name=fuzz-input-%s\n' "$(printf '%s' "$TARGET" | tr ':/' '--')" >> "$GITHUB_OUTPUT"
+          printf 'path=%s/testdata/fuzz/%s\n' "${TARGET%%:*}" "${TARGET#*:}" >> "$GITHUB_OUTPUT"
+      - name: Keep the failing input
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          go-version: stable
-      - name: Fuzz every target briefly
-        run: make fuzz
+          name: ${{ steps.input.outputs.name }}
+          path: ${{ steps.input.outputs.path }}
+          if-no-files-found: ignore
 
   # FreeBSD cannot run in a container, so each release runs as a virtual machine under QEMU,
   # inside the prepared image of that release (scripts/package-freebsd.sh). The runner offers
@@ -342,6 +378,7 @@ jobs:
       - build
       - integration
       - macos
+      - fuzz-targets
       - fuzz
       - freebsd-package
       - freebsd-tests
