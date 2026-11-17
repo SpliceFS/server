@@ -183,3 +183,53 @@ expect 1 "holds no usr/local/bin/other" sh "$check_package" "$work/arm64.pkg" 15
 expect 1 "cannot unpack $work/missing.pkg" sh "$check_package" "$work/missing.pkg" 15 aarch64 splicefsd
 expect 2 "usage" sh "$check_package" "$work/arm64.pkg" 15 sparc64 splicefsd
 echo "freebsd-package-check: a package is for the CPU type it says"
+
+# --- the programs of the FreeBSD packages -------------------------------------------------
+
+# make package-freebsd wraps the programs in dist/bin. CI downloads them from the build job, so
+# they are compiled only when one is missing. The tree is a copy of the Makefile and the
+# scripts with one program, and docker is a stand-in that counts the builds it is asked for and
+# writes the programs, so nothing is compiled.
+tree="$work/tree"
+mkdir -p "$tree/cmd/demo" "$work/builder"
+cp "$root/Makefile" "$tree/"
+cp -R "$root/scripts" "$tree/scripts"
+cat >"$work/builder/docker" <<'EOF2'
+#!/bin/sh
+echo build >>"$STUB_BUILDS"
+mkdir -p dist/bin/freebsd-amd64 dist/bin/freebsd-arm64
+: >dist/bin/freebsd-amd64/demo
+: >dist/bin/freebsd-arm64/demo
+EOF2
+chmod +x "$work/builder/docker"
+export STUB_BUILDS="$work/builds"
+
+# make_programs runs the rule that package-freebsd depends on for the programs. The version and
+# the date are given, so that make does not ask git for them, which takes longer than the rest.
+make_programs() {
+    PATH="$work/builder:$PATH" make -s --no-print-directory -C "$tree" VERSION=v0.0.1 PACKAGE_DATE=20260101 \
+        freebsd-programs
+}
+# builds_so_far <want> <what happened>
+builds_so_far() {
+    have="$(wc -l <"$STUB_BUILDS" | tr -d ' ')"
+    [ "$have" -eq "$1" ] || fail "after $2 the program was built $have times in all, want $1"
+}
+
+: >"$STUB_BUILDS"
+expect 0 "" make_programs
+builds_so_far 1 "a clean tree"
+[ -f "$tree/dist/bin/freebsd-arm64/demo" ] || fail "a clean tree did not get the arm64 program"
+
+# What the build job uploaded is all there, so nothing is built.
+expect 0 "" make_programs
+builds_so_far 1 "a tree that has every program"
+
+# One program missing is enough to build, and one build makes both.
+rm "$tree/dist/bin/freebsd-arm64/demo"
+expect 0 "" make_programs
+builds_so_far 2 "a tree without the arm64 program"
+rm "$tree/dist/bin/freebsd-amd64/demo" "$tree/dist/bin/freebsd-arm64/demo"
+expect 0 "" make_programs
+builds_so_far 3 "a tree without any program"
+echo "freebsd-programs: built only when a program of the packages is missing"

@@ -30,7 +30,8 @@ make fmt          # rewrite files with gofmt
 The parts of a build are make targets: `make static`, `make unit`, `make race`, `make build-all`,
 `make integration` and `make packages` (or `make package-deb`, `make package-rpm`,
 `make package-apk`). Each runs in an image of ghcr.io/splicefs and prints `part NAME: Ns` when it
-ends; `make build-all` leaves the programs in `./dist/bin`, which the package targets read.
+ends; `make build-all` leaves the programs in `./dist/bin`, which the package targets read
+(`make package-freebsd` compiles them only when one is missing there).
 
 After `make package`, `make upgrade-test` runs the upgrade from the newest published version in a booted server image, but only when the files, scripts or dependencies of the package differ from the published one (the program and the changelog are left out).
 
