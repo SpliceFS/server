@@ -25,10 +25,8 @@ case "$PACKAGE_DATE" in
     [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
     *) fail "PACKAGE_DATE $PACKAGE_DATE is not a date written YYYYMMDD" ;;
 esac
-[ -d "$bin" ] || fail "missing $bin, run make build-all first"
-# The folders are named by the build, one for each system and CPU type, and hold no spaces.
-systems="$(cd "$bin" && LC_ALL=C ls)"
-[ -n "$systems" ] || fail "$bin holds no system, run make build-all first"
+# The names are ours and hold no spaces, so the list is split on purpose.
+systems="$(built_systems "$dist")"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
