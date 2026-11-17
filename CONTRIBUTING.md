@@ -15,17 +15,22 @@ held to. Participation is covered by the [code of conduct](CODE_OF_CONDUCT.md).
 
 You need Go 1.26 or newer and `make`. Linting uses
 [golangci-lint](https://golangci-lint.run) version 2 and [ShellCheck](https://www.shellcheck.net).
+With Docker you need none of the tools: `make check-in-images` runs the same checks in the images
+of ghcr.io/splicefs, as your own user, and keeps the Go caches in `./.cache`.
 
 ```
 make build        # build splicefsd into ./bin
-make check        # format check, vet, tests with the race detector, coverage gate
-make compat-linux # runs the newest released client against this server (Docker; make compat on Linux as root)
+make check        # with the tools installed: format check, vet, both linters, tests with the coverage gate, tests with the race detector
+make check-in-images # the same in our images (Docker); prints how long each part took
+make integration  # runs the newest released client against this server (Docker; make compat on Linux as root)
 make lint         # golangci-lint (the configuration CI uses), then ShellCheck with every optional check on
 make fmt          # rewrite files with gofmt
 ```
 
-`make check` is what CI runs, and CI runs golangci-lint the way `make lint` does. `make lint` also
-runs ShellCheck, which CI runs as its own job.
+The parts of a build are make targets: `make static`, `make unit`, `make race`, `make build-all`,
+`make integration` and `make packages` (or `make package-deb`, `make package-rpm`,
+`make package-apk`). Each runs in an image of ghcr.io/splicefs and prints `part NAME: Ns` when it
+ends; `make build-all` leaves the programs in `./dist/bin`, which the package targets read.
 
 After `make package`, `make upgrade-test` runs the upgrade from the newest published version in a container, but only when the files, scripts or dependencies of the package differ from the published one (the program and the changelog are left out).
 
