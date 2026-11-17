@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.29] - 2026-11-17
+
+- Internal: package tests run on server images of each target system, with its service manager
+  running.
+
 ## [0.5.28] - 2026-11-17
 
 - Internal: releases build in parallel and publish only after every build has finished.
