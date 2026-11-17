@@ -124,11 +124,11 @@ only the programs, `LICENSE` and a short `README.txt` with the commands to run t
 service files, no mount helpers and no install script.
 
 Check the download against the signed checksums of the same release. Import the public signing
-key (the one the rpm repositories on packages.splicefs.org/server publish as
-`repodata/repomd.xml.key`), then verify the signature and the file:
+key from https://packages.splicefs.org/keys/splicefs.asc, then verify the signature and the file:
 
 ```
-gpg --import repomd.xml.key
+curl -fsSLO https://packages.splicefs.org/keys/splicefs.asc
+gpg --import splicefs.asc
 gpg --verify SHA256SUMS.asc SHA256SUMS
 grep ' splicefs-server-<version>-<os>-<arch>.tar.gz$' SHA256SUMS | sha256sum -c    # macOS: shasum -a 256 -c
 ```
