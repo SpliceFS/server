@@ -164,13 +164,21 @@ jobs:
         include:
           - arch: amd64
             runner: ubuntu-latest
+            image: ""
+          # The arm64 machine is emulated, and FreeBSD does not boot under the arm64 UEFI
+          # firmware of Ubuntu 26.04 that the go image carries: the console stops after the
+          # firmware banner. The Debian firmware of golang:1.27 boots it. This stays until the
+          # arm64 packages are built inside the amd64 machine and no arm64 machine is booted.
           - arch: arm64
             runner: ubuntu-24.04-arm
+            image: golang:1.27
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/go-cache
       - name: Build the packages on FreeBSD, install one and start the service
-        run: make package-freebsd FREEBSD=${{ matrix.release }}
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: make package-freebsd FREEBSD=${{ matrix.release }} ${IMAGE:+LINUX_IMAGE=$IMAGE}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: matrix.arch == 'amd64'
         with:

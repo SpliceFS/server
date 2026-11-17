@@ -36,7 +36,10 @@ RUN_OPTS :=
 RUN_USER = $(shell id -u):$(shell id -g)
 GO_CACHE = $(CACHE)
 DOCKER_RUN = docker run --rm --user "$(RUN_USER)" $(RUN_OPTS) -v "$(CURDIR)":/src -w /src
+# The cache paths are named here as well as in the go image, so that the run works with any
+# Go image and any uid: HOME, GOPATH and GOCACHE all point at the mounted host folders.
 LINUX_RUN = $(DOCKER_RUN) -v "$(GO_CACHE)/gomod":/tmp/go/pkg/mod -v "$(GO_CACHE)/gobuild":/tmp/go-cache \
+	-e HOME=/tmp -e GOPATH=/tmp/go -e GOCACHE=/tmp/go-cache \
 	-e GOLANGCI_LINT_CACHE=/tmp/go-cache/golangci-lint $(LINUX_IMAGE)
 RPM_RUN = $(DOCKER_RUN) $(RPM_IMAGE)
 APK_RUN = $(DOCKER_RUN) $(APK_IMAGE)
