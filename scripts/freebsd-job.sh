@@ -1,8 +1,10 @@
 #!/bin/sh
-# Runs inside the FreeBSD build machine as root, started by the first-boot script. It builds
-# the packages with FreeBSD's own tools, installs the one for this machine and proves that the
-# service runs. What "the service works" means for this program comes from check-lib.sh in
-# the input folder (packaging/freebsd/check-lib.sh): expected_user and answers.
+# Runs inside the FreeBSD build machine as root, started by the first-boot script. The machine
+# is amd64 and its disk has pkg set up already. The job builds the packages for amd64 and arm64
+# with FreeBSD's own tools, installs the amd64 one and proves that the service runs; the arm64
+# package is built for its ABI and not installed. What "the service works" means for this
+# program comes from check-lib.sh in the input folder (packaging/freebsd/check-lib.sh):
+# expected_user and answers.
 #
 # It also builds the signed package repository. The input archive on the fourth disk holds
 # keys/splicefs.rsa(.pub) and the packages published before (repo/FreeBSD:<major>:<cpu>/All/).
@@ -29,10 +31,6 @@ fail() {
 . "$in/check-lib.sh"
 
 major="$(freebsd-version -u | cut -d. -f1)"
-machine="$(uname -m)"
-
-# The base system ships only a stub that fetches the real pkg on first use.
-pkg -N >/dev/null 2>&1 || env ASSUME_ALWAYS_YES=yes pkg bootstrap -y >/dev/null
 
 # One package per CPU type. goarch is how the build names the binary, abiarch how pkg names
 # the CPU type in an ABI string. The folders the package owns are the @dir lines of plist.
@@ -57,15 +55,9 @@ build() {
 build amd64 amd64
 build arm64 aarch64
 
-case "$machine" in
-    amd64) mine_abiarch=amd64 ;;
-    arm64) mine_abiarch=aarch64 ;;
-    *) fail "unknown machine $machine" ;;
-esac
-mine="$out/FreeBSD-$major-$mine_abiarch"
-package="$mine/$name-$version.pkg"
+package="$out/FreeBSD-$major-amd64/$name-$version.pkg"
 [ -f "$package" ] || fail "pkg create did not write $package"
-pkg info -F "$package" > "$out/info-$machine.txt"
+pkg info -F "$package" > "$out/info-amd64.txt"
 
 # The signed repository. The input archive is a raw disk, so it is unpacked onto the
 # filesystem first. pkg refuses a private key that others can read, and a file on the job
@@ -89,7 +81,7 @@ for abiarch in amd64 aarch64; do
     pkg repo "$folder" "rsa:$keys/splicefs.rsa" || fail "pkg repo could not sign the catalog of $folder"
     [ -f "$folder/meta.conf" ] || fail "pkg repo did not write $folder/meta.conf"
 done
-repo_folder="$out/repo/FreeBSD:$major:$mine_abiarch"
+repo_folder="$out/repo/FreeBSD:$major:amd64"
 
 # Writes a repository configuration: <file> <repository name> <folder>.
 write_repo_conf() {
