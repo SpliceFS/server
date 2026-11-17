@@ -116,6 +116,8 @@ check_removal() {
     remove_package "$1" || fail "removing the package failed"
     must "the service is still active after the package was removed" wait_for 10 inactive "$1"
     refuse "the service still answers after the package was removed" answers "$1"
+    # wait_booted is one test whose status is the answer, so set -e being off inside it changes nothing.
+    # shellcheck disable=SC2310
     wait_booted "$format" "$1" || fail "the service manager is not healthy after the package was removed"
     echo "ok: stopped and silent after the removal, the service manager is healthy"
 }
@@ -125,6 +127,8 @@ check_removal() {
 run_checks() {
     # The log of the container holds what the service manager said while it booted; without it
     # the cause of a system that does not come up stays hidden.
+    # wait_booted is one test whose status is the answer, so set -e being off inside it changes nothing.
+    # shellcheck disable=SC2310
     wait_booted "$format" "$1" || {
         echo "--- last 30 lines of the container output"
         docker logs --tail 30 "$1" 2>&1 || true
@@ -181,7 +185,8 @@ while read -r format image; do
     started=0
     options="$(run_options)"
     # run_options prints whole options and nothing else, so it is left unquoted on purpose.
-    # shellcheck disable=SC2086
+    # boot_system is one test whose status is the answer, so set -e being off inside it changes nothing.
+    # shellcheck disable=SC2086,SC2310
     if boot_system --name "$container" --platform "$platform" \
         -v "$root/dist":/pkg:ro $options "$image" 2>"$log"; then
         started=1

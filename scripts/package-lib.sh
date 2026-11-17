@@ -59,7 +59,10 @@ boot_system() {
 # runlevel, where the package adds the service. Usage: service_manager_up FORMAT CONTAINER.
 service_manager_up() {
     case "$1" in
-        apk) [ "$(docker exec "$2" rc-status --runlevel 2>/dev/null)" = default ] ;;
+        apk)
+            level="$(docker exec "$2" rc-status --runlevel 2>/dev/null)" || true
+            [ "$level" = default ]
+            ;;
         *)
             state="$(docker exec "$2" systemctl is-system-running 2>/dev/null)" || true
             # Any other state means systemd is not up yet.

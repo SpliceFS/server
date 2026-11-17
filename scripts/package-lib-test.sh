@@ -107,6 +107,8 @@ chmod +x "$fake/docker"
 # $1 what is passed to boot_system, $2 the command line docker must get.
 boots() {
     : > "$fake/log"
+    # $1 is split on purpose: it holds several arguments.
+    # shellcheck disable=SC2086
     got="$(PATH="$fake:$PATH" FAKE_LOG="$fake/log" VERSION=v1.2.3 PACKAGE_DATE=20261112 sh -c \
         '. scripts/package-lib.sh; boot_system "$@"' sh $1 2>&1 && cat "$fake/log")" || true
     if [ "$got" = "$2" ]; then
