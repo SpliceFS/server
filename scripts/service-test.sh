@@ -1,7 +1,7 @@
 #!/bin/sh
-# Proves the service, not only the files: on every system in packaging/test-systems it starts
-# one container whose process 1 is that system's own service manager, installs the package
-# into the running system, and checks that the service starts by itself, runs as its own
+# Proves the service, not only the files: on every system in packaging/test-systems it boots
+# one container of the server image (scripts/package-lib.sh, boot_system), whose process 1 is
+# that system's own service manager, installs the package into the running system, and checks that the service starts by itself, runs as its own
 # user, does its job, restarts, comes back after a reboot and stops
 # when the package is removed. A failing system does not stop the run, so one run shows
 # every system that is broken. Runs on the host (make service-test, CI); it needs Docker and
@@ -11,10 +11,6 @@
 #
 # What differs between package formats lives in scripts/service-test-<format>.sh, which this
 # file sources and which defines these functions (the first argument is the container):
-#   init_command             the shell command that becomes process 1: it installs the
-#                            distribution's own service manager when the image lacks it
-#   stop_signal              the signal that makes the service manager shut down cleanly
-#   wait_ready C             returns once the service manager has finished booting
 #   install_package C        installs the package from /pkg with the native package manager
 #   remove_package C         removes it again
 #   service_active C         status 0 when the service manager says the service is running
@@ -76,6 +72,15 @@ refuse() {
     if "$@"; then fail "$message"; fi
 }
 
+# A server that runs a firewall (firewalld on Rocky Linux) refuses the port of the service
+# until its owner opens it, so the test opens it the way a user of that system does, for good
+# so that it holds after the reboot. A system without a running firewalld has nothing to open.
+open_firewall() {
+    docker exec "$1" sh -c '
+        firewall-cmd --state >/dev/null 2>&1 || exit 0
+        firewall-cmd --permanent --add-port="$1/tcp" >/dev/null && firewall-cmd --reload >/dev/null' sh "$port"
+}
+
 active_and_answering() {
     service_active "$1" && answers "$1"
 }
@@ -120,21 +125,26 @@ check_removal() {
     remove_package "$1" || fail "removing the package failed"
     must "the service is still active after the package was removed" wait_for 10 inactive "$1"
     refuse "the service still answers after the package was removed" answers "$1"
-    wait_ready "$1" || fail "the service manager is not healthy after the package was removed"
+    # wait_booted is one test whose status is the answer, so set -e being off inside it changes nothing.
+    # shellcheck disable=SC2310
+    wait_booted "$format" "$1" || fail "the service manager is not healthy after the package was removed"
     echo "ok: stopped and silent after the removal, the service manager is healthy"
 }
 
 # One system. Every command is guarded with fail because errexit is off for anything called
 # from an if; the caller runs this in a subshell so that fail ends only this system.
 run_checks() {
-    # The first command of the container (installing the service manager where the image
-    # lacks one) writes its own error to the container log; without it the cause stays hidden.
-    wait_ready "$1" || {
+    # The log of the container holds what the service manager said while it booted; without it
+    # the cause of a system that does not come up stays hidden.
+    # wait_booted is one test whose status is the answer, so set -e being off inside it changes nothing.
+    # shellcheck disable=SC2310
+    wait_booted "$format" "$1" || {
         echo "--- last 30 lines of the container output"
         docker logs --tail 30 "$1" 2>&1 || true
         fail "the service manager did not finish booting"
     }
     install_package "$1" || fail "installing the package failed"
+    must "opening the port $port in the firewall failed" open_firewall "$1"
     check_starts_by_itself "$1"
     check_user "$1"
     check_answers "$1"
@@ -183,17 +193,12 @@ while read -r format image; do
     count=$((count + 1))
     container="splicefs-service-test-$$-$count"
     started=0
-    signal="$(stop_signal)"
     options="$(run_options)"
-    init="$(init_command)"
     # run_options prints whole options and nothing else, so it is left unquoted on purpose.
-    # shellcheck disable=SC2086
-    if docker run -d --name "$container" --platform "$platform" \
-        --privileged --cgroupns=host \
-        --tmpfs /run --tmpfs /run/lock --tmpfs /tmp -e container=docker \
-        --stop-signal "$signal" \
-        -v "$root/dist":/pkg:ro $options \
-        "$image" sh -c "$init" >/dev/null 2>"$log"; then
+    # boot_system is one test whose status is the answer, so set -e being off inside it changes nothing.
+    # shellcheck disable=SC2086,SC2310
+    if boot_system --name "$container" --platform "$platform" \
+        -v "$root/dist":/pkg:ro $options "$image" 2>"$log"; then
         started=1
     fi
 

@@ -13,7 +13,7 @@ held to. Participation is covered by the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Development setup
 
-You need Go 1.26 or newer and `make`. Linting uses
+You need Go 1.27 or newer and `make`. Linting uses
 [golangci-lint](https://golangci-lint.run) version 2 and [ShellCheck](https://www.shellcheck.net).
 With Docker you need none of the tools: `make check-in-images` runs the same checks in the images
 of ghcr.io/splicefs, as your own user, and keeps the Go caches in `./.cache`.
@@ -32,7 +32,7 @@ The parts of a build are make targets: `make static`, `make unit`, `make race`, 
 `make package-apk`). Each runs in an image of ghcr.io/splicefs and prints `part NAME: Ns` when it
 ends; `make build-all` leaves the programs in `./dist/bin`, which the package targets read.
 
-After `make package`, `make upgrade-test` runs the upgrade from the newest published version in a container, but only when the files, scripts or dependencies of the package differ from the published one (the program and the changelog are left out).
+After `make package`, `make upgrade-test` runs the upgrade from the newest published version in a booted server image, but only when the files, scripts or dependencies of the package differ from the published one (the program and the changelog are left out).
 
 ## Branches and pull requests
 
