@@ -115,6 +115,24 @@ every other setting. To mount the files on a reader, set up the
 `splicefsd` is a single static binary with every library built in; there is nothing to install
 on any system.
 
+## Plain programs
+
+For a system the packages do not cover, every [release](https://github.com/SpliceFS/server/releases)
+has one archive for each system and CPU type (linux, freebsd and darwin, on amd64 and arm64):
+`splicefs-server-<version>-<os>-<arch>.tar.gz`, with the version written without the `v`. It holds
+only the programs, `LICENSE` and a short `README.txt` with the commands to run them by hand: no
+service files, no mount helpers and no install script.
+
+Check the download against the signed checksums of the same release. Import the public signing
+key from https://packages.splicefs.org/keys/splicefs.asc, then verify the signature and the file:
+
+```
+curl -fsSLO https://packages.splicefs.org/keys/splicefs.asc
+gpg --import splicefs.asc
+gpg --verify SHA256SUMS.asc SHA256SUMS
+grep ' splicefs-server-<version>-<os>-<arch>.tar.gz$' SHA256SUMS | sha256sum -c    # macOS: shasum -a 256 -c
+```
+
 ## Building
 
 Requires Go 1.27 or newer.
@@ -134,7 +152,8 @@ make publish-fetch  # downloads the published repositories into ./dist/repo
 make publish        # uploads ./dist/repo to packages.splicefs.org/server, never deleting a package
 make publish-check  # lists the remote root, changes nothing
 make publish-test   # checks publishing and release-assets against local folders, no server
-make release-assets # package files, SHA256SUMS and its signature for the GitHub release in ./dist/release
+make archives     # the plain program archives in ./dist, from the programs in ./dist/bin
+make release-assets # packages, program archives, SHA256SUMS and its signature for the GitHub release in ./dist/release
 ```
 
 `make package-test` covers every system listed in `packaging/test-systems`, and so do
