@@ -55,8 +55,8 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 	mkdir -p $@
 
 .PHONY: script-modes all build check check-in-images fmt fmt-check vet cover lint package-lib-test \
-	freebsd-lib-test freebsd-repo-files-test version-test upgrade-diff-test part-test build-all-test fuzz-test package package-order-test \
-	package-test upgrade-test service-test service-test-host repo repo-test publish-fetch publish \
+	freebsd-lib-test freebsd-repo-files-test version-test part-test build-all-test fuzz-test package package-order-test \
+	package-test service-test service-test-host repo repo-test publish-fetch publish \
 	publish-check publish-test release-assets client-compat-test clean \
 	archives archive-programs-test
 
@@ -102,7 +102,7 @@ lint-go:
 unit: | $(CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
-unit-here: cover package-lib-test freebsd-lib-test freebsd-repo-files-test version-test upgrade-diff-test part-test build-all-test \
+unit-here: cover package-lib-test freebsd-lib-test freebsd-repo-files-test version-test part-test build-all-test \
 	archive-programs-test fuzz-test client-compat-test
 
 # The same tests with the race detector, which makes them several times slower.
@@ -339,11 +339,6 @@ archive-programs-test:
 fuzz-test:
 	scripts/fuzz-test.sh
 
-# The part of the upgrade test that decides whether the packaging changed, checked against small
-# hand-made package listings. It needs no Docker, so it is part of check.
-upgrade-diff-test:
-	scripts/upgrade-diff-test.sh
-
 # Checks in a Debian, a Rocky Linux and an Alpine system that those versions sort the way
 # a release needs (a pre-release before its release) and that apk accepts them. It is a
 # prerequisite of package-test, not of check, because it needs Docker; package-test is what CI
@@ -356,16 +351,6 @@ package-order-test:
 # one format (ONLY=deb) or one image, as written in that file.
 package-test: package-order-test
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) PLATFORM=$(PLATFORM) scripts/package-test.sh
-
-# Upgrades from the newest published version to the packages in ./dist, but only when the
-# packaging changed: for each format it downloads the newest published package from the GitHub
-# release into ./dist/published and compares it with the new one (the program and the changelog
-# change in every version and are left out). Equal means no test is needed. Different means it
-# installs the published package in a booted server of the format's first system in
-# packaging/test-systems, writes a configuration line and a data file, installs the new package
-# over it and checks that both survived. It needs the packages in ./dist from make package.
-upgrade-test:
-	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) PLATFORM=$(PLATFORM) scripts/upgrade-test.sh
 
 # Proves the service, not only the files: in a container per system in packaging/test-systems
 # that is booted as a server, with that system's own service manager as process 1, installs

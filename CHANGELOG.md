@@ -8,8 +8,7 @@ The change log of all parts of SpliceFS, side by side: https://splicefs.org/chan
 
 ## [0.5.36] - 2026-11-18
 
-- New program `splicefsdctl` for the server's utility commands; `splicefsdctl hash-password`
-  replaces `splicefsd hash-password`.
+- Internal: package upgrades are tested in the packages repository.
 
 ## [0.5.35] - 2026-11-18
 
