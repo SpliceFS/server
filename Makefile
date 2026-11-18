@@ -62,8 +62,9 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 
 all: check build
 
+# Every folder in cmd is a program; each is written to bin under its own name.
 build:
-	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/splicefsd ./cmd/splicefsd
+	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/ ./cmd/...
 
 # The parts of a build. Each is a make target that runs its inner target (the same name with
 # -here, the real work) in the image and prints how long it took (scripts/part.sh). A part
