@@ -162,7 +162,8 @@ share/          safe read-only access to one shared directory
 cluster/        the node list, one file per server
 internal/       the version number set at build time
 docs/           design and configuration reference
-packaging/      the README of the plain archives, the FreeBSD releases the tests run on
+archive/        the README.txt that goes into the program archives
+packaging/      the FreeBSD releases the tests run on
 scripts/        development helpers used by make and CI
 ```
 
