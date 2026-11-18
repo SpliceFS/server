@@ -10,7 +10,8 @@ Put the programs where you want them, for example in a folder on your PATH. Then
   splicefsd --config DIR --state DIR           run the server
   splicefsd --config DIR config check          check the configuration files
   splicefsd --config DIR config show           print the configuration and where each value is from
-  splicefsd hash-password                      make the password hash for a user file
+  splicefsdctl hash-password                   make the password hash for a user file
+  splicefsdctl --version
 
 DIR after --config holds what you write: settings in conf.d/ and shares in shares.d/. DIR after
 --state holds what the server keeps: users, keys and its certificate. Without the two options

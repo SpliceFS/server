@@ -19,7 +19,7 @@ With Docker you need none of the tools: `make check-in-images` runs the same che
 of ghcr.io/splicefs, as your own user, and keeps the Go caches in `./.cache`.
 
 ```
-make build        # build splicefsd into ./bin
+make build        # build splicefsd and splicefsdctl into ./bin
 make check        # with the tools installed: format check, vet, module files tidy, both linters, tests with the coverage gate, tests with the race detector
 make check-in-images # the same in our images (Docker); prints how long each part took
 make integration  # runs the newest released client against this server (Docker; make compat on Linux as root); INTEGRATION_PART=compat or a group of the client's cluster scenarios runs one part of it, and make -s integration-parts lists the parts
