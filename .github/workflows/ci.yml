@@ -326,27 +326,6 @@ jobs:
         if: ${{ !cancelled() }}
         run: make repo-test ONLY=${{ matrix.format }}
 
-  upgrade-test:
-    needs: packages
-    name: Upgrade (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-latest
-            arch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: packages-${{ matrix.arch }}
-          path: dist
-      - name: Upgrade from the last published version, when the packaging changed
-        run: make upgrade-test
-
   # The runner is a whole machine that booted the normal way, which no container is. The
   # script installs the package on it and refuses to run anywhere but in CI.
   service-test-host:
@@ -411,7 +390,6 @@ jobs:
       - freebsd-tests
       - packages
       - package-tests
-      - upgrade-test
       - service-test-host
       - publish-test
     if: always()
