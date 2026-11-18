@@ -6,6 +6,10 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.38] - 2026-11-18
+
+- Internal: the workflows run for the merge queue.
+
 ## [0.5.37] - 2026-11-18
 
 - New program `splicefsdctl` for the server's utility commands; `splicefsdctl hash-password`
