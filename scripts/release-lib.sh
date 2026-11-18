@@ -3,7 +3,7 @@
 # release-assets.sh), which read what it sets. Says what is released and what its files are
 # called. Run from the repository top.
 : "${VERSION:?VERSION is not set}"
-: "${PACKAGE_DATE:?PACKAGE_DATE is not set}"
+: "${BUILD_DATE:?BUILD_DATE is not set}"
 
 # The name of the release files follows the repository, whose module path ends in its name.
 name="splicefs-$(sed -n 's|^module .*/||p' go.mod)"

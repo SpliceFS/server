@@ -45,7 +45,7 @@ gpg_gen --armor --export "$fingerprint" >"$keys/splicefs.asc" 2>/dev/null
 # A private dist that holds one plain program archive for each system of its dist/bin, under
 # the names release-lib.sh gives this pre-release version. One shell asks for all the names:
 # every call of the library reads the repository again.
-export VERSION=v1.2.3-rc.1 PACKAGE_DATE=20261112
+export VERSION=v1.2.3-rc.1 BUILD_DATE=20261112
 d="$tmp/dist"
 systems="darwin-amd64 darwin-arm64 freebsd-amd64 freebsd-arm64 linux-amd64 linux-arm64"
 # The names are ours and hold no spaces, so the list is split on purpose.

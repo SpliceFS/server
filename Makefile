@@ -12,12 +12,12 @@ LINUX_IMAGE ?= ghcr.io/splicefs/go:v1
 # that has been booted once and has pkg set up (amd64 only), with QEMU. @RELEASE@ is where the
 # release goes; the releases are listed in freebsd-test/releases.
 FREEBSD_IMAGE ?= ghcr.io/splicefs/freebsd-@RELEASE@:v2
-# The date of the commit: the time of every file in the release archives, so that a rebuild of
-# a commit gives the same bytes.
-PACKAGE_DATE ?= $(shell git log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null || date +%Y%m%d)
+# The date of the commit, not of the build: the time of every file in the release archives, so
+# that a rebuild of a commit gives the same bytes.
+BUILD_DATE ?= $(shell git log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null || date +%Y%m%d)
 # What the scripts that make the release files read. They take these as environment
 # variables; env sets them in an image that has no make.
-PACKAGE_VARS = VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE)
+BUILD_VARS = VERSION=$(VERSION) BUILD_DATE=$(BUILD_DATE)
 
 # One runner per image: docker run with the source at /src, as the caller's own user, so that
 # every file a part writes belongs to the caller and not to root. The Go caches are folders
@@ -101,7 +101,7 @@ race-here:
 # Every program, for every system and CPU type, into ./dist/bin. The release archives and the
 # packages job of CI read from there; nothing is compiled twice.
 build-all: | $(CACHE_DIRS)
-	scripts/part.sh build-all $(LINUX_RUN) make $(PACKAGE_VARS) build-all-here
+	scripts/part.sh build-all $(LINUX_RUN) make $(BUILD_VARS) build-all-here
 
 build-all-here:
 	LDFLAGS='$(LDFLAGS)' scripts/build-all.sh dist/bin
@@ -110,7 +110,7 @@ build-all-here:
 # build-all): the programs, LICENSE and README.txt, for people who run SpliceFS by hand. They
 # are the files of the GitHub release (make release-assets). Needs only tar and gzip.
 archives:
-	$(PACKAGE_VARS) scripts/archive-programs.sh
+	$(BUILD_VARS) scripts/archive-programs.sh
 
 # The real client against this server, in a container that may mount (FUSE); the client's mount
 # tests need root. INTEGRATION_PART=compat runs only the client's compatibility runs, and a
@@ -274,7 +274,7 @@ fuzz-test:
 # release workflow sets both (.github/actions/release-keys). The packages are not released
 # here: the package repository makes them from these archives.
 release-assets:
-	$(PACKAGE_VARS) scripts/release-assets.sh
+	$(BUILD_VARS) scripts/release-assets.sh
 
 client-compat-test:
 	scripts/client-compat-test.sh
