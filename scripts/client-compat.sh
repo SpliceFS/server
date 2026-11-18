@@ -93,9 +93,10 @@ fi
 echo "server v$version against client $client_tag"
 
 # The server carries the version it is about to get, so that it reports what a release reports.
+# Every program of the server is built, each into $tmp under its own name.
 go build -buildvcs=false \
     -ldflags "-X github.com/SpliceFS/server/internal/version.version=v$version" \
-    -o "$tmp/splicefsd" ./cmd/splicefsd
+    -o "$tmp/" ./cmd/...
 
 cd "$tmp/client"
 go build -buildvcs=false \

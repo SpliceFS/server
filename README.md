@@ -16,8 +16,8 @@ blocks back together in order, caching them on local disk.
 It is built for throughput: a reader far away from every server gets the combined upload
 speed of all of them, and a slow or failing server is routed around while a file is being read.
 
-This repository holds the server, `splicefsd`. The client that mounts the files, `splicefs`, is in
-the [client repository](https://github.com/SpliceFS/client).
+This repository holds the server, `splicefsd`, and its control tool, `splicefsdctl`. The client that
+mounts the files, `splicefs`, is in the [client repository](https://github.com/SpliceFS/client).
 
 > **Status: alpha.** The server and the client work end to end on Linux and macOS and are
 > covered by tests, but nothing has been run in production yet and no release has been
@@ -43,6 +43,7 @@ the [client repository](https://github.com/SpliceFS/client).
 
 - **Server (`splicefsd`)** runs on each node and serves its local directories over HTTP:
   directory listings as JSON and file contents by byte range. It keeps no state about readers.
+  Its control tool, `splicefsdctl`, does the jobs an administrator runs by hand and serves nothing.
 - **Client (`splicefs`)**, in its [own repository](https://github.com/SpliceFS/client), asks every
   node what it has, merges the answers into one tree and mounts it with FUSE. When a file is read,
   it requests blocks from all nodes that hold an identical copy, gives more work to the faster
@@ -77,12 +78,12 @@ Add a share. The file name is the share name:
 path: /srv/media
 ```
 
-Add a user. Run `splicefsd hash-password`, type the password, and put the printed hash in one
+Add a user. Run `splicefsdctl hash-password`, type the password, and put the printed hash in one
 file:
 
 ```
 # /var/lib/splicefs/server/shared/users/alice.yaml
-password_hash: "<output of: splicefsd hash-password>"
+password_hash: "<output of: splicefsdctl hash-password>"
 shares: [media]
 ```
 
@@ -112,16 +113,16 @@ every other setting. To mount the files on a reader, set up the
 
 ## Requirements
 
-`splicefsd` is a single static binary with every library built in; there is nothing to install
-on any system.
+`splicefsd` and `splicefsdctl` are single static binaries with every library built in; there is
+nothing to install on any system.
 
 ## Plain programs
 
 For a system the packages do not cover, every [release](https://github.com/SpliceFS/server/releases)
 has one archive for each system and CPU type (linux, freebsd and darwin, on amd64 and arm64):
 `splicefs-server-<version>-<os>-<arch>.tar.gz`, with the version written without the `v`. It holds
-only the programs, `LICENSE` and a short `README.txt` with the commands to run them by hand: no
-service files, no mount helpers and no install script.
+only the programs (`splicefsd` and `splicefsdctl`), `LICENSE` and a short `README.txt` with the
+commands to run them by hand: no service files, no mount helpers and no install script.
 
 Check the download against the signed checksums of the same release. Import the public signing
 key from https://packages.splicefs.org/keys/splicefs.asc, then verify the signature and the file:
@@ -138,7 +139,7 @@ grep ' splicefs-server-<version>-<os>-<arch>.tar.gz$' SHA256SUMS | sha256sum -c 
 Requires Go 1.27 or newer.
 
 ```
-make build      # the binary is ./bin/splicefsd
+make build      # the programs are ./bin/splicefsd and ./bin/splicefsdctl
 make check      # with the tools installed: format check, vet, module files tidy, both linters, tests with the coverage gate, tests with the race detector
 make check-in-images  # the same in our images, as your own user (needs Docker)
 make build-all  # every program for linux, freebsd and darwin on amd64 and arm64 in ./dist/bin (needs Docker)
@@ -166,17 +167,18 @@ tests the other CPU type by emulation.
 ## Repository layout
 
 ```
-cmd/splicefsd/  the program: command line, config check, config show and hash-password
-app/            builds every part from the configuration, serves HTTP and reloads on SIGHUP
-config/         loads and validates the files in conf.d and shares.d
-api/            the HTTP API, version 1
-auth/           password hashes, user files, token keys, signed tokens, login rate limiter
-share/          safe read-only access to one shared directory
-cluster/        the node list, one file per server
-internal/       the version number set at build time
-docs/           design and configuration reference
-packaging/      systemd unit, OpenRC script, package files
-scripts/        development helpers used by make and CI
+cmd/splicefsd/     the server: command line, config check and config show
+cmd/splicefsdctl/  the control tool: one file per command
+app/               builds every part from the configuration, serves HTTP and reloads on SIGHUP
+config/            loads and validates the files in conf.d and shares.d
+api/               the HTTP API, version 1
+auth/              password hashes, user files, token keys, signed tokens, login rate limiter
+share/             safe read-only access to one shared directory
+cluster/           the node list, one file per server
+internal/          the version number set at build time, what both programs print the same way
+docs/              design and configuration reference
+packaging/         systemd unit, OpenRC script, package files
+scripts/           development helpers used by make and CI
 ```
 
 The JSON types of the HTTP API (`wire`) and the size and duration types of the configuration
@@ -186,8 +188,8 @@ uses too.
 ## Versioning
 
 SpliceFS follows [Semantic Versioning](https://semver.org). Releases are git tags of the form
-`vMAJOR.MINOR.PATCH` in this repository, and `splicefsd --version` prints the version. The
-server and the client are versioned separately: each repository has its own version tags. A
+`vMAJOR.MINOR.PATCH` in this repository, and `splicefsd --version` and `splicefsdctl --version` print
+the version. The server and the client are versioned separately: each repository has its own version tags. A
 client works with a server that serves the API version the client speaks, and that version is
 part of the URL (`/v1/`). Before 1.0.0 the API and the configuration format may change
 in any minor release; every change is listed in the changelog.

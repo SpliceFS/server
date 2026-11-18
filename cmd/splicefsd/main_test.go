@@ -16,11 +16,10 @@ import (
 	"sync"
 	"syscall"
 	"testing"
-	"testing/iotest"
 	"time"
 
-	"github.com/SpliceFS/server/auth"
 	"github.com/SpliceFS/server/config"
+	"github.com/SpliceFS/server/internal/cli"
 	"github.com/SpliceFS/server/internal/porttest"
 	"github.com/SpliceFS/server/internal/version"
 	"golang.org/x/crypto/argon2"
@@ -37,8 +36,8 @@ func TestMainRunsTheProgram(t *testing.T) {
 
 	main()
 
-	if status != exitOK {
-		t.Errorf("exit status = %d, want %d", status, exitOK)
+	if status != cli.ExitOK {
+		t.Errorf("exit status = %d, want %d", status, cli.ExitOK)
 	}
 }
 
@@ -48,18 +47,18 @@ type outcome struct {
 	stdout, stderr string
 }
 
-// execute runs the program with no input.
+// execute runs the program.
 func execute(t *testing.T, args ...string) outcome {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	status := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
+	status := run(context.Background(), args, &out, &errOut)
 	return outcome{status: status, stdout: out.String(), stderr: errOut.String()}
 }
 
 func TestVersion(t *testing.T) {
 	t.Parallel()
 	got := execute(t, "--version")
-	want := outcome{status: exitOK, stdout: "splicefsd " + version.String() + "\n"}
+	want := outcome{status: cli.ExitOK, stdout: "splicefsd " + version.String() + "\n"}
 	if got != want {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
@@ -68,7 +67,7 @@ func TestVersion(t *testing.T) {
 func TestHelp(t *testing.T) {
 	t.Parallel()
 	for _, arg := range []string{"-h", "--help"} {
-		if got, want := execute(t, arg), (outcome{status: exitOK, stdout: usage}); got != want {
+		if got, want := execute(t, arg), (outcome{status: cli.ExitOK, stdout: usage}); got != want {
 			t.Errorf("%s: got %+v, want %+v", arg, got, want)
 		}
 	}
@@ -85,7 +84,8 @@ func TestBadUsage(t *testing.T) {
 		{"missing value", []string{"--config"}, "flag needs an argument"},
 		{"unexpected argument", []string{"serve"}, `unexpected argument "serve"`},
 		{"argument after flags", []string{"--config", "/x", "extra"}, `unexpected argument "extra"`},
-		{"subcommand arguments", []string{"hash-password", "secret"}, "hash-password takes no arguments"},
+		// The command moved to splicefsdctl and is not an alias here.
+		{"hash-password", []string{"hash-password"}, `unexpected argument "hash-password"`},
 		{"config without a command", []string{"config"}, "config needs one of: check, show"},
 		{"unknown config command", []string{"config", "edit"}, "config needs one of: check, show"},
 		{"extra config argument", []string{"config", "check", "x"}, "config needs one of"},
@@ -94,7 +94,7 @@ func TestBadUsage(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := execute(t, tt.args...)
-			if got.status != exitUsage || got.stdout != "" {
+			if got.status != cli.ExitUsage || got.stdout != "" {
 				t.Errorf("status %d stdout %q", got.status, got.stdout)
 			}
 			if !strings.HasPrefix(got.stderr, "splicefsd: ") || !strings.Contains(got.stderr, tt.want) ||
@@ -105,86 +105,8 @@ func TestBadUsage(t *testing.T) {
 	}
 }
 
-// argon2idPrefix starts every hash that hash-password makes, with the parameters it uses.
-const argon2idPrefix = "$argon2id$v=19$m=65536,t=3,p=4$"
-
-// checkHashOutput fails the test when out is not one line with the hash of want, and not of
-// any other password.
-func checkHashOutput(t *testing.T, out, want string) {
-	t.Helper()
-	if !strings.HasSuffix(out, "\n") || strings.Count(out, "\n") != 1 || !strings.HasPrefix(out, argon2idPrefix) {
-		t.Fatalf("output = %q", out)
-	}
-	hash := strings.TrimSuffix(out, "\n")
-	if ok, err := auth.VerifyPassword(hash, want); err != nil || !ok {
-		t.Errorf("the hash does not verify %q: %v, %v", want, ok, err)
-	}
-	if ok, err := auth.VerifyPassword(hash, want+"x"); err != nil || ok {
-		t.Errorf("the hash verifies another password: %v, %v", ok, err)
-	}
-}
-
-func TestHashPassword(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"line", "correct horse\n", "correct horse"},
-		{"no line ending", "correct horse", "correct horse"},
-		{"windows line ending", "correct horse\r\n", "correct horse"},
-		{"only the first line", "first\nsecond\n", "first"},
-		{"spaces are kept", "  pad  \n", "  pad  "},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			var out, errOut bytes.Buffer
-			args := []string{"hash-password"}
-			status := run(context.Background(), args, strings.NewReader(tt.input), &out, &errOut)
-			if status != exitOK || errOut.Len() != 0 {
-				t.Fatalf("status %d stderr %q", status, errOut.String())
-			}
-			checkHashOutput(t, out.String(), tt.want)
-		})
-	}
-}
-
-func TestHashPasswordErrors(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name   string
-		in     io.Reader
-		out    io.Writer
-		random io.Reader
-		want   string
-	}{
-		{"empty input", strings.NewReader(""), io.Discard, saltSource(), "empty password"},
-		{"empty line", strings.NewReader("\n"), io.Discard, saltSource(), "empty password"},
-		{
-			"unreadable input", iotest.ErrReader(errTerminalGone), io.Discard, saltSource(),
-			"read password: terminal gone",
-		},
-		{"no randomness", strings.NewReader("pw\n"), io.Discard, strings.NewReader("short"), "read salt"},
-		{"unwritable output", strings.NewReader("pw\n"), errWriter{}, saltSource(), "write hash: disk full"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			err := hashPassword(tt.in, tt.out, tt.random)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Errorf("err = %v, want one containing %q", err, tt.want)
-			}
-		})
-	}
-}
-
-// The failures that the tests make the program's input and output report.
-var (
-	errTerminalGone = errors.New("terminal gone")
-	errDiskFull     = errors.New("disk full")
-)
+// errDiskFull is the failure that the tests make an output report.
+var errDiskFull = errors.New("disk full")
 
 type errWriter struct{}
 
@@ -192,18 +114,6 @@ func (errWriter) Write([]byte) (int, error) { return 0, errDiskFull }
 
 // testNodeID is a valid node id, a UUIDv7.
 const testNodeID = "017f22e2-79b0-7cc3-98c4-dc0c0c07398f"
-
-// saltSource returns a source of random bytes that is long enough for one salt.
-func saltSource() io.Reader { return strings.NewReader("0123456789abcdef") }
-
-func TestHashPasswordCommandFailure(t *testing.T) {
-	t.Parallel()
-	var out, errOut bytes.Buffer
-	status := run(context.Background(), []string{"hash-password"}, strings.NewReader("\n"), &out, &errOut)
-	if status != exitError || out.Len() != 0 || errOut.String() != "splicefsd: hash password: empty password\n" {
-		t.Errorf("status %d stdout %q stderr %q", status, out.String(), errOut.String())
-	}
-}
 
 func TestNewLogger(t *testing.T) {
 	t.Parallel()
@@ -397,7 +307,7 @@ func tryStartServer(ctx context.Context, setup serverSetup, limit time.Duration)
 	status := make(chan int, 1)
 	go func() {
 		args := []string{"--config", setup.configDir, "--state", setup.stateDir}
-		status <- run(ctx, args, strings.NewReader(""), io.Discard, logs)
+		status <- run(ctx, args, io.Discard, logs)
 	}()
 	select {
 	case <-logs.ready:
@@ -493,7 +403,7 @@ func TestServerRunsUntilCancelled(t *testing.T) {
 		t.Errorf("health = %s", body)
 	}
 	cancel()
-	if code := <-server.status; code != exitOK {
+	if code := <-server.status; code != cli.ExitOK {
 		t.Errorf("exit status = %d, want 0\n%s", code, server.logs)
 	}
 	if want := `"msg":"listening","address":"127.0.0.1:` + strconv.Itoa(setup.port) + `"`; !strings.Contains(
@@ -553,8 +463,8 @@ func TestServerFailures(t *testing.T) {
 			tt.mutate(t, setup.configDir, setup.stateDir)
 			var out, errOut bytes.Buffer
 			args := []string{"--config", setup.configDir, "--state", setup.stateDir}
-			status := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
-			if status != exitError || out.Len() != 0 {
+			status := run(context.Background(), args, &out, &errOut)
+			if status != cli.ExitError || out.Len() != 0 {
 				t.Errorf("status %d stdout %q", status, out.String())
 			}
 			got := errOut.String()
@@ -626,7 +536,7 @@ func TestDefaultsThatCannotBeFound(t *testing.T) {
 				status = runServer(context.Background(), tt.opts, tt.defaults, &errOut)
 			}
 			const want = "splicefsd: no home directory\n"
-			if status != exitError || out.Len() != 0 || errOut.String() != want {
+			if status != cli.ExitError || out.Len() != 0 || errOut.String() != want {
 				t.Errorf("status %d stdout %q stderr %q", status, out.String(), errOut.String())
 			}
 		})
@@ -638,7 +548,7 @@ func TestConfigCheck(t *testing.T) {
 	setup := setUpServer(t, unboundPort(t))
 	for _, dir := range []string{setup.configDir, filepath.Join(t.TempDir(), "empty")} {
 		got := execute(t, "--config", dir, "config", "check")
-		if want := (outcome{status: exitOK, stdout: "configuration ok\n"}); got != want {
+		if want := (outcome{status: cli.ExitOK, stdout: "configuration ok\n"}); got != want {
 			t.Errorf("%s: got %+v, want %+v", dir, got, want)
 		}
 	}
@@ -653,7 +563,7 @@ func TestConfigCheckPrintsEveryProblem(t *testing.T) {
 		"shares.d/Bad.yaml": "path: /srv\n",
 	})
 	got := execute(t, "--config", dir, "config", "check")
-	if got.status != exitError || got.stdout != "" {
+	if got.status != cli.ExitError || got.stdout != "" {
 		t.Errorf("status %d stdout %q", got.status, got.stdout)
 	}
 	wanted := []string{"log.level", "base_path", "shares.m.path", "shares.Bad", "a.yaml", "m.yaml"}
@@ -676,7 +586,7 @@ func TestConfigShow(t *testing.T) {
 		"shares.d/plain.yaml": "path: /srv/plain\n",
 	})
 	got := execute(t, "--config", dir, "config", "show")
-	if got.status != exitOK || got.stderr != "" {
+	if got.status != cli.ExitOK || got.stderr != "" {
 		t.Fatalf("status %d stderr %q", got.status, got.stderr)
 	}
 	want := `listen: # 10-base.yaml
@@ -724,7 +634,7 @@ func TestConfigShowWriteFailure(t *testing.T) {
 	var errOut bytes.Buffer
 	opts := options{configDir: t.TempDir(), command: commandShow}
 	status := runConfig(opts, systemDirs(), errWriter{}, &errOut)
-	if status != exitError || !strings.Contains(errOut.String(), "disk full") {
+	if status != cli.ExitError || !strings.Contains(errOut.String(), "disk full") {
 		t.Errorf("status %d stderr %q", status, errOut.String())
 	}
 }

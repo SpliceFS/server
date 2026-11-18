@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/SpliceFS/common/wire"
+	"github.com/SpliceFS/server/internal/cli"
 )
 
 // The tests in this file send a real signal to the test process. They are not parallel,
@@ -30,7 +31,7 @@ func TestServerStopsOnSignal(t *testing.T) {
 			if err := syscall.Kill(syscall.Getpid(), sig); err != nil {
 				t.Fatal(err)
 			}
-			if code := <-server.status; code != exitOK {
+			if code := <-server.status; code != cli.ExitOK {
 				t.Errorf("exit status = %d, want 0\n%s", code, server.logs)
 			}
 		})
