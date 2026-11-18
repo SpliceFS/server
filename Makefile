@@ -58,7 +58,7 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 	freebsd-lib-test freebsd-repo-files-test version-test part-test build-all-test fuzz-test package package-order-test \
 	package-test service-test service-test-host repo repo-test publish-fetch publish \
 	publish-check publish-test release-assets client-compat-test clean \
-	archives archive-programs-test
+	archives archive-programs-test release-assets-test
 
 all: check build
 
@@ -102,7 +102,7 @@ unit: | $(CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
 unit-here: cover package-lib-test freebsd-lib-test freebsd-repo-files-test version-test part-test build-all-test \
-	archive-programs-test fuzz-test client-compat-test
+	archive-programs-test release-assets-test fuzz-test client-compat-test
 
 # The same tests with the race detector, which makes them several times slower.
 race: | $(CACHE_DIRS)
@@ -333,6 +333,10 @@ build-all-test:
 
 archive-programs-test:
 	scripts/archive-programs-test.sh
+
+# The script that collects and signs the release files, with keys made for the test.
+release-assets-test:
+	scripts/release-assets-test.sh
 
 # The scripts that find the fuzz targets and run them, against a stand-in for go.
 fuzz-test:
