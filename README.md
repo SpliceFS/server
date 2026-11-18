@@ -163,7 +163,7 @@ cluster/        the node list, one file per server
 internal/       the version number set at build time
 docs/           design and configuration reference
 archive/        the README.txt that goes into the program archives
-packaging/      the FreeBSD releases the tests run on
+freebsd-test/  the FreeBSD releases the tests run on
 scripts/        development helpers used by make and CI
 ```
 

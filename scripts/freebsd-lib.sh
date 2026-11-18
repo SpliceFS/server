@@ -1,6 +1,6 @@
 # shellcheck shell=sh
 # Sourced by the scripts that need a FreeBSD machine (check-freebsd.sh, freebsd-require-kvm.sh).
-# FreeBSD cannot run in a container, so each FreeBSD release in packaging/freebsd/releases runs
+# FreeBSD cannot run in a container, so each FreeBSD release in freebsd-test/releases runs
 # as a virtual machine under QEMU inside the prepared image of that release (ghcr.io/splicefs,
 # named by FREEBSD_IMAGE in the Makefile). The disk in the image has been booted once, so a run
 # downloads, unpacks and installs nothing. The images are for amd64, and the machine needs
@@ -43,8 +43,8 @@ freebsd_each_release() {
         ran=$((ran + 1))
         # The loop reads the list on standard input, which the callback must not consume.
         "$freebsd_step" "$release" </dev/null
-    done < packaging/freebsd/releases
-    [ "$ran" -gt 0 ] || fail "no release in packaging/freebsd/releases matches ${FREEBSD:-any release}"
+    done < freebsd-test/releases
+    [ "$ran" -gt 0 ] || fail "no release in freebsd-test/releases matches ${FREEBSD:-any release}"
 }
 
 # freebsd_job_folder <release> <folder> <job script> [argument ...]
