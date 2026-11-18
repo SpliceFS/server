@@ -146,5 +146,24 @@ waits deb "" default false 1
 waits deb starting "" false 1
 waits apk "" boot false 1
 
+# The program of a package is the one with a service unit, the daemon, whose name the service
+# tests and the init scripts use. It must not depend on the order of the folders in cmd/ or on
+# what basename does with extra arguments, so the tree has a program that sorts before it.
+tree="$(mktemp -d)"
+trap 'rm -rf "$tree"' EXIT
+mkdir -p "$tree/scripts" "$tree/cmd/aaa-tool" "$tree/cmd/demod" "$tree/packaging/deb" \
+    "$tree/packaging/systemd"
+cp scripts/package-lib.sh "$tree/scripts/"
+printf 'Package: splicefs-demo\n' > "$tree/packaging/deb/control"
+printf 'conf.d\n' > "$tree/packaging/config-folders"
+: > "$tree/packaging/systemd/demod.service"
+got="$(cd "$tree" && VERSION=v1.2.3 PACKAGE_DATE=20261112 sh -c '. scripts/package-lib.sh; echo "$program"' 2>&1)" || true
+if [ "$got" = demod ]; then
+    echo "ok   program: the daemon is the one with a service unit, not the first folder in cmd"
+else
+    printf 'FAIL program: want demod got "%s"\n' "$got"
+    failed=$((failed + 1))
+fi
+
 [ "$failed" -eq 0 ] || { echo "$failed failed"; exit 1; }
 echo "package versions: all mappings as expected"
