@@ -11,12 +11,11 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 failed=0
 
-# A small repository of its own: two programs, a package name and the real libraries.
+# A small repository of its own: two programs, a module name and the real libraries.
 tree="$work/tree"
-mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/cmd/beta" "$tree/packaging/deb" "$work/bin"
-cp "$root/scripts/build-all.sh" "$root/scripts/package-lib.sh" "$tree/scripts/"
-printf 'Package: splicefs-demo\n' > "$tree/packaging/deb/control"
-printf 'conf.d\n' > "$tree/packaging/config-folders"
+mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/cmd/beta" "$work/bin"
+cp "$root/scripts/build-all.sh" "$root/scripts/release-lib.sh" "$tree/scripts/"
+printf 'module example.test/demo\n' > "$tree/go.mod"
 
 cat > "$work/bin/go" <<'EOT'
 #!/bin/sh

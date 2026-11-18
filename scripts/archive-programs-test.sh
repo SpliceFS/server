@@ -20,16 +20,13 @@ check() {
     fi
 }
 
-# A repository with one program name, the real libraries, and the programs of a build:
+# A repository with one module name, the real libraries, and the programs of a build:
 # alpha for every system, beta for Linux only, so that each archive holds what its own
 # system has.
 tree="$work/tree"
-mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/packaging/deb" "$tree/packaging/plain" \
-    "$tree/packaging/systemd"
-: > "$tree/packaging/systemd/alpha.service"
-cp "$root/scripts/archive-programs.sh" "$root/scripts/package-lib.sh" "$tree/scripts/"
-printf 'Package: splicefs-demo\n' > "$tree/packaging/deb/control"
-printf 'conf.d\n' > "$tree/packaging/config-folders"
+mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/packaging/plain"
+cp "$root/scripts/archive-programs.sh" "$root/scripts/release-lib.sh" "$tree/scripts/"
+printf 'module example.test/demo\n' > "$tree/go.mod"
 printf 'how to run the programs\n' > "$tree/packaging/plain/README.txt"
 printf 'the license\n' > "$tree/LICENSE"
 for system in linux-amd64 linux-arm64 freebsd-amd64 freebsd-arm64 darwin-amd64 darwin-arm64; do

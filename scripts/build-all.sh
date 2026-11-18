@@ -8,8 +8,8 @@ set -eu
 
 out="${1:?usage: build-all.sh OUTPUT_DIR}"
 : "${LDFLAGS:?LDFLAGS is not set}"
-# shellcheck source=package-lib.sh
-. scripts/package-lib.sh
+# shellcheck source=release-lib.sh
+. scripts/release-lib.sh
 module="$(go list -m)"
 
 # FreeBSD keeps what packages install under /usr/local and their data under /var/db, so

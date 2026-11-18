@@ -11,9 +11,9 @@ set -eu
 : "${SIGNING_KEY_FILE:?SIGNING_KEY_FILE is not set}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
-# package-lib.sh reads VERSION and PACKAGE_DATE and says what the files are called.
-# shellcheck source=package-lib.sh
-. scripts/package-lib.sh
+# release-lib.sh reads VERSION and PACKAGE_DATE and says what the files are called.
+# shellcheck source=release-lib.sh
+. scripts/release-lib.sh
 
 dist="${DIST_DIR:-$root/dist}"
 keys="${KEYS_DIR:-$dist/keys}"
