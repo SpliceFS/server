@@ -45,7 +45,7 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 
 .PHONY: script-modes all build check check-in-images fmt fmt-check vet cover lint \
 	freebsd-lib-test version-test part-test build-all-test fuzz-test release-assets \
-	client-compat-test clean archives archive-programs-test release-assets-test workflow-timeout-test
+	client-compat-test clean archives archive-programs-test release-assets-test workflow-timeout-test go-cache-test
 
 all: check build
 
@@ -90,7 +90,7 @@ unit: | $(CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
 unit-here: cover freebsd-lib-test version-test part-test build-all-test \
-	archive-programs-test release-assets-test fuzz-test client-compat-test workflow-timeout-test
+	archive-programs-test release-assets-test fuzz-test client-compat-test workflow-timeout-test go-cache-test
 
 # The same tests with the race detector, which makes them several times slower.
 race: | $(CACHE_DIRS)
@@ -99,8 +99,8 @@ race: | $(CACHE_DIRS)
 race-here:
 	go test -race ./...
 
-# Every program, for every system and CPU type, into ./dist/bin. The release archives and the
-# packages job of CI read from there; nothing is compiled twice.
+# Every program, for every system and CPU type, into ./dist/bin. The release archives read from
+# there; nothing is compiled twice.
 build-all: | $(CACHE_DIRS)
 	scripts/part.sh build-all $(LINUX_RUN) make $(BUILD_VARS) build-all-here
 
@@ -179,8 +179,8 @@ cover:
 # to the targets of one package, FUZZ_TARGET=package:Target to one target; both can be given.
 # make -s fuzz-targets prints the targets as package:Target lines and make -s fuzz-packages the
 # packages that have any. They are found in the code, so a new Fuzz function needs no edit
-# here. CI starts one job for each package, with the same command. A failing input is written
-# to testdata/fuzz in the package's folder.
+# here. The Daily workflow starts one job for each package every day, with the same command. A
+# failing input is written to testdata/fuzz in the package's folder.
 FUZZTIME ?= 10s
 FUZZ_PACKAGE ?=
 FUZZ_TARGET ?=
@@ -284,6 +284,11 @@ client-compat-test:
 # minutes and not after the 6 hours GitHub allows by default. Needs no Docker.
 workflow-timeout-test:
 	scripts/workflow-timeout-test.sh
+
+# The step of the go-cache action that names the cache entry runs only on a runner, so a test
+# runs it here. Needs no Docker.
+go-cache-test:
+	scripts/go-cache-test.sh
 
 clean:
 	rm -rf bin dist coverage.out coverage.html
