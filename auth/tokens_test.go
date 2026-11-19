@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/server/internal/datadir"
 )
 
@@ -210,10 +211,10 @@ func TestTokensVerifyInvalid(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			claims, err := tokens.Verify(tt.token)
-			if !errors.Is(err, ErrInvalidToken) {
-				t.Fatalf("err = %v, want ErrInvalidToken", err)
+			if !errors.Is(err, api.ErrInvalidToken) {
+				t.Fatalf("err = %v, want api.ErrInvalidToken", err)
 			}
-			if !reflect.DeepEqual(claims, Claims{}) {
+			if !reflect.DeepEqual(claims, api.Claims{}) {
 				t.Errorf("claims = %+v, want zero", claims)
 			}
 			if tt.token != "" && strings.Contains(err.Error(), tt.token) {
@@ -240,10 +241,10 @@ func TestTokensVerifyTimeBounds(t *testing.T) {
 	}{
 		{"expires now", mint(nowSec-60, nowSec), nil},
 		{"expired within leeway", mint(nowSec-600, nowSec-leeway), nil},
-		{"expired beyond leeway", mint(nowSec-600, nowSec-leeway-1), ErrExpiredToken},
-		{"expired long ago", mint(nowSec-86400, nowSec-3600), ErrExpiredToken},
+		{"expired beyond leeway", mint(nowSec-600, nowSec-leeway-1), api.ErrExpiredToken},
+		{"expired long ago", mint(nowSec-86400, nowSec-3600), api.ErrExpiredToken},
 		{"issued within leeway", mint(nowSec+leeway, nowSec+600), nil},
-		{"issued beyond leeway", mint(nowSec+leeway+1, nowSec+600), ErrInvalidToken},
+		{"issued beyond leeway", mint(nowSec+leeway+1, nowSec+600), api.ErrInvalidToken},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -269,19 +270,8 @@ func TestTokensVerifyExpiryFollowsClock(t *testing.T) {
 		t.Errorf("at expiry plus leeway: %v", err)
 	}
 	clock.Advance(time.Second)
-	if _, err := tokens.Verify(token); !errors.Is(err, ErrExpiredToken) {
-		t.Errorf("past leeway: err = %v, want ErrExpiredToken", err)
-	}
-}
-
-func TestClaimsAllows(t *testing.T) {
-	t.Parallel()
-	c := Claims{Shares: []string{"media"}}
-	if !c.Allows("media") || c.Allows("docs") {
-		t.Error("explicit share list not honored")
-	}
-	if !(Claims{Shares: []string{"*"}}).Allows("docs") {
-		t.Error("wildcard not honored")
+	if _, err := tokens.Verify(token); !errors.Is(err, api.ErrExpiredToken) {
+		t.Errorf("past leeway: err = %v, want api.ErrExpiredToken", err)
 	}
 }
 
@@ -317,8 +307,8 @@ func TestTokensKeysValidation(t *testing.T) {
 			}
 			// An invalid file adds no keys, so nothing it could have signed verifies.
 			signed := forge(secretA, jsonSegment(t, obj{"alg": "HS256", "kid": "new"}), jsonSegment(t, obj{}))
-			if _, err := tokens.Verify(signed); !errors.Is(err, ErrInvalidToken) {
-				t.Errorf("Verify: err = %v, want ErrInvalidToken", err)
+			if _, err := tokens.Verify(signed); !errors.Is(err, api.ErrInvalidToken) {
+				t.Errorf("Verify: err = %v, want api.ErrInvalidToken", err)
 			}
 		})
 	}
@@ -383,8 +373,8 @@ func TestTokensReloadWhenFileIsReplacedWithSameSizeAndTime(t *testing.T) {
 		t.Fatalf("test setup: replacement is %d bytes, want %d", len(replacement), fixture.size)
 	}
 	fixture.renameOver(t, replacement, fixture.modTime)
-	if _, err := fixture.tokens.Verify(fixture.token); !errors.Is(err, ErrInvalidToken) {
-		t.Errorf("after a replacement of the same size and time: err = %v, want ErrInvalidToken (key one removed)", err)
+	if _, err := fixture.tokens.Verify(fixture.token); !errors.Is(err, api.ErrInvalidToken) {
+		t.Errorf("after a replacement of the same size and time: err = %v, want api.ErrInvalidToken (key one removed)", err)
 	}
 	fresh := mustIssue(t, fixture.tokens)
 	if _, err := fixture.tokens.Verify(fresh); err != nil {
@@ -396,8 +386,8 @@ func TestTokensReloadWhenModificationTimeChanges(t *testing.T) {
 	t.Parallel()
 	fixture := newReloadFixture(t)
 	fixture.replace(t, keysYAML([2]string{"two", b64(secretA)}), fixture.modTime.Add(time.Hour))
-	if _, err := fixture.tokens.Verify(fixture.token); !errors.Is(err, ErrInvalidToken) {
-		t.Errorf("after mtime change: err = %v, want ErrInvalidToken (key one removed)", err)
+	if _, err := fixture.tokens.Verify(fixture.token); !errors.Is(err, api.ErrInvalidToken) {
+		t.Errorf("after mtime change: err = %v, want api.ErrInvalidToken (key one removed)", err)
 	}
 	fresh := mustIssue(t, fixture.tokens)
 	if _, err := fixture.tokens.Verify(fresh); err != nil {
@@ -454,7 +444,7 @@ func checkBadFileKeepsLastGoodContent(t *testing.T, bad string) {
 		t.Errorf("Issue after the file broke: %v", err)
 	}
 	writeFile(t, filepath.Dir(path), filepath.Base(path), keysYAML([2]string{"two", b64(secretB)}))
-	if _, err := tokens.Verify(token); !errors.Is(err, ErrInvalidToken) {
+	if _, err := tokens.Verify(token); !errors.Is(err, api.ErrInvalidToken) {
 		t.Errorf("after the file is fixed the new content must apply: %v", err)
 	}
 	if _, _, err := tokens.Issue("alice", nil); err != nil {
@@ -519,7 +509,7 @@ func TestTokensTwoNodesShareKeys(t *testing.T) {
 		}
 	}
 	token := mustIssue(t, tokensA)
-	if _, err := tokensB.Verify(token); !errors.Is(err, ErrInvalidToken) {
+	if _, err := tokensB.Verify(token); !errors.Is(err, api.ErrInvalidToken) {
 		t.Fatalf("before the key file arrives: %v", err)
 	}
 	copyFile(t, filepath.Join(dirA, testNode+".yaml"), filepath.Join(dirB, testNode+".yaml"))
@@ -682,7 +672,7 @@ func TestTokensIgnoreForeignFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	evil := forge(secretB, jsonSegment(t, obj{"alg": "HS256", "kid": "evil"}), jsonSegment(t, obj{}))
-	if _, err := tokens.Verify(evil); !errors.Is(err, ErrInvalidToken) {
+	if _, err := tokens.Verify(evil); !errors.Is(err, api.ErrInvalidToken) {
 		t.Errorf("key of a foreign file accepted: %v", err)
 	}
 	if buf.Len() != 0 {
@@ -693,7 +683,7 @@ func TestTokensIgnoreForeignFiles(t *testing.T) {
 	// the earlier form, 16 hexadecimal characters, is such a name.
 	for _, name := range []string{"backup.yaml", "fedcba9876543210.yaml"} {
 		writeFile(t, dir, name, foreign)
-		if _, err := tokens.Verify(evil); !errors.Is(err, ErrInvalidToken) {
+		if _, err := tokens.Verify(evil); !errors.Is(err, api.ErrInvalidToken) {
 			t.Errorf("key of the badly named file %s accepted: %v", name, err)
 		}
 		if !strings.Contains(buf.String(), name) || strings.Contains(buf.String(), b64(secretB)) {
@@ -716,7 +706,7 @@ func TestTokensDuplicateKeyID(t *testing.T) {
 	if _, err := tokens.Verify(forge(secretA, header, payload)); err != nil {
 		t.Errorf("the first file's key: %v", err)
 	}
-	if _, err := tokens.Verify(forge(secretB, header, payload)); !errors.Is(err, ErrInvalidToken) {
+	if _, err := tokens.Verify(forge(secretB, header, payload)); !errors.Is(err, api.ErrInvalidToken) {
 		t.Errorf("the later file's key must lose: %v", err)
 	}
 	onlyHeader := jsonSegment(t, obj{"alg": "HS256", "kid": "only"})
@@ -754,7 +744,7 @@ func TestTokensOtherFileBreaksAndRecovers(t *testing.T) {
 
 	// A file that is half written when the sync tool copies it is ignored.
 	writeFile(t, dir, otherNode+".yaml", "keys:\n  - id: \"theirs\"\n  ")
-	if _, err := tokens.Verify(token); !errors.Is(err, ErrInvalidToken) {
+	if _, err := tokens.Verify(token); !errors.Is(err, api.ErrInvalidToken) {
 		t.Errorf("garbage accepted: %v", err)
 	}
 	if _, _, err := tokens.Issue("alice", nil); err != nil {
@@ -777,7 +767,7 @@ func TestTokensOtherFileBreaksAndRecovers(t *testing.T) {
 	if err := os.Remove(other); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tokens.Verify(token); !errors.Is(err, ErrInvalidToken) {
+	if _, err := tokens.Verify(token); !errors.Is(err, api.ErrInvalidToken) {
 		t.Errorf("key of a removed file still accepted: %v", err)
 	}
 }

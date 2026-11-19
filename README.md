@@ -156,9 +156,9 @@ The deb, rpm, Alpine and FreeBSD packages are built, tested and published in
 ```
 cmd/splicefsd/     the server: command line, config check and config show
 cmd/splicefsdctl/  the control tool: one file per command
-app/               builds every part from the configuration, serves HTTP and reloads on SIGHUP
+app/               builds every part from the configuration, serves the HTTP API (common/api) and
+                   reloads on SIGHUP
 config/            loads and validates the files in conf.d and shares.d
-api/               the HTTP API, version 1
 auth/              password hashes, user files, token keys, signed tokens, login rate limiter
 share/             safe read-only access to one shared directory
 cluster/           the node list, one file per server

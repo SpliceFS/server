@@ -12,6 +12,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/server/internal/filestat"
 )
 
@@ -64,16 +65,9 @@ type entry struct {
 	Tail string `yaml:"tail"`
 }
 
-// Digests are the hex SHA-256 digests of the first and the last 64 KiB of one version of a
-// file. They are kept together because one read of the file gives both.
-type Digests struct {
-	Head string
-	Tail string
-}
-
 // newEntry returns the entry of the file at path in its share, which had stamp when digests
 // were read from it.
-func newEntry(path string, stamp filestat.Stamp, digests Digests) entry {
+func newEntry(path string, stamp filestat.Stamp, digests api.FileDigests) entry {
 	return entry{Key: KeyOf(path, stamp), Head: digests.Head, Tail: digests.Tail}
 }
 

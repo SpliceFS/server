@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SpliceFS/common/api"
 )
 
 // The contents of the files in the fuzz share. Only the first two may ever be served;
@@ -162,7 +164,7 @@ func requireOpenInside(t *testing.T, share *Share, name string) {
 	t.Helper()
 	file, err := share.OpenFile(name)
 	if err != nil {
-		if !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrIsDir) {
+		if !errors.Is(err, api.ErrNotFound) && !errors.Is(err, api.ErrIsDir) {
 			t.Fatalf("OpenFile(%q) failed with %v", name, err)
 		}
 		return
@@ -181,7 +183,7 @@ func requireRefusedNameNotFound(t *testing.T, share *Share, name string) {
 	if _, ok := cleanName(name); ok {
 		return
 	}
-	if _, _, err := share.Digests(name); !errors.Is(err, ErrNotFound) {
+	if _, _, err := share.Digests(name); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("Digests(%q) = %v", name, err)
 	}
 }

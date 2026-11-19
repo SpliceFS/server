@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"time"
 
+	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/common/wire"
 
 	"github.com/SpliceFS/server/internal/filestat"
@@ -17,7 +17,7 @@ import (
 // io.Closer.
 type File struct {
 	f    *os.File
-	info Info
+	info api.Info
 	// stamp is what the file system said of the open file when it was opened; info is made from it.
 	stamp filestat.Stamp
 	// relPath is the path of the file in its share, which the digest caches are keyed on.
@@ -47,32 +47,25 @@ func (f *File) Close() error {
 }
 
 // Info describes the file that was opened.
-func (f *File) Info() Info {
+func (f *File) Info() api.Info {
 	return f.info
-}
-
-// ETag returns the strong entity tag for a file of the given size and modification
-// time: "<size hex>-<unix seconds hex>-<nanoseconds hex>", quotes included. The time
-// is used as given, so callers truncate it first.
-func ETag(size int64, mtime time.Time) string {
-	return fmt.Sprintf(`"%x-%x-%x"`, size, mtime.Unix(), mtime.Nanosecond())
 }
 
 // computeDigests returns the hex SHA-256 of the first wire.HeadDigestBytes bytes of a file
 // of the given size and of its last wire.TailDigestBytes bytes. Both are read by offset,
 // so a large file is never read through. A file of at most one digest length gives the
 // same value for both.
-func computeDigests(r io.ReaderAt, size int64) (FileDigests, error) {
+func computeDigests(r io.ReaderAt, size int64) (api.FileDigests, error) {
 	head, err := sectionDigest(r, 0, min(size, wire.HeadDigestBytes))
 	if err != nil {
-		return FileDigests{}, fmt.Errorf("hash head: %w", err)
+		return api.FileDigests{}, fmt.Errorf("hash head: %w", err)
 	}
 	tailLength := min(size, wire.TailDigestBytes)
 	tail, err := sectionDigest(r, size-tailLength, tailLength)
 	if err != nil {
-		return FileDigests{}, fmt.Errorf("hash tail: %w", err)
+		return api.FileDigests{}, fmt.Errorf("hash tail: %w", err)
 	}
-	return FileDigests{Head: head, Tail: tail}, nil
+	return api.FileDigests{Head: head, Tail: tail}, nil
 }
 
 // sectionDigest returns the hex SHA-256 of length bytes of r starting at offset.

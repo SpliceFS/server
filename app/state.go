@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/common/wire"
-	"github.com/SpliceFS/server/api"
 	"github.com/SpliceFS/server/internal/datadir"
 	"github.com/SpliceFS/server/internal/uuid7"
 )

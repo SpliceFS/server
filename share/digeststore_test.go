@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/server/internal/digestcache"
 	"github.com/SpliceFS/server/internal/filestat"
 )
@@ -62,7 +63,7 @@ func (s storedShare) entryFile(rel string) string {
 }
 
 // stored reports whether the store answers for the file at rel as it is now with want.
-func (s storedShare) stored(t *testing.T, rel string, want FileDigests) bool {
+func (s storedShare) stored(t *testing.T, rel string, want api.FileDigests) bool {
 	t.Helper()
 	got, ok := s.store.Load("test", rel, s.stamp(t, rel))
 	return ok && got == want
@@ -74,8 +75,8 @@ func (s storedShare) warnings() int {
 }
 
 // planted are digests no read of a file gives, so a test can tell an answer from an entry.
-func planted() FileDigests {
-	return FileDigests{Head: strings.Repeat("a", 64), Tail: strings.Repeat("b", 64)}
+func planted() api.FileDigests {
+	return api.FileDigests{Head: strings.Repeat("a", 64), Tail: strings.Repeat("b", 64)}
 }
 
 func TestDigestsUsesEntry(t *testing.T) {
@@ -147,7 +148,7 @@ func TestDigestsChangedDuringReadNotStored(t *testing.T) {
 	fixed := newStoredShare(t)
 	before := fixed.stamp(t, "f")
 	read := fixed.share.computeDigests
-	fixed.share.computeDigests = func(r io.ReaderAt, size int64) (FileDigests, error) {
+	fixed.share.computeDigests = func(r io.ReaderAt, size int64) (api.FileDigests, error) {
 		digests, err := read(r, size)
 		fixed.fix.write(t, "f", "other", epoch().Add(time.Minute))
 		return digests, err
@@ -201,7 +202,7 @@ func TestDigestsStampFailure(t *testing.T) {
 	t.Parallel()
 	fixed := newStoredShare(t)
 	fixed.share.statFile = func(*os.File) (filestat.Stamp, error) { return filestat.Stamp{}, errors.New("disk on fire") }
-	if _, _, err := fixed.share.Digests("f"); err == nil || errors.Is(err, ErrNotFound) {
+	if _, _, err := fixed.share.Digests("f"); err == nil || errors.Is(err, api.ErrNotFound) {
 		t.Errorf("Digests = %v, want the failure", err)
 	}
 }
@@ -221,7 +222,7 @@ func TestOpenFileInfoFromStamp(t *testing.T) {
 	}
 	_, info := mustDigests(t, fixed.share, "f")
 	if info.Size != stamp.Size || !info.MTime.Equal(epoch().Add(time.Hour)) {
-		t.Errorf("Info = %+v, want size and time of the stamp", info)
+		t.Errorf("api.Info = %+v, want size and time of the stamp", info)
 	}
 	mustDigests(t, fixed.share, "f")
 	if calls != 3 {

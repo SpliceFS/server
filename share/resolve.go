@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"syscall"
+
+	"github.com/SpliceFS/common/api"
 )
 
 // resolved is a request name that passed every check, with what the file system
@@ -23,7 +25,7 @@ type resolved struct {
 func (s *Share) lookup(name string) (resolved, error) {
 	relPath, ok := cleanName(name)
 	if !ok {
-		return resolved{}, ErrNotFound
+		return resolved{}, api.ErrNotFound
 	}
 	if relPath == "." {
 		fileInfo, err := s.statEntry(relPath)
@@ -33,23 +35,23 @@ func (s *Share) lookup(name string) (resolved, error) {
 	var fileInfo os.FileInfo
 	for i, segment := range segments {
 		if s.excluded(segment) {
-			return resolved{}, ErrNotFound
+			return resolved{}, api.ErrNotFound
 		}
 		var err error
 		if fileInfo, err = s.statEntry(strings.Join(segments[:i+1], "/")); err != nil {
 			// A client chooses the name, and a name longer than the file system allows
 			// cannot exist, so it is a miss and not a server error.
 			if errors.Is(err, syscall.ENAMETOOLONG) {
-				err = ErrNotFound
+				err = api.ErrNotFound
 			}
 			return resolved{}, err
 		}
 		if i < len(segments)-1 && !fileInfo.IsDir() {
-			return resolved{}, ErrNotFound
+			return resolved{}, api.ErrNotFound
 		}
 	}
 	if !s.visible(factsOfInfo(fileInfo)) {
-		return resolved{}, ErrNotFound
+		return resolved{}, api.ErrNotFound
 	}
 	return resolved{relPath: relPath, info: fileInfo}, nil
 }
@@ -65,21 +67,21 @@ func (s *Share) statEntry(relPath string) (os.FileInfo, error) {
 		return fileInfo, nil
 	}
 	if !s.follow {
-		return nil, ErrNotFound
+		return nil, api.ErrNotFound
 	}
 	// A link that cannot be resolved inside the root (it escapes, dangles or loops)
 	// is hidden, whatever the reason.
 	if fileInfo, err = s.root.Stat(relPath); err != nil {
-		return nil, ErrNotFound
+		return nil, api.ErrNotFound
 	}
 	return fileInfo, nil
 }
 
-// fail turns a file system error for path relPath into ErrNotFound when the thing is
+// fail turns a file system error for path relPath into api.ErrNotFound when the thing is
 // absent or unreachable from inside the share, and into a wrapped error otherwise.
 func (s *Share) fail(relPath string, err error) error {
 	if absent(err) {
-		return ErrNotFound
+		return api.ErrNotFound
 	}
 	return fmt.Errorf("share %q: %s: %w", s.name, relPath, err)
 }

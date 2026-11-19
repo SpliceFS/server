@@ -3,6 +3,7 @@ package share
 import (
 	"testing"
 
+	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/server/internal/digestcache"
 )
 
@@ -10,7 +11,7 @@ func TestLRU(t *testing.T) {
 	t.Parallel()
 	cache := newLRU(2)
 	keyOf := func(name string) digestcache.Key { return digestcache.Key{Path: name} }
-	pairOf := func(value string) FileDigests { return FileDigests{Head: value, Tail: "tail" + value} }
+	pairOf := func(value string) api.FileDigests { return api.FileDigests{Head: value, Tail: "tail" + value} }
 	cache.put(keyOf("a"), pairOf("1"))
 	cache.put(keyOf("b"), pairOf("2"))
 	if digests, ok := cache.get(keyOf("a")); !ok || digests != pairOf("1") { // a is now most recent
@@ -42,12 +43,12 @@ func TestLRUReplacesAnElementThatIsNotAnEntry(t *testing.T) {
 	if digests, ok := cache.get(foreign); ok {
 		t.Errorf("get(foreign) = %+v, want a miss", digests)
 	}
-	cache.put(foreign, FileDigests{Head: "1", Tail: "1"})
+	cache.put(foreign, api.FileDigests{Head: "1", Tail: "1"})
 	if digests, ok := cache.get(foreign); !ok || digests.Head != "1" {
 		t.Errorf("get(foreign) after put = %+v, %v", digests, ok)
 	}
 	// The limit is 1, so this put evicts the oldest element, which is the foreign one.
-	cache.put(digestcache.Key{Path: "other"}, FileDigests{Head: "2", Tail: "2"})
+	cache.put(digestcache.Key{Path: "other"}, api.FileDigests{Head: "2", Tail: "2"})
 	if cache.order.Len() != 1 {
 		t.Errorf("order holds %d elements, want 1", cache.order.Len())
 	}

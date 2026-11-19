@@ -18,11 +18,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/common/wire"
 	"github.com/SpliceFS/server/config"
 	"github.com/SpliceFS/server/internal/datadir"
 	"github.com/SpliceFS/server/internal/porttest"
-	"github.com/SpliceFS/server/share"
 )
 
 // call sends a request and returns the response with its whole body read.
@@ -170,7 +170,7 @@ func TestHeadReportsTheDigests(t *testing.T) {
 	resp := session.request(t, http.MethodHead, "/v1/file/media/hello.bin", nil)
 	sum := sha256.Sum256([]byte("0123456789"))
 	for name, want := range map[string]string{
-		"ETag":                share.ETag(10, fileTime()),
+		"ETag":                api.ETag(10, fileTime()),
 		"Content-Length":      "10",
 		"Accept-Ranges":       "bytes",
 		wire.HeaderHeadDigest: hex.EncodeToString(sum[:]),
@@ -198,7 +198,7 @@ func TestPlantedEntryIsServed(t *testing.T) {
 func TestRangedGetThenTheFileIsReplaced(t *testing.T) {
 	t.Parallel()
 	session := startSignedIn(t)
-	header := map[string]string{"Range": "bytes=2-5", "If-Match": share.ETag(10, fileTime())}
+	header := map[string]string{"Range": "bytes=2-5", "If-Match": api.ETag(10, fileTime())}
 	resp := session.request(t, http.MethodGet, "/v1/file/media/hello.bin", header)
 	if resp.StatusCode != http.StatusPartialContent || string(resp.body) != "2345" {
 		t.Errorf("status %d body %q", resp.StatusCode, resp.body)
