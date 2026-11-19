@@ -6,6 +6,10 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.42] - 2026-11-19
+
+- Internal: the start tests wait for the server to stop before they clean up.
+
 ## [0.5.40] - 2026-11-19
 
 - Internal: packaging lives only in the packages repository.
