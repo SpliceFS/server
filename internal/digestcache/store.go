@@ -30,10 +30,28 @@ type Store struct {
 	root *os.Root
 }
 
-// New starts the store on the digest folder open as root, which the caller keeps open as long
-// as it uses the store. It empties the temporary folder first: the server is the only writer
-// and has not started writing yet, so what is there was left by a crash.
-func New(root *os.Root) (*Store, error) {
+// Open starts the store on the digest folder dir, which must exist. It empties the temporary
+// folder first: the server is the only writer and has not started writing yet, so what is
+// there was left by a crash. Close releases the folder.
+func Open(dir string) (*Store, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, fmt.Errorf("open the digest folder: %w", err)
+	}
+	store, err := start(root)
+	if err != nil {
+		return nil, errors.Join(err, root.Close())
+	}
+	return store, nil
+}
+
+// Close releases the digest folder. The store must not be used after it.
+func (s *Store) Close() error {
+	return s.root.Close() //nolint:wrapcheck // the caller says it was closing the digest folder
+}
+
+// start starts the store on the digest folder open as root.
+func start(root *os.Root) (*Store, error) {
 	// After a successful removal only a folder that cannot be written fails the creation.
 	err := errors.Join(root.RemoveAll(tempFolder), root.Mkdir(tempFolder, folderMode))
 	if err != nil {

@@ -34,15 +34,11 @@ func newStoredShare(t *testing.T) storedShare {
 	if err := os.Mkdir(digests, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	root, err := os.OpenRoot(digests)
+	store, err := digestcache.Open(digests)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { mustClose(t, root) })
-	store, err := digestcache.New(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(func() { mustClose(t, store) })
 	log := &bytes.Buffer{}
 	share := fix.open(t, &Options{DigestStore: store, Logger: slog.New(slog.NewTextHandler(log, nil))})
 	counter := &readCounter{}

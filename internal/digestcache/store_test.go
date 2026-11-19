@@ -62,13 +62,18 @@ func openRoot(t *testing.T, dir string) *os.Root {
 	return root
 }
 
-// openStore starts a store on dir, as the server does at start.
+// openStore opens a store on dir, as the server does at start, closed when the test ends.
 func openStore(t *testing.T, dir string) *Store {
 	t.Helper()
-	store, err := New(openRoot(t, dir))
+	store, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	return store
 }
 
@@ -348,8 +353,33 @@ func TestStartFailsWithoutFolder(t *testing.T) {
 	if err := os.Remove(dir); err != nil {
 		t.Fatal(err)
 	}
-	if store, err := New(root); err == nil || store != nil {
-		t.Errorf("New = %v, %v, want an error", store, err)
+	if store, err := start(root); err == nil || store != nil {
+		t.Errorf("start = %v, %v, want an error", store, err)
+	}
+}
+
+func TestOpenFailsWithoutFolder(t *testing.T) {
+	t.Parallel()
+	if store, err := Open(filepath.Join(t.TempDir(), "missing")); err == nil || store != nil {
+		t.Errorf("Open = %v, %v, want an error", store, err)
+	}
+}
+
+// A folder that can be opened but not written cannot take the temporary folder, and the
+// failed start leaves nothing open.
+func TestOpenFailsOnAFolderThatCannotBeWritten(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	if store, err := Open(dir); err == nil || store != nil {
+		t.Errorf("Open = %v, %v, want an error", store, err)
 	}
 }
 
