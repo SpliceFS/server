@@ -194,7 +194,7 @@ func TestPlantedEntryIsServed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := digestcache.Open(fix.data.digestsDir)
+	store, err := digestcache.Open(fix.data.digestsDir, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}

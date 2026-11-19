@@ -10,12 +10,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log/slog"
 	"os"
 	"path"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -61,8 +59,6 @@ type Options struct {
 	// DigestStore keeps the digests in files of the state folder, so a restart does not
 	// read the files again. nil keeps them in memory only.
 	DigestStore *digestcache.Store
-	// Logger receives the warning that digests cannot be stored. nil discards it.
-	Logger *slog.Logger
 }
 
 // Info describes a file or directory in a share.
@@ -91,10 +87,6 @@ type Share struct {
 	now       func() time.Time
 	digests   *lru
 	store     *digestcache.Store
-	logger    *slog.Logger
-	// storeFailing is true from a failed save of digests to the next save that works, so a
-	// full or read-only state folder is logged once, not on every request.
-	storeFailing atomic.Bool
 
 	// space reports the file system usage for a path. Tests replace it.
 	space func(string) (wire.Space, error)
@@ -130,7 +122,6 @@ func Open(opts Options) (*Share, error) {
 		precision:      opts.MTimePrecision,
 		now:            opts.Now,
 		store:          opts.DigestStore,
-		logger:         opts.Logger,
 		space:          statSpace,
 		computeDigests: computeDigests,
 		statFile:       filestat.StatFile,
@@ -138,9 +129,6 @@ func Open(opts Options) (*Share, error) {
 	}
 	if share.now == nil {
 		share.now = time.Now
-	}
-	if share.logger == nil {
-		share.logger = slog.New(slog.DiscardHandler)
 	}
 	size := opts.DigestCacheSize
 	if size <= 0 {
@@ -268,27 +256,11 @@ func (s *Share) digestsOf(file *File) (FileDigests, error) {
 	// good for.
 	if again, err := s.statFile(file.f); err == nil && again == stamp {
 		s.digests.put(key, digests)
-		s.save(file.relPath, stamp, digests)
+		if s.store != nil {
+			s.store.Keep(s.name, file.relPath, stamp, digests)
+		}
 	}
 	return digests, nil
-}
-
-// save writes the digests to the store, if there is one. A failed save costs a read after
-// the next restart, not the request, so it is only logged: once, and again only after a save
-// has worked in between.
-func (s *Share) save(relPath string, stamp filestat.Stamp, digests FileDigests) {
-	if s.store == nil {
-		return
-	}
-	err := s.store.Save(s.name, relPath, stamp, digests)
-	if err == nil {
-		s.storeFailing.Store(false)
-		return
-	}
-	if !s.storeFailing.Swap(true) {
-		s.logger.Warn("cannot store digests, they will be read again after a restart",
-			slog.String("share", s.name), slog.Any("error", err))
-	}
 }
 
 // dirReader is the part of a directory handle that List needs.

@@ -34,13 +34,13 @@ func newStoredShare(t *testing.T) storedShare {
 	if err := os.Mkdir(digests, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := digestcache.Open(digests)
+	log := &bytes.Buffer{}
+	store, err := digestcache.Open(digests, slog.New(slog.NewTextHandler(log, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { mustClose(t, store) })
-	log := &bytes.Buffer{}
-	share := fix.open(t, &Options{DigestStore: store, Logger: slog.New(slog.NewTextHandler(log, nil))})
+	share := fix.open(t, &Options{DigestStore: store})
 	counter := &readCounter{}
 	counter.attach(share)
 	return storedShare{fix: fix, share: share, store: store, digests: digests, log: log, counter: counter}
@@ -176,25 +176,24 @@ func TestDigestsMemoryHitSkipsStore(t *testing.T) {
 }
 
 // A failed save is logged once, and again only after a save has worked in between.
-func TestDigestsWarnOnceUntilASaveWorks(t *testing.T) {
+// The warning is the node's, not a share's: a full state folder fails the saves of every
+// share, and one warning says so.
+func TestDigestsWarnOncePerStore(t *testing.T) {
 	t.Parallel()
 	fixed := newStoredShare(t)
-	for _, name := range []string{"a", "b", "c", "d", "e"} {
-		fixed.fix.write(t, name, name, epoch())
+	other, err := Open(Options{Name: "other", Path: fixed.fix.root, DigestStore: fixed.store})
+	if err != nil {
+		t.Fatal(err)
 	}
+	t.Cleanup(func() { mustClose(t, other) })
 	fixed.blockSaves(t)
-	mustDigests(t, fixed.share, "a")
-	mustDigests(t, fixed.share, "b")
+	if err = os.WriteFile(filepath.Join(fixed.digests, "other"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mustDigests(t, fixed.share, "f")
+	mustDigests(t, other, "f")
 	if fixed.warnings() != 1 {
-		t.Fatalf("%d warnings after two failed saves, want 1:\n%s", fixed.warnings(), fixed.log)
-	}
-	mustRemove(t, filepath.Join(fixed.digests, "test"))
-	mustDigests(t, fixed.share, "c")
-	fixed.blockSaves(t)
-	mustDigests(t, fixed.share, "d")
-	mustDigests(t, fixed.share, "e")
-	if fixed.warnings() != 2 {
-		t.Errorf("%d warnings, want a second one after the save that worked:\n%s", fixed.warnings(), fixed.log)
+		t.Errorf("%d warnings after failed saves of two shares, want 1:\n%s", fixed.warnings(), fixed.log)
 	}
 }
 

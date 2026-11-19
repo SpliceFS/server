@@ -68,7 +68,7 @@ func Run(ctx context.Context, cfg *config.Config, stateDir string, opts Options)
 	}
 	// One store for every share and every reload: it empties its temporary folder when it
 	// opens, which is safe only before any share writes to it.
-	digests, err := digestcache.Open(data.digestsDir)
+	digests, err := digestcache.Open(data.digestsDir, logger)
 	if err != nil {
 		return err //nolint:wrapcheck // the error says it was opening the digest folder
 	}
@@ -116,7 +116,7 @@ type builder struct {
 
 // generation opens the shares of cfg and builds the handler that serves them.
 func (b *builder) generation(cfg *config.Config) (*generation, error) {
-	shares, err := openShares(cfg, b.digests, b.logger)
+	shares, err := openShares(cfg, b.digests)
 	if err != nil {
 		return nil, err
 	}

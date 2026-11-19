@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,7 +66,7 @@ func openRoot(t *testing.T, dir string) *os.Root {
 // openStore opens a store on dir, as the server does at start, closed when the test ends.
 func openStore(t *testing.T, dir string) *Store {
 	t.Helper()
-	store, err := Open(dir)
+	store, err := Open(dir, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,14 +354,15 @@ func TestStartFailsWithoutFolder(t *testing.T) {
 	if err := os.Remove(dir); err != nil {
 		t.Fatal(err)
 	}
-	if store, err := start(root); err == nil || store != nil {
+	if store, err := start(root, slog.New(slog.DiscardHandler)); err == nil || store != nil {
 		t.Errorf("start = %v, %v, want an error", store, err)
 	}
 }
 
 func TestOpenFailsWithoutFolder(t *testing.T) {
 	t.Parallel()
-	if store, err := Open(filepath.Join(t.TempDir(), "missing")); err == nil || store != nil {
+	store, err := Open(filepath.Join(t.TempDir(), "missing"), slog.New(slog.DiscardHandler))
+	if err == nil || store != nil {
 		t.Errorf("Open = %v, %v, want an error", store, err)
 	}
 }
@@ -378,7 +380,7 @@ func TestOpenFailsOnAFolderThatCannotBeWritten(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if store, err := Open(dir); err == nil || store != nil {
+	if store, err := Open(dir, slog.New(slog.DiscardHandler)); err == nil || store != nil {
 		t.Errorf("Open = %v, %v, want an error", store, err)
 	}
 }
@@ -399,5 +401,44 @@ func TestSaveWritesEntry(t *testing.T) {
 	}
 	if !bytes.Equal(data, want.encode()) {
 		t.Errorf("entry file = %q, want %q", data, want.encode())
+	}
+}
+
+// A failed save is logged once for the whole store, whichever share it was for, and again
+// only after a save has worked in between.
+func TestKeepWarnsOnceUntilASaveWorks(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	log := &bytes.Buffer{}
+	store, err := Open(dir, slog.New(slog.NewTextHandler(log, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	block := func(name string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), nil, fileMode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	warnings := func() int { return strings.Count(log.String(), "level=WARN") }
+	block("a")
+	block("b")
+	store.Keep("a", "f", testStamp(1), testDigests(1))
+	store.Keep("b", "f", testStamp(1), testDigests(1))
+	if warnings() != 1 {
+		t.Fatalf("%d warnings after failed saves of two shares, want 1:\n%s", warnings(), log)
+	}
+	store.Keep("c", "f", testStamp(1), testDigests(1))
+	if !load(store, "c", "f", 1) {
+		t.Fatal("Keep did not save the entry")
+	}
+	store.Keep("a", "f", testStamp(1), testDigests(1))
+	if warnings() != 2 {
+		t.Errorf("%d warnings, want a second one after the save that worked:\n%s", warnings(), log)
 	}
 }

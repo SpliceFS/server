@@ -14,7 +14,7 @@ import (
 func TestShareAdapterOpen(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t)
-	set, err := openShares(fix.cfg, nil, nil)
+	set, err := openShares(fix.cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestOpenSharesAppliesSettings(t *testing.T) {
 	fix.cfg.Shares["media"] = config.Share{
 		Path: fix.shareDir, Exclude: []string{"*.html"}, MinAge: units.Duration(1 << 62),
 	}
-	set, err := openShares(fix.cfg, nil, nil)
+	set, err := openShares(fix.cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestOpenSharesFailureClosesTheOthers(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t)
 	fix.cfg.Shares["zzz"] = config.Share{Path: fix.shareDir + "/missing"}
-	set, err := openShares(fix.cfg, nil, nil)
+	set, err := openShares(fix.cfg, nil)
 	if err == nil || set != nil || !strings.Contains(err.Error(), `share "zzz"`) {
 		t.Errorf("openShares = %v, %v", set, err)
 	}
@@ -75,7 +75,7 @@ func TestOpenSharesRejectsBadExcludePattern(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t)
 	fix.cfg.Shares["media"] = config.Share{Path: fix.shareDir, Exclude: []string{"["}}
-	if _, err := openShares(fix.cfg, nil, nil); err == nil || !strings.Contains(err.Error(), "exclude pattern") {
+	if _, err := openShares(fix.cfg, nil); err == nil || !strings.Contains(err.Error(), "exclude pattern") {
 		t.Errorf("err = %v", err)
 	}
 }

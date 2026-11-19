@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 
 	"github.com/SpliceFS/server/api"
 	"github.com/SpliceFS/server/config"
@@ -37,7 +36,7 @@ type shareSet struct {
 
 // openShares opens every share of cfg, all keeping their digests in store. If one fails, the
 // ones opened before it are closed.
-func openShares(cfg *config.Config, store *digestcache.Store, logger *slog.Logger) (*shareSet, error) {
+func openShares(cfg *config.Config, store *digestcache.Store) (*shareSet, error) {
 	set := &shareSet{byName: make(map[string]api.Share, len(cfg.Shares))}
 	for _, name := range cfg.ShareNames() {
 		settings := cfg.Shares[name]
@@ -49,7 +48,6 @@ func openShares(cfg *config.Config, store *digestcache.Store, logger *slog.Logge
 			FollowSymlinks: settings.FollowSymlinks,
 			MTimePrecision: cfg.MTimePrecision.Std(),
 			DigestStore:    store,
-			Logger:         logger,
 		})
 		if err != nil {
 			return nil, errors.Join(err, set.Close())

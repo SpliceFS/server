@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/SpliceFS/server/internal/filestat"
@@ -27,18 +29,22 @@ var errNotRegular = errors.New("is not a regular file")
 // access goes through an os.Root on that folder, so a link placed inside it cannot send a
 // read or a write elsewhere. A Store is safe for concurrent use.
 type Store struct {
-	root *os.Root
+	root   *os.Root
+	logger *slog.Logger
+	// failing is true from a failed Keep to the next one that works. The folder is the node's,
+	// so a full or read-only one is logged once for all shares, not once per share or request.
+	failing atomic.Bool
 }
 
 // Open starts the store on the digest folder dir, which must exist. It empties the temporary
 // folder first: the server is the only writer and has not started writing yet, so what is
-// there was left by a crash. Close releases the folder.
-func Open(dir string) (*Store, error) {
+// there was left by a crash. logger receives the warning of Keep. Close releases the folder.
+func Open(dir string, logger *slog.Logger) (*Store, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, fmt.Errorf("open the digest folder: %w", err)
 	}
-	store, err := start(root)
+	store, err := start(root, logger)
 	if err != nil {
 		return nil, errors.Join(err, root.Close())
 	}
@@ -51,13 +57,13 @@ func (s *Store) Close() error {
 }
 
 // start starts the store on the digest folder open as root.
-func start(root *os.Root) (*Store, error) {
+func start(root *os.Root, logger *slog.Logger) (*Store, error) {
 	// After a successful removal only a folder that cannot be written fails the creation.
 	err := errors.Join(root.RemoveAll(tempFolder), root.Mkdir(tempFolder, folderMode))
 	if err != nil {
 		return nil, fmt.Errorf("empty the temporary folder of the digest entries: %w", err)
 	}
-	return &Store{root: root}, nil
+	return &Store{root: root, logger: logger}, nil
 }
 
 // Load returns the digests of the file at filePath in share, which has stamp now, when its
@@ -104,6 +110,20 @@ func (s *Store) Save(share, filePath string, stamp filestat.Stamp, digests Diges
 		return fmt.Errorf("save digest entry %s: %w", name, errors.Join(err, s.removeTemp(temp)))
 	}
 	return nil
+}
+
+// Keep saves the entry like Save. A failed save costs a read after the next restart, not the
+// request, so it is only logged: once, and again only after a save has worked in between.
+func (s *Store) Keep(share, filePath string, stamp filestat.Stamp, digests Digests) {
+	err := s.Save(share, filePath, stamp, digests)
+	if err == nil {
+		s.failing.Store(false)
+		return
+	}
+	if !s.failing.Swap(true) {
+		s.logger.Warn("cannot store digests, they will be read again after a restart",
+			slog.String("share", share), slog.Any("error", err))
+	}
 }
 
 // removeTemp removes the temporary file of a failed save, which a failed creation never made.
