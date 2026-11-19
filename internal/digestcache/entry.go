@@ -26,13 +26,13 @@ var (
 	errNotWhatIsMade = errors.New("is not what the server writes for the fields it holds")
 )
 
-// entry is what a node knows about one data file: the stamp the file had when its digests
-// were read, and the digests. Times are in nanoseconds since the Unix epoch, as in
-// filestat.Stamp. The device number is not part of an entry: ZFS, btrfs and network file
-// systems give a file system another device number after a reboot, which would make every
-// entry stale.
-type entry struct {
-	// Path is the path of the file in its share, escaped by escape.
+// Key tells one version of a file in a share from every other: the path of the file in its
+// share, escaped by escape, and the fields of its stamp that the node checks. Times are in
+// nanoseconds since the Unix epoch, as in filestat.Stamp. The device number is not part of
+// it: ZFS, btrfs and network file systems give a file system another device number after a
+// reboot, which would make every entry stale. The in-memory cache of a share uses the same
+// key, so both caches agree on when a file has changed.
+type Key struct {
 	Path    string `yaml:"path"`
 	Size    int64  `yaml:"size"`
 	MtimeNs int64  `yaml:"mtime_ns"`
@@ -40,6 +40,25 @@ type entry struct {
 	// BtimeNs is 0 where the file system or the system does not report a creation time.
 	BtimeNs int64  `yaml:"btime_ns"`
 	Inode   uint64 `yaml:"inode"`
+}
+
+// KeyOf returns the key of the file at path in its share, which has stamp.
+func KeyOf(path string, stamp filestat.Stamp) Key {
+	return Key{
+		Path:    escape(path),
+		Size:    stamp.Size,
+		MtimeNs: stamp.Mtime,
+		CtimeNs: stamp.Ctime,
+		BtimeNs: stamp.Btime,
+		Inode:   stamp.Ino,
+	}
+}
+
+// entry is what a node knows about one data file: the key of the version of the file whose
+// digests were read, and the digests.
+type entry struct {
+	Key `yaml:",inline"`
+
 	// Head and Tail are the hex SHA-256 digests of the first and the last 64 KiB of the file.
 	Head string `yaml:"head"`
 	Tail string `yaml:"tail"`
@@ -55,16 +74,7 @@ type Digests struct {
 // newEntry returns the entry of the file at path in its share, which had stamp when digests
 // were read from it.
 func newEntry(path string, stamp filestat.Stamp, digests Digests) entry {
-	return entry{
-		Path:    escape(path),
-		Size:    stamp.Size,
-		MtimeNs: stamp.Mtime,
-		CtimeNs: stamp.Ctime,
-		BtimeNs: stamp.Btime,
-		Inode:   stamp.Ino,
-		Head:    digests.Head,
-		Tail:    digests.Tail,
-	}
+	return entry{Key: KeyOf(path, stamp), Head: digests.Head, Tail: digests.Tail}
 }
 
 // document is an entry as it is written: the entry behind its version. The version is the
@@ -122,17 +132,4 @@ func (d document) validate() error {
 // also what a client compares: lower case only.
 func isDigest(text string) bool {
 	return len(text) == 2*sha256.Size && strings.Trim(text, "0123456789abcdef") == ""
-}
-
-// match says whether the entry is still right for the file at path in its share, which
-// has the given stamp. path is escaped, as entry.Path is. Every field the entry holds must
-// be equal to what the file system reports now; the device number and the mode are not
-// compared, because the entry does not hold them.
-func (e entry) match(path string, stamp filestat.Stamp) bool {
-	return e.Path == path &&
-		e.Size == stamp.Size &&
-		e.MtimeNs == stamp.Mtime &&
-		e.CtimeNs == stamp.Ctime &&
-		e.BtimeNs == stamp.Btime &&
-		e.Inode == stamp.Ino
 }

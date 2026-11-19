@@ -153,41 +153,34 @@ func TestDecodeRejects(t *testing.T) {
 	}
 }
 
-func TestMatch(t *testing.T) {
+func TestKeyOf(t *testing.T) {
 	t.Parallel()
-	sampled := sample()
-	same := filestat.Stamp{
-		Size:  sampled.Size,
-		Mtime: sampled.MtimeNs,
-		Ctime: sampled.CtimeNs,
-		Btime: sampled.BtimeNs,
-		Dev:   7,
-		Ino:   sampled.Inode,
-		Mode:  0o644,
+	same := filestat.Stamp{Size: 52133, Mtime: 1, Ctime: 2, Btime: 3, Dev: 7, Ino: 81273, Mode: 0o644}
+	want := Key{Path: "100%25/caf%E9", Size: 52133, MtimeNs: 1, CtimeNs: 2, BtimeNs: 3, Inode: 81273}
+	if got := KeyOf("100%/caf\xe9", same); got != want {
+		t.Fatalf("KeyOf = %+v, want %+v", got, want)
 	}
 	tests := map[string]struct {
 		path  string
 		stamp func(filestat.Stamp) filestat.Stamp
-		want  bool
+		same  bool
 	}{
-		"same path and stamp": {sampled.Path, func(s filestat.Stamp) filestat.Stamp { return s }, true},
-		"another path":        {"photos/2024/b.jpg", func(s filestat.Stamp) filestat.Stamp { return s }, false},
-		"the path unescaped":  {"photos/2024/a.jpg/", func(s filestat.Stamp) filestat.Stamp { return s }, false},
-		"another size":        {sampled.Path, func(s filestat.Stamp) filestat.Stamp { s.Size++; return s }, false},
-		"another mtime":       {sampled.Path, func(s filestat.Stamp) filestat.Stamp { s.Mtime++; return s }, false},
-		"another ctime":       {sampled.Path, func(s filestat.Stamp) filestat.Stamp { s.Ctime++; return s }, false},
-		"another btime":       {sampled.Path, func(s filestat.Stamp) filestat.Stamp { s.Btime++; return s }, false},
-		"another inode":       {sampled.Path, func(s filestat.Stamp) filestat.Stamp { s.Ino++; return s }, false},
+		"another path":  {"100%/cafe", func(s filestat.Stamp) filestat.Stamp { return s }, false},
+		"another size":  {"100%/caf\xe9", func(s filestat.Stamp) filestat.Stamp { s.Size++; return s }, false},
+		"another mtime": {"100%/caf\xe9", func(s filestat.Stamp) filestat.Stamp { s.Mtime++; return s }, false},
+		"another ctime": {"100%/caf\xe9", func(s filestat.Stamp) filestat.Stamp { s.Ctime++; return s }, false},
+		"another btime": {"100%/caf\xe9", func(s filestat.Stamp) filestat.Stamp { s.Btime++; return s }, false},
+		"another inode": {"100%/caf\xe9", func(s filestat.Stamp) filestat.Stamp { s.Ino++; return s }, false},
 		// ZFS, btrfs and network file systems give a file system another device number after
 		// a reboot, which must not make every entry stale.
-		"another device": {sampled.Path, func(s filestat.Stamp) filestat.Stamp { s.Dev++; return s }, true},
-		"another mode":   {sampled.Path, func(s filestat.Stamp) filestat.Stamp { s.Mode = 0o600; return s }, true},
+		"another device": {"100%/caf\xe9", func(s filestat.Stamp) filestat.Stamp { s.Dev++; return s }, true},
+		"another mode":   {"100%/caf\xe9", func(s filestat.Stamp) filestat.Stamp { s.Mode = 0o600; return s }, true},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if got := sampled.match(tt.path, tt.stamp(same)); got != tt.want {
-				t.Errorf("match(%q, %+v) = %v, want %v", tt.path, tt.stamp(same), got, tt.want)
+			if got := KeyOf(tt.path, tt.stamp(same)); (got == want) != tt.same {
+				t.Errorf("KeyOf(%q, %+v) = %+v, equal to the first is %v", tt.path, tt.stamp(same), got, !tt.same)
 			}
 		})
 	}

@@ -56,7 +56,7 @@ func (s *Store) Load(share, filePath string, stamp filestat.Stamp) (Digests, boo
 		return Digests{}, false
 	}
 	found, err := decode(data)
-	if err != nil || !found.match(escape(filePath), stamp) {
+	if err != nil || found.Key != KeyOf(filePath, stamp) {
 		return Digests{}, false
 	}
 	return Digests{Head: found.Head, Tail: found.Tail}, true
