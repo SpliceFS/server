@@ -360,11 +360,50 @@ func TestStartFailsWithoutFolder(t *testing.T) {
 	}
 }
 
-func TestOpenFailsWithoutFolder(t *testing.T) {
+// The store owns its folder: Open makes it, private to this node, with its temporary folder.
+func TestOpenMakesThePrivateFolder(t *testing.T) {
 	t.Parallel()
-	store, err := Open(filepath.Join(t.TempDir(), "missing"), slog.New(slog.DiscardHandler))
-	if err == nil || store != nil {
-		t.Errorf("Open = %v, %v, want an error", store, err)
+	dir := filepath.Join(t.TempDir(), "digests")
+	openStore(t, dir)
+	info, err := os.Stat(dir)
+	if err != nil || info.Mode() != os.ModeDir|folderMode {
+		t.Errorf("digest folder = %v, %v, want a folder of mode 0700", info, err)
+	}
+	checkTempEmpty(t, dir)
+}
+
+// Open fails on what it cannot make a folder of, whoever runs the server.
+func TestOpenFails(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		place func(t *testing.T, dir string)
+	}{
+		{"the parent folder is missing", func(t *testing.T, dir string) {
+			t.Helper()
+			if err := os.Remove(filepath.Dir(dir)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a file is where the folder goes", func(t *testing.T, dir string) {
+			t.Helper()
+			if err := os.WriteFile(dir, nil, fileMode); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := filepath.Join(t.TempDir(), "local", "digests")
+			if err := os.Mkdir(filepath.Dir(dir), folderMode); err != nil {
+				t.Fatal(err)
+			}
+			tt.place(t, dir)
+			if store, err := Open(dir, slog.New(slog.DiscardHandler)); err == nil || store != nil {
+				t.Errorf("Open = %v, %v, want an error", store, err)
+			}
+		})
 	}
 }
 
@@ -469,6 +508,24 @@ func TestReopenFindsTheFolderAgain(t *testing.T) {
 	}
 }
 
+// Reopen makes the digest folder again when it was removed, private as Open makes it.
+func TestReopenMakesARemovedFolder(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "digests")
+	store := openStore(t, dir)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Reopen(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil || info.Mode() != os.ModeDir|folderMode {
+		t.Errorf("digest folder = %v, %v, want a folder of mode 0700", info, err)
+	}
+	save(t, store, share, "a", 1)
+}
+
 // Reopen on the folder the store has open keeps what is being written in the temporary
 // folder, since requests may be writing there, and makes that folder if it is missing.
 func TestReopenKeepsTheSameFolder(t *testing.T) {
@@ -500,9 +557,15 @@ func TestReopenFails(t *testing.T) {
 		name    string
 		breakIt func(t *testing.T, dir string)
 	}{
-		{"the folder is missing", func(t *testing.T, dir string) {
+		{"the parent folder is missing", func(t *testing.T, dir string) {
 			t.Helper()
-			if err := os.RemoveAll(dir); err != nil {
+			if err := os.RemoveAll(filepath.Dir(dir)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a link to nothing is where the folder was", func(t *testing.T, dir string) {
+			t.Helper()
+			if err := errors.Join(os.RemoveAll(dir), os.Symlink("missing", dir)); err != nil {
 				t.Fatal(err)
 			}
 		}},

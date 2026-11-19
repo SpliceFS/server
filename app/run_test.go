@@ -9,7 +9,6 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -439,13 +438,9 @@ func TestRunFailsAtStart(t *testing.T) {
 		{"certificate is missing", func(fix *fixture) {
 			fix.cfg.Listen[0] = configEndpoint(&config.TLS{CertFile: missing, KeyFile: missing}, false)
 		}, "load certificate"},
-		{"digest folder cannot be written", func(fix *fixture) {
-			err := errors.Join(os.MkdirAll(fix.data.digestsDir, 0o700), os.Chmod(fix.data.digestsDir, 0o500))
-			// The folder stays empty, so the test can remove it whatever its mode.
-			if err != nil {
-				t.Fatal(err)
-			}
-		}, "digest"},
+		{"digest folder is a file", func(fix *fixture) {
+			write(t, fix.state, "local/digests", "a file where a folder belongs")
+		}, "open the digest folder"},
 		{"own certificate cannot be made", func(fix *fixture) {
 			write(t, fix.state, "local/tls", "a file where a folder belongs")
 			fix.cfg.Listen[0] = configEndpoint(nil, false)

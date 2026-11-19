@@ -514,8 +514,8 @@ func refuseStateFolderBlocked(
 	t *testing.T, reloader *reloading, fix *fixture, shares map[string]config.Share,
 ) refusal {
 	t.Helper()
-	mustRemoveAll(t, fix.data.digestsDir)
-	if err := os.WriteFile(fix.data.digestsDir, nil, 0o600); err != nil {
+	mustRemoveAll(t, fix.data.nodesDir)
+	if err := os.WriteFile(fix.data.nodesDir, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	err := reloader.refuse(t, loaded{cfg: reconfigured(fix, fix.cfg.Listen, shares)})

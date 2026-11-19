@@ -47,15 +47,33 @@ type Store struct {
 	failing atomic.Bool
 }
 
-// Open starts the store on the digest folder dir, which must exist. It empties the temporary
-// folder first: the server is the only writer and has not started writing yet, so what is
-// there was left by a crash. logger receives the warning of Keep. Close releases the folder.
+// Open starts the store on the digest folder dir, making it when it is missing; its parent
+// must exist. It empties the temporary folder first: the server is the only writer and has
+// not started writing yet, so what is there was left by a crash. logger receives the warning
+// of Keep. Close releases the folder.
 func Open(dir string, logger *slog.Logger) (*Store, error) {
+	if err := makeFolder(dir); err != nil {
+		return nil, err
+	}
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, fmt.Errorf("open the digest folder: %w", err)
 	}
 	return start(dir, root, logger)
+}
+
+// makeFolder makes the digest folder dir when it is missing, with exactly folderMode, not the
+// mode the umask leaves. A folder that exists keeps its mode, which the operator may have set;
+// anything else in its place fails the open that follows.
+func makeFolder(dir string) error {
+	err := os.Mkdir(dir, folderMode)
+	if err == nil {
+		err = os.Chmod(dir, folderMode)
+	}
+	if err != nil && !errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("make the digest folder: %w", err)
+	}
+	return nil
 }
 
 // Close releases the digest folder. The store must not be used after it.
@@ -84,13 +102,16 @@ func start(dir string, root *os.Root, logger *slog.Logger) (*Store, error) {
 	return store, nil
 }
 
-// Reopen heals the store after its folders were removed while it ran: it opens the digest
-// folder again when the one at its path is not the one open, and makes the temporary folder
-// when it is missing. What is in the temporary folder stays, since requests may be writing
+// Reopen heals the store after its folders were removed while it ran: it makes the digest
+// folder when it is missing, opens it again when the one at its path is not the one open, and
+// makes the temporary folder when it is missing. What is in the temporary folder stays, since requests may be writing
 // there.
 func (s *Store) Reopen() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := makeFolder(s.dir); err != nil {
+		return err
+	}
 	root := s.root.Load()
 	same, err := isFolder(root, s.dir)
 	if err != nil {
