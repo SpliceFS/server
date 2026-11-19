@@ -1,5 +1,5 @@
 name: Go caches
-description: Restores and saves the module and build caches that the Go parts mount into their image.
+description: Restores, and by default saves, the module and build caches that the Go parts mount into their image.
 
 # Every job that runs Go in the image does the same three things here, so they are written
 # once. The folders are the ones the Makefile mounts (CACHE, and ROOT_CACHE for the part that
@@ -10,21 +10,41 @@ inputs:
   folder:
     description: The folder that holds gomod and gobuild, relative to the repository.
     default: .cache
+  save:
+    description: >-
+      "false" restores the caches and never saves them, for a job whose caches are not worth
+      the time a save takes. Composite action inputs are strings.
+    default: "true"
 
 runs:
   using: composite
   steps:
     # The image is named in the Makefile and nowhere else; a new image starts with new caches.
-    - name: Name the Go image
-      id: image
+    # The save and the restore step below read the same three facts from here.
+    - name: Name the Go image and the cache entry
+      id: cache
       shell: bash
-      run: echo "name=$(make -s go-image)" >> "$GITHUB_OUTPUT"
-    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: |
-          ${{ inputs.folder }}/gomod
-          ${{ inputs.folder }}/gobuild
-        key: go-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.name }}-${{ hashFiles('go.sum') }}
+      env:
+        FOLDER: ${{ inputs.folder }}
+      run: |
         # A change of go.sum starts from the caches of the last one; Go adds what is missing.
-        restore-keys: |
-          go-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.name }}-
+        prefix="go-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-$(make -s go-image)-"
+        {
+          echo "prefix=$prefix"
+          echo "key=$prefix${{ hashFiles('go.sum') }}"
+          printf 'path<<END_OF_PATHS\n%s\n%s\nEND_OF_PATHS\n' "$FOLDER/gomod" "$FOLDER/gobuild"
+        } >> "$GITHUB_OUTPUT"
+    - name: Restore and save the caches
+      if: inputs.save == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.cache.outputs.path }}
+        key: ${{ steps.cache.outputs.key }}
+        restore-keys: ${{ steps.cache.outputs.prefix }}
+    - name: Restore the caches
+      if: inputs.save != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.cache.outputs.path }}
+        key: ${{ steps.cache.outputs.key }}
+        restore-keys: ${{ steps.cache.outputs.prefix }}
