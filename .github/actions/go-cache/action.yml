@@ -2,14 +2,10 @@ name: Go caches
 description: Restores, and by default saves, the module and build caches that the Go parts mount into their image.
 
 # Every job that runs Go in the image does the same three things here, so they are written
-# once. The folders are the ones the Makefile mounts (CACHE, and ROOT_CACHE for the part that
-# runs as root). Each job keeps its own entry: a race build, a test build and a lint run fill
-# the build cache with different objects, and one shared entry would hold only whichever job
-# finished first.
+# once. The folders are the ones the Makefile mounts (CACHE). Each job keeps its own entry: a
+# race build, a test build and a lint run fill the build cache with different objects, and one
+# shared entry would hold only whichever job finished first.
 inputs:
-  folder:
-    description: The folder that holds gomod and gobuild, relative to the repository.
-    default: .cache
   save:
     description: >-
       "false" restores the caches and never saves them, for a job whose caches are not worth
@@ -24,8 +20,6 @@ runs:
     - name: Name the Go image and the cache entry
       id: cache
       shell: bash
-      env:
-        FOLDER: ${{ inputs.folder }}
       run: |
         # A change of go.sum starts from the caches of the last one; Go adds what is missing.
         prefix="go-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-$(make -s go-image)-"
@@ -33,7 +27,7 @@ runs:
           echo "prefix=$prefix"
           # Braces: the hash starts with letters and digits, and $prefix<hash> would name another variable.
           echo "key=${prefix}${{ hashFiles('go.sum') }}"
-          printf 'path<<END_OF_PATHS\n%s\n%s\nEND_OF_PATHS\n' "$FOLDER/gomod" "$FOLDER/gobuild"
+          printf 'path<<END_OF_PATHS\n%s\n%s\nEND_OF_PATHS\n' .cache/gomod .cache/gobuild
         } >> "$GITHUB_OUTPUT"
     - name: Restore and save the caches
       if: inputs.save == 'true'
