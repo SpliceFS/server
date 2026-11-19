@@ -233,6 +233,21 @@ func (s *Share) Space() (wire.Space, error) {
 	return space, nil
 }
 
+// Stamp returns the stamp of the regular file at name as a request finds it, and false when
+// a request would not find it: it is gone, hidden or a folder. The digest store's sweep uses
+// it to tell which entries are still of use.
+func (s *Share) Stamp(name string) (filestat.Stamp, bool, error) {
+	file, err := s.OpenFile(name)
+	if errors.Is(err, ErrNotFound) || errors.Is(err, ErrIsDir) {
+		return filestat.Stamp{}, false, nil
+	}
+	if err != nil {
+		return filestat.Stamp{}, false, err
+	}
+	defer closeRead(file)
+	return file.stamp, true, nil
+}
+
 // digestsOf returns the digests of the open file, which had its stamp when it was opened:
 // from memory, else from the store, else read from the file.
 func (s *Share) digestsOf(file *File) (FileDigests, error) {

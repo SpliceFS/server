@@ -21,7 +21,10 @@ const (
 	upperHex     = "0123456789ABCDEF"
 )
 
-var errNotClean = errors.New("is not a clean path inside a share")
+var (
+	errNotClean   = errors.New("is not a clean path inside a share")
+	errNotEscaped = errors.New("is not what escaping a path gives")
+)
 
 // escape returns path as an entry stores it: every name of the path, split at slashes, with
 // rules 1 to 3 of the design applied. They can be undone, so two paths never share an
@@ -85,4 +88,25 @@ func escapeName(name string) string {
 		return base + "%2E" + stateSuffix[1:]
 	}
 	return escaped.String()
+}
+
+// unescape undoes escape. It fails for a path escape cannot have made: a percent sign that is
+// not followed by two upper case hex digits.
+func unescape(escaped string) (string, error) {
+	const escapedByte = len("%XX")
+	var path strings.Builder
+	for i := 0; i < len(escaped); i++ {
+		if escaped[i] != '%' {
+			path.WriteByte(escaped[i])
+			continue
+		}
+		digits := escaped[i+1 : min(i+escapedByte, len(escaped))]
+		value, err := hex.DecodeString(digits)
+		if err != nil || len(value) != 1 || strings.ToUpper(digits) != digits {
+			return "", fmt.Errorf("escaped path %q: %w", escaped, errNotEscaped)
+		}
+		path.Write(value)
+		i += escapedByte - 1
+	}
+	return path.String(), nil
 }

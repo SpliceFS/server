@@ -22,8 +22,6 @@ import (
 	"github.com/SpliceFS/common/wire"
 	"github.com/SpliceFS/server/config"
 	"github.com/SpliceFS/server/internal/datadir"
-	"github.com/SpliceFS/server/internal/digestcache"
-	"github.com/SpliceFS/server/internal/filestat"
 	"github.com/SpliceFS/server/internal/porttest"
 	"github.com/SpliceFS/server/share"
 )
@@ -190,23 +188,7 @@ func TestHeadReportsTheDigests(t *testing.T) {
 func TestPlantedEntryIsServed(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t)
-	planted := digestcache.Digests{Head: strings.Repeat("a", 64), Tail: strings.Repeat("b", 64)}
-	stamp, err := filestat.Stat(filepath.Join(fix.shareDir, "hello.bin"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = os.MkdirAll(fix.data.digestsDir, 0o700)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := digestcache.Open(fix.data.digestsDir, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = errors.Join(store.Save("media", "hello.bin", stamp, planted), store.Close())
-	if err != nil {
-		t.Fatal(err)
-	}
+	planted := plantEntry(t, fix, "media")
 	resp := signIn(t, fix).request(t, http.MethodHead, "/v1/file/media/hello.bin", nil)
 	head, tail := resp.Header.Get(wire.HeaderHeadDigest), resp.Header.Get(wire.HeaderTailDigest)
 	if head != planted.Head || tail != planted.Tail {

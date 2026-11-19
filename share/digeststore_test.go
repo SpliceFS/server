@@ -228,3 +228,25 @@ func TestOpenFileInfoFromStamp(t *testing.T) {
 		t.Errorf("%d stamps for a read and a memory hit, want 3", calls)
 	}
 }
+
+// Stamp finds what a request finds: the stamp of a visible file, nothing for a file that is
+// gone, hidden or a folder, and an error when it cannot tell.
+func TestStamp(t *testing.T) {
+	t.Parallel()
+	fixed := newStoredShare(t)
+	fixed.fix.write(t, ".hidden", "x", epoch())
+	fixed.fix.write(t, "d/f", "x", epoch())
+	hiding := fixed.fix.open(t, &Options{Exclude: []string{".*"}})
+	if stamp, found, err := hiding.Stamp("f"); err != nil || !found || stamp != fixed.stamp(t, "f") {
+		t.Errorf("Stamp(f) = %+v, %v, %v, want the stamp of the file", stamp, found, err)
+	}
+	for _, name := range []string{"gone", ".hidden", "d"} {
+		if _, found, err := hiding.Stamp(name); err != nil || found {
+			t.Errorf("Stamp(%q) = %v, %v, want not found", name, found, err)
+		}
+	}
+	hiding.statFile = func(*os.File) (filestat.Stamp, error) { return filestat.Stamp{}, errors.New("disk on fire") }
+	if _, found, err := hiding.Stamp("f"); err == nil || found {
+		t.Errorf("Stamp with a failing stat = %v, %v, want the failure", found, err)
+	}
+}

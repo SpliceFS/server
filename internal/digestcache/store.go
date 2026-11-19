@@ -136,7 +136,7 @@ func (s *Store) Load(share, filePath string, stamp filestat.Stamp) (Digests, boo
 	if err != nil {
 		return Digests{}, false
 	}
-	data, err := s.read(share + "/" + name)
+	data, err := read(s.root.Load(), share+"/"+name)
 	if err != nil {
 		return Digests{}, false
 	}
@@ -198,10 +198,10 @@ func removeTemp(root *os.Root, temp string) error {
 	return err //nolint:wrapcheck // joined to the error of the save, which names the entry
 }
 
-// read returns the content of the regular file name. It opens without blocking, because
-// opening a FIFO for reading would otherwise wait for a writer.
-func (s *Store) read(name string) ([]byte, error) {
-	file, err := s.root.Load().OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+// read returns the content of the regular file name in root. It opens without blocking,
+// because opening a FIFO for reading would otherwise wait for a writer.
+func read(root *os.Root, name string) ([]byte, error) {
+	file, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open digest entry: %w", err)
 	}

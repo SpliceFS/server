@@ -186,3 +186,17 @@ func FuzzEntryPathNamesFit(f *testing.F) {
 		}
 	})
 }
+
+func TestUnescape(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"a", "100%/caf\xe9", "x.splicefs_state/y", "%2E"} {
+		if got, err := unescape(escape(path)); err != nil || got != path {
+			t.Errorf("unescape(escape(%q)) = %q, %v", path, got, err)
+		}
+	}
+	for _, escaped := range []string{"%", "a%2", "%zz", "%2e"} {
+		if got, err := unescape(escaped); err == nil {
+			t.Errorf("unescape(%q) = %q, want an error", escaped, got)
+		}
+	}
+}

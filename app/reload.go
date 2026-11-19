@@ -23,9 +23,11 @@ type runner struct {
 	// failures receives the first listener failure. Later ones are dropped: the first one
 	// already stops the server.
 	failures chan error
-	wg       sync.WaitGroup
-	logger   *slog.Logger
-	opts     Options
+	// stopSweep ends the sweep of the digest entries that runs, and returns when it has ended.
+	stopSweep func()
+	wg        sync.WaitGroup
+	logger    *slog.Logger
+	opts      Options
 }
 
 // listenPlan is what a configuration changes about the listeners.
@@ -45,6 +47,7 @@ func (r *runner) serve(ctx context.Context, listeners []*endpoint, grace time.Du
 		r.start(listener)
 	}
 	defer r.wg.Wait()
+	defer r.stopSweep()
 
 	for {
 		select {
@@ -77,6 +80,27 @@ func (r *runner) start(listener *endpoint) {
 	})
 }
 
+// sweep removes, in the background, the digest entries that no request of gen can use. It
+// runs after the start and after each reload, as a reload can remove shares and change what
+// they hide. Only one runs at a time, and serve ends it before it returns.
+func (r *runner) sweep(ctx context.Context, gen *generation) {
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		err := r.build.digests.Sweep(ctx, gen.files)
+		if err == nil {
+			r.logger.InfoContext(ctx, "digest entries swept")
+		} else if !errors.Is(err, context.Canceled) {
+			r.logger.WarnContext(ctx, "cannot sweep digest entries", slog.Any("error", err))
+		}
+	}()
+	r.stopSweep = func() {
+		cancel()
+		<-done
+	}
+}
+
 // reload applies the configuration as it is now. Everything that can fail happens before
 // anything changes, so a configuration that cannot be applied leaves the server exactly as
 // it was. Once it is applied, new requests use it and requests in progress finish on the
@@ -106,7 +130,10 @@ func (r *runner) reload(ctx context.Context) {
 		return
 	}
 
+	// The sweep of the old configuration uses its shares, which close once it is replaced.
+	r.stopSweep()
 	r.handlers.replace(next)
+	r.sweep(ctx, next)
 	for listener, tlsConfig := range changes.kept {
 		listener.setTLS(tlsConfig)
 	}

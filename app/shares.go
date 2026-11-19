@@ -30,14 +30,19 @@ func (a shareAdapter) Open(name string) (api.File, error) { //nolint:ireturn // 
 
 // shareSet is the open shares of a configuration.
 type shareSet struct {
-	byName  map[string]api.Share
+	byName map[string]api.Share
+	// files are the same shares as the digest store's sweep sees them.
+	files   map[string]digestcache.Files
 	closers []io.Closer
 }
 
 // openShares opens every share of cfg, all keeping their digests in store. If one fails, the
 // ones opened before it are closed.
 func openShares(cfg *config.Config, store *digestcache.Store) (*shareSet, error) {
-	set := &shareSet{byName: make(map[string]api.Share, len(cfg.Shares))}
+	set := &shareSet{
+		byName: make(map[string]api.Share, len(cfg.Shares)),
+		files:  make(map[string]digestcache.Files, len(cfg.Shares)),
+	}
 	for _, name := range cfg.ShareNames() {
 		settings := cfg.Shares[name]
 		opened, err := share.Open(share.Options{
@@ -53,6 +58,7 @@ func openShares(cfg *config.Config, store *digestcache.Store) (*shareSet, error)
 			return nil, errors.Join(err, set.Close())
 		}
 		set.byName[name] = shareAdapter{opened}
+		set.files[name] = opened
 		set.closers = append(set.closers, opened)
 	}
 	return set, nil

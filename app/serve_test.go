@@ -27,6 +27,7 @@ func newRunner(handler http.Handler, opts Options) *runner {
 		failures:  make(chan error, 1),
 		logger:    logger,
 		opts:      opts,
+		stopSweep: func() {},
 	}
 }
 

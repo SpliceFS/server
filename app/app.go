@@ -100,6 +100,7 @@ func Run(ctx context.Context, cfg *config.Config, stateDir string, opts Options)
 		return err
 	}
 	r.srv = newServer(r.handlers, logger)
+	r.sweep(ctx, first)
 	return r.serve(ctx, changes.added, shutdownGrace)
 }
 
@@ -133,7 +134,7 @@ func (b *builder) generation(cfg *config.Config) (*generation, error) {
 	if err != nil {
 		return nil, errors.Join(err, shares.Close())
 	}
-	return &generation{handler: handler, closer: shares}, nil
+	return &generation{handler: handler, closer: shares, files: shares.files}, nil
 }
 
 // newHandler builds the API handler. It refuses to start if it cannot make or read its own

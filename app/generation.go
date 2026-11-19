@@ -6,13 +6,17 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+
+	"github.com/SpliceFS/server/internal/digestcache"
 )
 
 // generation is everything built from one configuration.
 type generation struct {
 	handler http.Handler
-	closer  io.Closer      // what to close when the last request of this generation is done
-	active  sync.WaitGroup // requests in progress
+	closer  io.Closer // what to close when the last request of this generation is done
+	// files are the shares as the digest store's sweep sees them, open as long as closer is.
+	files  map[string]digestcache.Files
+	active sync.WaitGroup // requests in progress
 }
 
 // live is the http.Handler of the server. It sends each request to the current generation, so a
