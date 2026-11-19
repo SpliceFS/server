@@ -6,6 +6,10 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.44] - 2026-11-19
+
+- New: the server keeps file digests in its state folder, so they survive a restart.
+
 ## [0.5.43] - 2026-11-19
 
 - Internal: a pull request tests the program itself, without packaging or fuzzing.
