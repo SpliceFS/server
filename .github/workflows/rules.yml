@@ -1,4 +1,5 @@
 name: Rules
+# Every job has a time limit: 3 times its longest run, so a hang fails in minutes.
 
 # The pull request rules shared by the SpliceFS repositories: the description states the
 # scope of the change, and the release bot sets the version in the branch.

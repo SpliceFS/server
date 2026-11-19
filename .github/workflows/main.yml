@@ -1,4 +1,5 @@
 name: Main
+# Every job has a time limit: 3 times its longest run, so a hang fails in minutes.
 
 # When main moves, the new version is tagged, which starts the release, and every open pull
 # request is rebuilt on the new tip. See https://github.com/SpliceFS/.github
