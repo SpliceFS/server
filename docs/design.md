@@ -76,12 +76,109 @@ A `HEAD` request also returns two digests. `X-SpliceFS-Head-Digest` is the SHA-2
 first 64 KiB of the file. `X-SpliceFS-Tail-Digest` is the SHA-256 of the last 64 KiB, or of
 the whole file when it is shorter, so for a file of at most 64 KiB the two are equal. Both
 cost two small reads at fixed positions, however large the file is, so a file that was just
-added is usable at once. The server remembers both per file until the file's size or
-modification time changes. They catch two different files that happen to share a size and a
-modification time and differ at the start or at the end.
+added is usable at once. The server keeps both per file until the file changes (see Digest
+cache). They catch two different files that happen to share a size and a modification time
+and differ at the start or at the end.
 
 Two copies are treated as the same file when their tag, their head digest and their tail
 digest are equal.
+
+### Digest cache
+
+A node keeps the head and tail digests of every file it has been asked about in its state
+folder, so a restart or a reload does not read the files again. The cache is per node and
+lives in `local/`: what decides whether an entry is still right (inode, change time) means
+nothing on another node.
+
+**Stamp.** One system call on the open file gives the stamp: `fstat` on macOS and FreeBSD,
+`statx` on the file descriptor on Linux. The stamp is taken from the open file, never from the
+path, so it describes the file whose bytes are hashed, and a link swapped in after the lookup
+cannot point it at a file outside the share. Of the stamp:
+
+- the modification time is shared with clients (it makes the tag);
+- size, change time, creation time and inode are this node's own change check. The creation
+  time is 0 where the file system or the system does not report it.
+
+The device number is not part of the check: ZFS, btrfs and network file systems give a file
+system another device number after a reboot, which would make every entry stale.
+
+**Where.** The entry of `<path>` in share `<share>` is
+`local/digests/<share>/<path>.splicefs_state`. Share names are safe folder names already.
+Each name in `<path>` is escaped before it becomes a file or folder name:
+
+1. `%` becomes `%25`.
+2. Every byte that is not part of valid UTF-8 becomes `%XX` (upper case hex), so every name
+   is valid UTF-8, which macOS requires.
+3. In a name that ends in `.splicefs_state`, that last `.` becomes `%2E`.
+4. A name whose escaped form plus `.splicefs_state` would be longer than 255 bytes becomes
+   `%_` and the hex SHA-256 of the original name. `%_` cannot come from rules 1 to 3.
+
+Rule 3 keeps the two kinds of names apart: an entry always ends in `.splicefs_state` and a
+folder never does, so a file `a` next to a folder `a.splicefs_state` gets two separate places.
+Rules 1 to 3 can be undone, so two different paths never share an entry; rule 4 and file
+systems that fold case or Unicode forms could still bring two paths to one file, which is why
+the entry also holds the path (below).
+
+The share root is a folder and has no digests, so it has no entry. A path that is not inside
+the share, is hidden by the share's rules, or is too young for `min_age` gets `404` before the
+cache is asked, so it never has an entry either. A symbolic link that is followed has the entry
+of the link's path and the stamp of its target.
+
+**What.** An entry is a small YAML file, mode 0600, in folders of mode 0700:
+
+```yaml
+version: 1
+path: photos/2024/a.jpg      # the path in the share, escaped by rules 1 to 3
+size: 52133
+mtime_ns: 1763452800123456789
+ctime_ns: 1763452801000000000
+btime_ns: 0
+inode: 81273
+head: <64 hex digits>
+tail: <64 hex digits>
+```
+
+`version` changes whenever what an entry means changes, for example the 64 KiB of the
+digests; an entry of another version is stale.
+
+**Use.** A `HEAD` request resolves and opens the file, takes the stamp, then asks the
+in-memory cache and, if that misses, the entry. An entry is used only when `version`, `path`
+and every stamp field (size, modification, change and creation time, inode) are equal to what
+was just read. Anything else is a miss.
+
+**Write.** On a miss the server reads the two 64 KiB ranges from the open file, takes the
+stamp again, and stores the entry only if the two stamps are equal, so an entry never pairs a
+stamp with bytes of a file that changed while it was read. The answer uses the digests either
+way. The entry is written to a temporary file in `local/digests/.tmp/` and renamed over the old
+one, so a reader sees the old entry or the new one, never part of one. A changed file gets a
+new entry the same way the first time it is asked about after the change. Entries are not
+flushed to disk: a lost entry costs one recompute. All access to `local/digests/` goes through
+an `os.Root` on that folder, so a link placed inside it cannot send a write elsewhere.
+
+**Failures.** An entry that is missing, unreadable, not a regular file, not valid YAML, of
+another version or with a malformed field is a miss: the digests are computed and the entry is
+replaced. A failed write (full disk, no inodes left, read-only folder) never fails the request;
+it is logged once as a warning, and again only after a write has succeeded in between.
+
+**Concurrency.** Two requests for one file may both miss and both write; each writes its own
+temporary file and the last rename wins. Both hold the same digests for the same stamp, so no
+lock is needed. Only this node's server writes `local/digests/`. The temporary folder is
+emptied at start, before any share is opened, so nothing else is writing there then.
+
+**Cleanup.** After start and after each reload the server sweeps the entries in the
+background, one share at a time. For each entry it looks up the stored `path` through the
+share, with the same rules as a request, and removes the entry when the file is gone, hidden or
+its stamp differs. It removes folders left empty and the folders of shares that are no longer
+configured. A renamed file therefore gets a new entry on its first request and its old entry
+goes at the next sweep. A sweep can remove an entry written while it ran; that costs one
+recompute, never a wrong answer. A sweep that fails on one entry logs it and goes on.
+
+**Memory.** The in-memory cache stays in front of the entries and keeps its size (65536 per
+share by default). It holds the same thing, keyed by the path and the same stamp fields with the
+same comparison, so a hit there saves reading the entry.
+
+**Cost.** Each entry takes one inode and, on most file systems, one block of the state file
+system, about 4 KiB per data file asked about. The state folder must have room for that.
 
 ### Compression
 
@@ -108,6 +205,7 @@ The state folder holds what the server keeps:
   local/                    this machine only, never synced
     node-id
     tls/cert.pem, key.pem
+    digests/<share>/<path>.splicefs_state
   shared/                   may be synced between nodes
     users/<name>.yaml
     keys/<node-id>.yaml
@@ -213,3 +311,6 @@ The limitations of the client are listed in its
 
 - Per-block checksums (see Consistency).
 - Revoking one token before it expires.
+- Digest cache: whether entries are flushed to disk (proposed: no), how a failed write is
+  logged (proposed: once until a write succeeds), and whether every `HEAD` opening the file to
+  take the stamp from it costs too much (proposed: measure, keep).
