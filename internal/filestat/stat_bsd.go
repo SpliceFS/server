@@ -5,10 +5,21 @@ package filestat
 import "syscall"
 
 // systemStat reads the Stamp of the file at path with one stat call, which follows a
-// symbolic link as os.Stat does. macOS and FreeBSD report the birth time with every stat.
+// symbolic link as os.Stat does.
 func systemStat(path string) (Stamp, error) {
+	return stampFrom(func(stat *syscall.Stat_t) error { return syscall.Stat(path, stat) })
+}
+
+// systemFstat reads the Stamp of the open file fd with one fstat call.
+func systemFstat(fd int) (Stamp, error) {
+	return stampFrom(func(stat *syscall.Stat_t) error { return syscall.Fstat(fd, stat) })
+}
+
+// stampFrom runs one of the stat calls and takes the Stamp from its answer. macOS and
+// FreeBSD report the birth time with every stat call.
+func stampFrom(call func(*syscall.Stat_t) error) (Stamp, error) {
 	var stat syscall.Stat_t
-	if err := retryInterrupted(func() error { return syscall.Stat(path, &stat) }); err != nil {
+	if err := retryInterrupted(func() error { return call(&stat) }); err != nil {
 		return Stamp{}, err
 	}
 	return stampFromStat(&stat), nil
