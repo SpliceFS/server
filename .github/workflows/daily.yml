@@ -1,8 +1,11 @@
-name: Fuzz
+name: Daily
 # Every job has a time limit: 3 times its longest run, so a hang fails in minutes.
 
-# Fuzzing finds bugs over time; it does not prove a change, so no pull request waits for it. It
-# runs on main every day, and on request (Run workflow on the Actions page).
+# What runs on main every day, and on request (Run workflow on the Actions page):
+# - Fuzzing finds bugs over time; it does not prove a change, so no pull request waits for it.
+# - The FreeBSD tests keep the Go cache warm for pull requests. A pull request only restores its
+#   caches, so this run, on main, is the one that saves them: the entry that every pull request
+#   restores is then never older than a day.
 on:
   schedule:
     - cron: "43 4 * * *"
@@ -63,11 +66,19 @@ jobs:
           path: ${{ matrix.package }}/testdata/fuzz
           if-no-files-found: ignore
 
+  # The same workflow as the one CI runs for a pull request, so both have the same Go cache
+  # entry. Here it saves.
+  freebsd-tests:
+    name: FreeBSD tests
+    uses: ./.github/workflows/freebsd-tests.yml
+    with:
+      save: true
+
   # A failed run of this workflow opens an issue assigned to the account in the repository
   # variable ALERT_ASSIGNEE, so that someone gets an email; nobody watches a scheduled run.
   alert:
     name: Report a failure
-    needs: [fuzz-packages, fuzz]
+    needs: [fuzz-packages, fuzz, freebsd-tests]
     if: ${{ failure() }}
     permissions:
       issues: write

@@ -127,7 +127,7 @@ A pull request merges with one merge commit. Squash and fast-forward merges are 
   never verifying. Run them with `make fuzz`, or longer with `FUZZTIME=1m make fuzz`. A
   package runs with `make fuzz FUZZ_PACKAGE=api` and one target with
   `make fuzz FUZZ_TARGET=api:FuzzParseLogin`; `make -s fuzz-packages` and `make -s fuzz-targets`
-  list them. Pull requests do not wait for fuzzing: the Fuzz workflow runs each package as a job
+  list them. Pull requests do not wait for fuzzing: the Daily workflow runs each package as a job
   of its own every day on `main`, and on request. A failing input is written to
   `testdata/fuzz` in the package's folder, and the workflow keeps that folder as an artifact.
 - Tests do not sleep to wait for something and do not depend on wall-clock time. Use an
@@ -151,7 +151,7 @@ A pull request merges with one merge commit. Squash and fast-forward merges are 
 | Workflow | What it does |
 |---|---|
 | CI | every part of a build as a job of its own, all at once: static checks (format, vet, module files, ShellCheck, and `golangci-lint` with the `gosec` security rules for each system), unit tests with the 100% coverage gate, tests with the race detector, the build for every system, the real client against this server, macOS, and FreeBSD. The job "All checks" needs all of them and is the one check a pull request must pass. |
-| Fuzz | every day on `main`, and on request: every fuzz target, one job for each package. A failure opens an issue. |
+| Daily | every day on `main`, and on request: every fuzz target, one job for each package, and the FreeBSD tests, which keep the Go cache warm for pull requests. A failure opens an issue. |
 | Rules | on pull requests: checks the `change_scope` line and the `VERSION` file the bot sets |
 | Main | on every push to `main`: tags the new version and rebuilds the open pull requests |
 | Security | `govulncheck` for known vulnerabilities in dependencies and the standard library, CodeQL static analysis, and a dependency review on pull requests. Also runs weekly. |
