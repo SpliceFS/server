@@ -14,8 +14,8 @@ const (
 )
 
 // sample is the entry of the design document's example.
-func sample() Entry {
-	return Entry{
+func sample() entry {
+	return entry{
 		Path:    "photos/2024/a.jpg",
 		Size:    52133,
 		MtimeNs: 1763452800123456789,
@@ -42,8 +42,8 @@ func sampleText() string {
 
 func TestEncodeWritesTheFieldsOfTheDesign(t *testing.T) {
 	t.Parallel()
-	if got := string(sample().Encode()); got != sampleText() {
-		t.Errorf("Encode =\n%s\nwant\n%s", got, sampleText())
+	if got := string(sample().encode()); got != sampleText() {
+		t.Errorf("encode =\n%s\nwant\n%s", got, sampleText())
 	}
 }
 
@@ -51,38 +51,38 @@ func TestEntryRoundTrip(t *testing.T) {
 	t.Parallel()
 	digits := strings.Repeat("1", 64)
 	// Each row changes the example in one way.
-	tests := map[string]func(*Entry){
-		"the example": func(*Entry) {},
-		"zero stamp": func(e *Entry) {
+	tests := map[string]func(*entry){
+		"the example": func(*entry) {},
+		"zero stamp": func(e *entry) {
 			e.Size, e.MtimeNs, e.CtimeNs, e.BtimeNs, e.Inode = 0, 0, 0, 0, 0
 		},
-		"largest numbers": func(e *Entry) {
+		"largest numbers": func(e *entry) {
 			e.Size, e.MtimeNs, e.CtimeNs, e.BtimeNs = math.MaxInt64, math.MaxInt64, math.MaxInt64, math.MaxInt64
 			e.Inode = math.MaxUint64
 		},
-		"time before the epoch":  func(e *Entry) { e.MtimeNs = math.MinInt64 },
-		"digests of digits only": func(e *Entry) { e.Head, e.Tail = digits, digits },
-		"digests that read as a number": func(e *Entry) {
+		"time before the epoch":  func(e *entry) { e.MtimeNs = math.MinInt64 },
+		"digests of digits only": func(e *entry) { e.Head, e.Tail = digits, digits },
+		"digests that read as a number": func(e *entry) {
 			e.Head, e.Tail = "1e"+strings.Repeat("0", 62), "0"+strings.Repeat("1", 63)
 		},
-		"escaped bytes":      func(e *Entry) { e.Path = "caf%C3%A9/%FF/100%25" },
-		"non-ASCII names":    func(e *Entry) { e.Path = "\u00e9t\u00e9/\u65e5\u672c\u8a9e/\U0001F600" },
-		"space and tab":      func(e *Entry) { e.Path = " leading/trailing /in\ttab" },
-		"line breaks":        func(e *Entry) { e.Path = "a\nb/c\rd/e\u0085f/g\u2028h/i\u2029j" },
-		"control characters": func(e *Entry) { e.Path = "a\x00b/c\x01d/e\x7ff/g\ufeffh" },
-		"yaml syntax in names": func(e *Entry) {
+		"escaped bytes":      func(e *entry) { e.Path = "caf%C3%A9/%FF/100%25" },
+		"non-ASCII names":    func(e *entry) { e.Path = "\u00e9t\u00e9/\u65e5\u672c\u8a9e/\U0001F600" },
+		"space and tab":      func(e *entry) { e.Path = " leading/trailing /in\ttab" },
+		"line breaks":        func(e *entry) { e.Path = "a\nb/c\rd/e\u0085f/g\u2028h/i\u2029j" },
+		"control characters": func(e *entry) { e.Path = "a\x00b/c\x01d/e\x7ff/g\ufeffh" },
+		"yaml syntax in names": func(e *entry) {
 			e.Path = "a: b/# c/- d/'e'/\"f\"/{g}/[h]/&i/*j/!k/|l/>m/%25n/@o/`p"
 		},
-		"names that read as other values": func(e *Entry) { e.Path = "null/true/123/1e3/0x1f/~/---/..." },
+		"names that read as other values": func(e *entry) { e.Path = "null/true/123/1e3/0x1f/~/---/..." },
 	}
 	for name, change := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			entry := sample()
-			change(&entry)
-			got, err := Decode(entry.Encode())
-			if err != nil || got != entry {
-				t.Errorf("Decode(Encode(%+v)) = %+v, %v", entry, got, err)
+			sampled := sample()
+			change(&sampled)
+			got, err := decode(sampled.encode())
+			if err != nil || got != sampled {
+				t.Errorf("decode(encode(%+v)) = %+v, %v", sampled, got, err)
 			}
 		})
 	}
@@ -90,9 +90,9 @@ func TestEntryRoundTrip(t *testing.T) {
 
 func TestDecodeReadsTheFieldsOfTheDesign(t *testing.T) {
 	t.Parallel()
-	got, err := Decode([]byte(sampleText()))
+	got, err := decode([]byte(sampleText()))
 	if err != nil || got != sample() {
-		t.Errorf("Decode = %+v, %v, want %+v", got, err, sample())
+		t.Errorf("decode = %+v, %v, want %+v", got, err, sample())
 	}
 }
 
@@ -146,8 +146,8 @@ func TestDecodeRejects(t *testing.T) {
 	for name, text := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if got, err := Decode([]byte(text)); err == nil || got != (Entry{}) {
-				t.Errorf("Decode accepted it: %+v, %v", got, err)
+			if got, err := decode([]byte(text)); err == nil || got != (entry{}) {
+				t.Errorf("decode accepted it: %+v, %v", got, err)
 			}
 		})
 	}
@@ -155,14 +155,14 @@ func TestDecodeRejects(t *testing.T) {
 
 func TestMatch(t *testing.T) {
 	t.Parallel()
-	entry := sample()
+	sampled := sample()
 	same := filestat.Stamp{
-		Size:  entry.Size,
-		Mtime: entry.MtimeNs,
-		Ctime: entry.CtimeNs,
-		Btime: entry.BtimeNs,
+		Size:  sampled.Size,
+		Mtime: sampled.MtimeNs,
+		Ctime: sampled.CtimeNs,
+		Btime: sampled.BtimeNs,
 		Dev:   7,
-		Ino:   entry.Inode,
+		Ino:   sampled.Inode,
 		Mode:  0o644,
 	}
 	tests := map[string]struct {
@@ -170,24 +170,24 @@ func TestMatch(t *testing.T) {
 		stamp func(filestat.Stamp) filestat.Stamp
 		want  bool
 	}{
-		"same path and stamp": {entry.Path, func(s filestat.Stamp) filestat.Stamp { return s }, true},
+		"same path and stamp": {sampled.Path, func(s filestat.Stamp) filestat.Stamp { return s }, true},
 		"another path":        {"photos/2024/b.jpg", func(s filestat.Stamp) filestat.Stamp { return s }, false},
 		"the path unescaped":  {"photos/2024/a.jpg/", func(s filestat.Stamp) filestat.Stamp { return s }, false},
-		"another size":        {entry.Path, func(s filestat.Stamp) filestat.Stamp { s.Size++; return s }, false},
-		"another mtime":       {entry.Path, func(s filestat.Stamp) filestat.Stamp { s.Mtime++; return s }, false},
-		"another ctime":       {entry.Path, func(s filestat.Stamp) filestat.Stamp { s.Ctime++; return s }, false},
-		"another btime":       {entry.Path, func(s filestat.Stamp) filestat.Stamp { s.Btime++; return s }, false},
-		"another inode":       {entry.Path, func(s filestat.Stamp) filestat.Stamp { s.Ino++; return s }, false},
+		"another size":        {sampled.Path, func(s filestat.Stamp) filestat.Stamp { s.Size++; return s }, false},
+		"another mtime":       {sampled.Path, func(s filestat.Stamp) filestat.Stamp { s.Mtime++; return s }, false},
+		"another ctime":       {sampled.Path, func(s filestat.Stamp) filestat.Stamp { s.Ctime++; return s }, false},
+		"another btime":       {sampled.Path, func(s filestat.Stamp) filestat.Stamp { s.Btime++; return s }, false},
+		"another inode":       {sampled.Path, func(s filestat.Stamp) filestat.Stamp { s.Ino++; return s }, false},
 		// ZFS, btrfs and network file systems give a file system another device number after
 		// a reboot, which must not make every entry stale.
-		"another device": {entry.Path, func(s filestat.Stamp) filestat.Stamp { s.Dev++; return s }, true},
-		"another mode":   {entry.Path, func(s filestat.Stamp) filestat.Stamp { s.Mode = 0o600; return s }, true},
+		"another device": {sampled.Path, func(s filestat.Stamp) filestat.Stamp { s.Dev++; return s }, true},
+		"another mode":   {sampled.Path, func(s filestat.Stamp) filestat.Stamp { s.Mode = 0o600; return s }, true},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if got := entry.Match(tt.path, tt.stamp(same)); got != tt.want {
-				t.Errorf("Match(%q, %+v) = %v, want %v", tt.path, tt.stamp(same), got, tt.want)
+			if got := sampled.match(tt.path, tt.stamp(same)); got != tt.want {
+				t.Errorf("match(%q, %+v) = %v, want %v", tt.path, tt.stamp(same), got, tt.want)
 			}
 		})
 	}

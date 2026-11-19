@@ -1,6 +1,8 @@
 package digestcache
 
 import (
+	"bytes"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -8,22 +10,41 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+
+	"github.com/SpliceFS/server/internal/filestat"
 )
 
 // share is the share the tests keep their entries in.
 const share = "photos"
 
-// testEntry is an entry of the file at path; size tells entries of one path apart.
-func testEntry(path string, size int64) Entry {
-	return Entry{
-		Path:    Escape(path),
-		Size:    size,
-		MtimeNs: 1763452800123456789,
-		CtimeNs: 1763452801000000000,
-		Inode:   81273,
-		Head:    strings.Repeat("a", 64),
-		Tail:    strings.Repeat("b", 64),
+// testStamp is a stamp of a file; size tells versions of one file apart.
+func testStamp(size int64) filestat.Stamp {
+	return filestat.Stamp{Size: size, Mtime: 1763452800123456789, Ctime: 1763452801000000000, Dev: 7, Ino: 81273}
+}
+
+// testDigests are the digests of the version of a file of size, different for every size.
+func testDigests(size int64) Digests {
+	return Digests{Head: fmt.Sprintf("a%063x", size), Tail: fmt.Sprintf("b%063x", size)}
+}
+
+// testEntry is the entry Save writes for the file at path with the stamp of size.
+func testEntry(path string, size int64) entry {
+	return newEntry(path, testStamp(size), testDigests(size))
+}
+
+// save saves the entry of the file at path in shareName with the stamp of size.
+func save(t *testing.T, store *Store, shareName, path string, size int64) {
+	t.Helper()
+	if err := store.Save(shareName, path, testStamp(size), testDigests(size)); err != nil {
+		t.Errorf("Save(%q, %q) = %v", shareName, path, err)
 	}
+}
+
+// load reports whether the entry of the file at path in shareName answers for the stamp of
+// size with the digests of size.
+func load(store *Store, shareName, path string, size int64) bool {
+	got, ok := store.Load(shareName, path, testStamp(size))
+	return ok && got == testDigests(size)
 }
 
 // openRoot opens dir as a root that is closed when the test ends.
@@ -79,18 +100,16 @@ func TestSaveThenLoad(t *testing.T) {
 	store := openStore(t, dir)
 	paths := []string{"a.jpg", "photos/2024/a.jpg", "100%/caf\xe9", strings.Repeat("a", 300) + "/b"}
 	for i, path := range paths {
-		want := testEntry(path, int64(i))
-		if err := store.Save(share, path, want); err != nil {
-			t.Fatalf("Save(%q) = %v", path, err)
+		size := int64(i)
+		save(t, store, share, path, size)
+		if !load(store, share, path, size) {
+			t.Errorf("Load(%q) misses what Save wrote", path)
 		}
-		if got, ok := store.Load(share, path); !ok || got != want {
-			t.Errorf("Load(%q) = %+v, %v, want %+v", path, got, ok, want)
-		}
-		if got, ok := store.Load("other", path); ok {
+		if got, ok := store.Load("other", path, testStamp(size)); ok {
 			t.Errorf("Load of another share = %+v", got)
 		}
 	}
-	if got, ok := store.Load(share, "never-saved"); ok {
+	if got, ok := store.Load(share, "never-saved", testStamp(0)); ok {
 		t.Errorf("Load of a path never saved = %+v", got)
 	}
 	checkTempEmpty(t, dir)
@@ -126,7 +145,7 @@ func linkOutside(data []byte) func(*testing.T, string) {
 
 func TestLoadCorruptIsMiss(t *testing.T) {
 	t.Parallel()
-	valid := testEntry("a", 1).Encode()
+	valid := testEntry("a", 1).encode()
 	tests := map[string]struct {
 		path  string
 		setup func(t *testing.T, file string)
@@ -143,6 +162,9 @@ func TestLoadCorruptIsMiss(t *testing.T) {
 		// The entry it points at is valid, so only the root keeps it out.
 		"a link out of the folder": {"a", linkOutside(valid)},
 		"a path that is not clean": {"b/../a", writeEntry(valid)},
+		// Two paths can come to one entry file (rule 4, or a file system that folds case).
+		"the entry of another path":  {"a", writeEntry(testEntry("A", 1).encode())},
+		"the entry of another stamp": {"a", writeEntry(testEntry("a", 2).encode())},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -153,7 +175,7 @@ func TestLoadCorruptIsMiss(t *testing.T) {
 				t.Fatal(err)
 			}
 			tt.setup(t, filepath.Join(dir, share, "a.splicefs_state"))
-			if got, ok := store.Load(share, tt.path); ok {
+			if got, ok := store.Load(share, tt.path, testStamp(1)); ok {
 				t.Errorf("Load(%q) = %+v, want a miss", tt.path, got)
 			}
 		})
@@ -164,9 +186,7 @@ func TestSaveModes(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	store := openStore(t, dir)
-	if err := store.Save(share, "a/b/c.jpg", testEntry("a/b/c.jpg", 1)); err != nil {
-		t.Fatal(err)
-	}
+	save(t, store, share, "a/b/c.jpg", 1)
 	walked := 0
 	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil || path == dir {
@@ -197,12 +217,10 @@ func TestSaveReplaces(t *testing.T) {
 	dir := t.TempDir()
 	store := openStore(t, dir)
 	for _, size := range []int64{1, 2} {
-		if err := store.Save(share, "a", testEntry("a", size)); err != nil {
-			t.Fatal(err)
-		}
+		save(t, store, share, "a", size)
 	}
-	if got, ok := store.Load(share, "a"); !ok || got != testEntry("a", 2) {
-		t.Errorf("Load = %+v, %v, want the second entry", got, ok)
+	if load(store, share, "a", 1) || !load(store, share, "a", 2) {
+		t.Error("Load does not answer with the second entry only")
 	}
 	if found := names(t, filepath.Join(dir, share)); len(found) != 1 {
 		t.Errorf("share folder holds %v", found)
@@ -235,7 +253,7 @@ func TestSaveFailures(t *testing.T) {
 			if err := tt.setup(t, dir); err != nil {
 				t.Fatal(err)
 			}
-			if err := store.Save(share, tt.path, testEntry(tt.path, 1)); err == nil {
+			if err := store.Save(share, tt.path, testStamp(1), testDigests(1)); err == nil {
 				t.Errorf("Save(%q) succeeded", tt.path)
 			}
 			if _, err := os.Stat(filepath.Join(dir, ".tmp")); err == nil {
@@ -265,9 +283,8 @@ func TestSaveConcurrent(t *testing.T) {
 	group.Wait()
 	for _, shareName := range shares {
 		for _, path := range paths {
-			got, ok := store.Load(shareName, path)
-			if !ok || got.Size < 0 || got.Size >= writers || got != testEntry(path, got.Size) {
-				t.Errorf("Load(%q, %q) = %+v, %v", shareName, path, got, ok)
+			if answering := answeringSizes(store, shareName, path, writers); answering != 1 {
+				t.Errorf("Load(%q, %q) answers for %d stamps, want the one of the last writer", shareName, path, answering)
 			}
 		}
 	}
@@ -278,18 +295,25 @@ func TestSaveConcurrent(t *testing.T) {
 func saveAll(t *testing.T, store *Store, shareName string, paths []string, size int64) {
 	t.Helper()
 	for _, path := range paths {
-		if err := store.Save(shareName, path, testEntry(path, size)); err != nil {
-			t.Error(err)
+		save(t, store, shareName, path, size)
+	}
+}
+
+// answeringSizes counts the sizes below limit whose stamp the entry of path answers for.
+func answeringSizes(store *Store, shareName, path string, limit int64) int {
+	answering := 0
+	for size := range limit {
+		if load(store, shareName, path, size) {
+			answering++
 		}
 	}
+	return answering
 }
 
 func TestStartEmptiesTemp(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	if err := openStore(t, dir).Save(share, "a", testEntry("a", 1)); err != nil {
-		t.Fatal(err)
-	}
+	save(t, openStore(t, dir), share, "a", 1)
 	for _, left := range []string{"left", "sub/deeper"} {
 		path := filepath.Join(dir, ".tmp", left)
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -301,7 +325,7 @@ func TestStartEmptiesTemp(t *testing.T) {
 	}
 	store := openStore(t, dir)
 	checkTempEmpty(t, dir)
-	if _, ok := store.Load(share, "a"); !ok {
+	if !load(store, share, "a", 1) {
 		t.Error("the entry saved before the start is gone")
 	}
 }
@@ -326,5 +350,24 @@ func TestStartFailsWithoutFolder(t *testing.T) {
 	}
 	if store, err := New(root); err == nil || store != nil {
 		t.Errorf("New = %v, %v, want an error", store, err)
+	}
+}
+
+// Save writes the path escaped and the stamp without its device number.
+func TestSaveWritesEntry(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	save(t, openStore(t, dir), share, "100%/caf\xe9", 3)
+	data, err := os.ReadFile(filepath.Join(dir, share, "100%25", "caf%E9.splicefs_state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := testStamp(3)
+	want := entry{
+		Path: "100%25/caf%E9", Size: 3, MtimeNs: stamp.Mtime, CtimeNs: stamp.Ctime, Inode: stamp.Ino,
+		Head: testDigests(3).Head, Tail: testDigests(3).Tail,
+	}
+	if !bytes.Equal(data, want.encode()) {
+		t.Errorf("entry file = %q, want %q", data, want.encode())
 	}
 }

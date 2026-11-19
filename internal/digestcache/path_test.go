@@ -38,8 +38,8 @@ func TestEscape(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if got := Escape(tt.path); got != tt.want {
-				t.Errorf("Escape(%q) = %q, want %q", tt.path, got, tt.want)
+			if got := escape(tt.path); got != tt.want {
+				t.Errorf("escape(%q) = %q, want %q", tt.path, got, tt.want)
 			}
 		})
 	}
@@ -86,8 +86,8 @@ func TestEntryPath(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if got, err := EntryPath(tt.path); err != nil || got != tt.want {
-				t.Errorf("EntryPath(%q) = %q, %v, want %q", tt.path, got, err, tt.want)
+			if got, err := entryPath(tt.path); err != nil || got != tt.want {
+				t.Errorf("entryPath(%q) = %q, %v, want %q", tt.path, got, err, tt.want)
 			}
 		})
 	}
@@ -114,8 +114,8 @@ func TestEntryPathRefusesUncleanPaths(t *testing.T) {
 	for name, path := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if got, err := EntryPath(path); !errors.Is(err, errNotClean) || got != "" {
-				t.Errorf("EntryPath(%q) = %q, %v, want %v", path, got, err, errNotClean)
+			if got, err := entryPath(path); !errors.Is(err, errNotClean) || got != "" {
+				t.Errorf("entryPath(%q) = %q, %v, want %v", path, got, err, errNotClean)
 			}
 		})
 	}
@@ -141,16 +141,16 @@ func FuzzEntryPathInjective(f *testing.F) {
 		}
 	}
 	f.Fuzz(func(t *testing.T, first, second string) {
-		entry, err := EntryPath(first)
-		other, otherErr := EntryPath(second)
+		entry, err := entryPath(first)
+		other, otherErr := entryPath(second)
 		if err != nil || otherErr != nil {
 			return
 		}
 		if first != second && entry == other {
-			t.Fatalf("EntryPath(%q) and EntryPath(%q) are both %q", first, second, entry)
+			t.Fatalf("entryPath(%q) and entryPath(%q) are both %q", first, second, entry)
 		}
 		if strings.HasPrefix(other, entry+"/") {
-			t.Fatalf("EntryPath(%q) = %q is a folder of EntryPath(%q) = %q", first, entry, second, other)
+			t.Fatalf("entryPath(%q) = %q is a folder of entryPath(%q) = %q", first, entry, second, other)
 		}
 	})
 }
@@ -169,19 +169,19 @@ func FuzzEntryPathNamesFit(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, path string) {
-		got, err := EntryPath(path)
+		got, err := entryPath(path)
 		if (err == nil) != isClean(path) {
-			t.Fatalf("EntryPath(%q) = %q, %v", path, got, err)
+			t.Fatalf("entryPath(%q) = %q, %v", path, got, err)
 		}
 		if err != nil {
 			return
 		}
 		if !strings.HasSuffix(got, suffix) || strings.Count(got, "/") != strings.Count(path, "/") {
-			t.Fatalf("EntryPath(%q) = %q", path, got)
+			t.Fatalf("entryPath(%q) = %q", path, got)
 		}
 		for name := range strings.SplitSeq(got, "/") {
 			if len(name) > 255 || !utf8.ValidString(name) {
-				t.Fatalf("EntryPath(%q) has the name %q", path, name)
+				t.Fatalf("entryPath(%q) has the name %q", path, name)
 			}
 		}
 	})

@@ -9,6 +9,8 @@ import (
 	"os"
 	"path"
 	"syscall"
+
+	"github.com/SpliceFS/server/internal/filestat"
 )
 
 const (
@@ -40,29 +42,33 @@ func New(root *os.Root) (*Store, error) {
 	return &Store{root: root}, nil
 }
 
-// Load returns the entry of the file at filePath in share. A path that is not clean, and an
-// entry that is missing, unreadable, not a regular file or not exactly what Encode writes,
-// is a miss: the caller computes the digests again and saves a new entry.
-func (s *Store) Load(share, filePath string) (Entry, bool) {
-	name, err := EntryPath(filePath)
+// Load returns the digests of the file at filePath in share, which has stamp now, when its
+// entry was saved for that path and that stamp. A path that is not clean, and an entry that
+// is missing, unreadable, not a regular file, not exactly what the server writes or of
+// another path or stamp, is a miss: the caller computes the digests again and saves them.
+func (s *Store) Load(share, filePath string, stamp filestat.Stamp) (Digests, bool) {
+	name, err := entryPath(filePath)
 	if err != nil {
-		return Entry{}, false
+		return Digests{}, false
 	}
 	data, err := s.read(share + "/" + name)
 	if err != nil {
-		return Entry{}, false
+		return Digests{}, false
 	}
-	entry, err := Decode(data)
-	return entry, err == nil
+	found, err := decode(data)
+	if err != nil || !found.match(escape(filePath), stamp) {
+		return Digests{}, false
+	}
+	return Digests{Head: found.Head, Tail: found.Tail}, true
 }
 
-// Save writes entry as the entry of the file at filePath in share, replacing the one there. It
-// goes to a file of its own in the temporary folder first and is renamed into place, so a
-// reader sees the old entry or the new one, never a part of one, and two writers of one
-// entry never write into the same file. The entry is not flushed: a lost entry costs one
-// recompute.
-func (s *Store) Save(share, filePath string, entry Entry) error {
-	name, err := EntryPath(filePath)
+// Save writes the entry of the file at filePath in share, which had stamp when digests were
+// read from it, replacing the entry there. It goes to a file of its own in the temporary
+// folder first and is renamed into place, so a reader sees the old entry or the new one,
+// never a part of one, and two writers of one entry never write into the same file. The
+// entry is not flushed: a lost entry costs one recompute.
+func (s *Store) Save(share, filePath string, stamp filestat.Stamp, digests Digests) error {
+	name, err := entryPath(filePath)
 	if err != nil {
 		return err
 	}
@@ -72,7 +78,7 @@ func (s *Store) Save(share, filePath string, entry Entry) error {
 		return fmt.Errorf("make the folder of digest entry %s: %w", name, err)
 	}
 	temp := tempFolder + "/" + rand.Text()
-	err = s.root.WriteFile(temp, entry.Encode(), fileMode)
+	err = s.root.WriteFile(temp, newEntry(filePath, stamp, digests).encode(), fileMode)
 	if err == nil {
 		err = s.root.Rename(temp, name)
 	}
