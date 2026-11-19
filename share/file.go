@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/SpliceFS/common/wire"
+
+	"github.com/SpliceFS/server/internal/filestat"
 )
 
 // File is a regular file opened for reading. It implements io.ReadSeeker and
@@ -16,6 +18,8 @@ import (
 type File struct {
 	f    *os.File
 	info Info
+	// stamp is what the file system said of the open file when it was opened; info is made from it.
+	stamp filestat.Stamp
 	// relPath is the path of the file in its share, which the digest caches are keyed on.
 	relPath string
 }

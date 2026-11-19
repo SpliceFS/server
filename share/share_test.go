@@ -733,19 +733,6 @@ func TestCollect(t *testing.T) {
 	}
 }
 
-type fakeHandle struct{ err error }
-
-func (handle fakeHandle) Stat() (os.FileInfo, error) { return nil, handle.err }
-
-func TestOpenInfoStatError(t *testing.T) {
-	t.Parallel()
-	share := newFixture(t).open(t, &Options{})
-	_, err := share.openInfo("f", fakeHandle{err: errors.New("stat failed")})
-	if err == nil || errors.Is(err, ErrNotFound) {
-		t.Errorf("openInfo = %v", err)
-	}
-}
-
 func TestAbsent(t *testing.T) {
 	t.Parallel()
 	pathError := func(err error) error { return &fs.PathError{Op: "x", Path: "p", Err: err} }

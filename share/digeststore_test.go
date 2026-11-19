@@ -206,3 +206,26 @@ func TestDigestsStampFailure(t *testing.T) {
 		t.Errorf("Digests = %v, want the failure", err)
 	}
 }
+
+// The Info of an open file comes from the stamp that the digests are keyed on, so a request
+// reads the file system once and the tag and the digests always describe the same moment.
+func TestOpenFileInfoFromStamp(t *testing.T) {
+	t.Parallel()
+	fixed := newStoredShare(t)
+	stamp := fixed.stamp(t, "f")
+	stamp.Size = 12345
+	stamp.Mtime = epoch().Add(time.Hour).UnixNano()
+	calls := 0
+	fixed.share.statFile = func(*os.File) (filestat.Stamp, error) {
+		calls++
+		return stamp, nil
+	}
+	_, info := mustDigests(t, fixed.share, "f")
+	if info.Size != stamp.Size || !info.MTime.Equal(epoch().Add(time.Hour)) {
+		t.Errorf("Info = %+v, want size and time of the stamp", info)
+	}
+	mustDigests(t, fixed.share, "f")
+	if calls != 3 {
+		t.Errorf("%d stamps for a read and a memory hit, want 3", calls)
+	}
+}
