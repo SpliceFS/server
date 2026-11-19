@@ -1,0 +1,5 @@
+# The FreeBSD releases the program is tested on, one per line. Each release runs in its own
+# prepared image, ghcr.io/splicefs/freebsd-<release> (FREEBSD_IMAGE in the Makefile). Adding a
+# release also needs that image.
+14.5
+15.1

@@ -20,17 +20,14 @@ check() {
     fi
 }
 
-# A repository with one program name, the real libraries, and the programs of a build:
+# A repository with one module name, the real libraries, and the programs of a build:
 # alpha for every system, beta for Linux only, so that each archive holds what its own
 # system has.
 tree="$work/tree"
-mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/packaging/deb" "$tree/packaging/plain" \
-    "$tree/packaging/systemd"
-: > "$tree/packaging/systemd/alpha.service"
-cp "$root/scripts/archive-programs.sh" "$root/scripts/package-lib.sh" "$tree/scripts/"
-printf 'Package: splicefs-demo\n' > "$tree/packaging/deb/control"
-printf 'conf.d\n' > "$tree/packaging/config-folders"
-printf 'how to run the programs\n' > "$tree/packaging/plain/README.txt"
+mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/archive"
+cp "$root/scripts/archive-programs.sh" "$root/scripts/release-lib.sh" "$tree/scripts/"
+printf 'module example.test/demo\n' > "$tree/go.mod"
+printf 'how to run the programs\n' > "$tree/archive/README.txt"
 printf 'the license\n' > "$tree/LICENSE"
 for system in linux-amd64 linux-arm64 freebsd-amd64 freebsd-arm64 darwin-amd64 darwin-arm64; do
     mkdir -p "$tree/dist/bin/$system"
@@ -44,7 +41,7 @@ done
 
 # Runs the script in the repository with the version and date of the arguments.
 archive() {
-    (cd "$tree" && VERSION="$1" PACKAGE_DATE="$2" sh scripts/archive-programs.sh)
+    (cd "$tree" && VERSION="$1" BUILD_DATE="$2" sh scripts/archive-programs.sh)
 }
 
 # Prints name, mode, owner, group and time (all octal, without leading zeros) of each member of
@@ -140,7 +137,7 @@ rm "$dist"/*.tar.gz
 archive v1.2.3 20261112 >/dev/null
 (cd "$dist" && cksum -- *.tar.gz) > "$work/first"
 rm "$dist"/*.tar.gz
-find "$tree/dist/bin" "$tree/LICENSE" "$tree/packaging/plain" -type f -exec touch -t 202001010101 {} +
+find "$tree/dist/bin" "$tree/LICENSE" "$tree/archive" -type f -exec touch -t 202001010101 {} +
 archive v1.2.3 20261112 >/dev/null
 (cd "$dist" && cksum -- *.tar.gz) > "$work/second"
 first="$(cat "$work/first")"
@@ -151,7 +148,7 @@ check "two runs give identical archives" "$first" "$second"
 rm "$dist"/*.tar.gz
 archive v1.2.3 20200101 >/dev/null
 got="$(headers "$dist/$top.tar.gz")"
-check "the time follows PACKAGE_DATE" "$top/ 755 0 0 13602760400" "${got%%
+check "the time follows BUILD_DATE" "$top/ 755 0 0 13602760400" "${got%%
 *}"
 
 # A pre-release or a build with changes names its version in full.
@@ -175,14 +172,14 @@ refuses() {
     fi
 }
 
-refuses "a PACKAGE_DATE that is not a date is refused" "PACKAGE_DATE" \
-    env VERSION=v1.2.3 PACKAGE_DATE=tomorrow sh scripts/archive-programs.sh
+refuses "a BUILD_DATE that is not a date is refused" "BUILD_DATE" \
+    env VERSION=v1.2.3 BUILD_DATE=tomorrow sh scripts/archive-programs.sh
 mkdir "$tree/dist/bin/linux-riscv64"
 refuses "a system without programs is refused" "linux-riscv64" \
-    env VERSION=v1.2.3 PACKAGE_DATE=20261112 sh scripts/archive-programs.sh
+    env VERSION=v1.2.3 BUILD_DATE=20261112 sh scripts/archive-programs.sh
 rm -r "$tree/dist/bin"
 refuses "a missing dist/bin is refused" "make build-all" \
-    env VERSION=v1.2.3 PACKAGE_DATE=20261112 sh scripts/archive-programs.sh
+    env VERSION=v1.2.3 BUILD_DATE=20261112 sh scripts/archive-programs.sh
 
 [ "$failed" -eq 0 ] || { echo "$failed failed"; exit 1; }
 echo "archive-programs: names, members, owner, modes, times and bytes as expected"

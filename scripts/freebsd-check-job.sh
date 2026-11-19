@@ -14,7 +14,7 @@ only="${3:-}"
 work=/tmp/work
 mkdir -p "$work" "$out/cover"
 
-# Kernel modules the tests need, one per line in packaging/freebsd/test-modules, which the
+# Kernel modules the tests need, one per line in freebsd-test/test-modules, which the
 # job folder holds when the program has such a file. A module may be loaded already.
 if [ -f "$in/test-modules" ]; then
     grep -v -e '^#' -e '^$' "$in/test-modules" | while read -r module; do

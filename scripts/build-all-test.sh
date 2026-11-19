@@ -11,14 +11,11 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 failed=0
 
-# A small repository of its own: two programs, a package name and the real libraries.
+# A small repository of its own: two programs, a module name and the real libraries.
 tree="$work/tree"
-mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/cmd/beta" "$tree/packaging/deb" \
-    "$tree/packaging/systemd" "$work/bin"
-: > "$tree/packaging/systemd/alpha.service"
-cp "$root/scripts/build-all.sh" "$root/scripts/package-lib.sh" "$tree/scripts/"
-printf 'Package: splicefs-demo\n' > "$tree/packaging/deb/control"
-printf 'conf.d\n' > "$tree/packaging/config-folders"
+mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/cmd/beta" "$work/bin"
+cp "$root/scripts/build-all.sh" "$root/scripts/release-lib.sh" "$tree/scripts/"
+printf 'module example.test/demo\n' > "$tree/go.mod"
 
 cat > "$work/bin/go" <<'EOT'
 #!/bin/sh
@@ -43,7 +40,7 @@ export CALLS="$work/calls"
 
 (
     cd "$tree"
-    PATH="$work/bin:$PATH" VERSION=v1.2.3 PACKAGE_DATE=20261112 LDFLAGS="-s -w -X example.test/demo/v.v=v1.2.3" \
+    PATH="$work/bin:$PATH" VERSION=v1.2.3 BUILD_DATE=20261112 LDFLAGS="-s -w -X example.test/demo/v.v=v1.2.3" \
         sh scripts/build-all.sh "$work/out"
 )
 
@@ -95,7 +92,7 @@ lacks_call "only freebsd changes the default folders" "linux/amd64 cgo=0 build -
 
 # Without LDFLAGS the script must stop, not build programs that report no version.
 status=0
-message="$(cd "$tree" && PATH="$work/bin:$PATH" VERSION=v1.2.3 PACKAGE_DATE=20261112 \
+message="$(cd "$tree" && PATH="$work/bin:$PATH" VERSION=v1.2.3 BUILD_DATE=20261112 \
     sh scripts/build-all.sh "$work/out2" 2>&1)" || status=$?
 if [ "$status" -ne 0 ] && printf '%s' "$message" | grep -q 'LDFLAGS is not set'; then
     echo "ok   refuses to run without LDFLAGS"
