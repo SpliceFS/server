@@ -37,4 +37,4 @@ jobs:
         with:
           save: ${{ inputs.save }}
       - name: Tests on FreeBSD, as root, 100% coverage
-        run: VM_TIMEOUT=450 make check-freebsd FREEBSD=${{ matrix.release }}
+        run: make check-freebsd FREEBSD=${{ matrix.release }}
