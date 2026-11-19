@@ -4,52 +4,33 @@ import (
 	"container/list"
 	"sync"
 
-	"github.com/SpliceFS/server/internal/filestat"
+	"github.com/SpliceFS/server/internal/digestcache"
 )
-
-// digestKey identifies one version of a file. Path, size and a modification time cut to
-// the share's precision are not enough: a file replaced by another of the same size within
-// the same second looks the same by those. So the key also holds the file's identity (see
-// filestat.Identity): its device and inode number and its change time. Times have full
-// precision.
-type digestKey struct {
-	path  string
-	id    filestat.Identity
-	size  int64
-	mtime int64
-	// identified is false when the file system gave no device, inode and change time. Such
-	// a key says too little about the file, so the cache never stores or finds anything
-	// under it, and the zero value is the safe one.
-	identified bool
-}
 
 // FileDigests holds the head digest and the tail digest of one version of a file: the
 // hex SHA-256 of its first wire.HeadDigestBytes bytes and of its last
-// wire.TailDigestBytes bytes. They are cached together because one read of the file
-// produces both.
-type FileDigests struct {
-	Head string
-	Tail string
-}
+// wire.TailDigestBytes bytes.
+type FileDigests = digestcache.Digests
 
-// lru is a fixed-size least-recently-used cache of digest pairs. It is safe for
-// concurrent use.
+// lru is a fixed-size least-recently-used cache of digest pairs, keyed like the entries of
+// the digest store, so that both agree on when a file has changed. It is safe for concurrent
+// use.
 type lru struct {
 	mu      sync.Mutex
 	limit   int
 	order   *list.List // front is the most recently used
-	entries map[digestKey]*list.Element
+	entries map[digestcache.Key]*list.Element
 }
 
 // lruEntry is the value stored in the list.
 type lruEntry struct {
-	key     digestKey
+	key     digestcache.Key
 	digests FileDigests
 }
 
 // newLRU returns a cache holding at most limit entries.
 func newLRU(limit int) *lru {
-	return &lru{limit: limit, order: list.New(), entries: make(map[digestKey]*list.Element)}
+	return &lru{limit: limit, order: list.New(), entries: make(map[digestcache.Key]*list.Element)}
 }
 
 // entryOf returns the cache entry held by element. The cache only ever stores *lruEntry
@@ -60,10 +41,7 @@ func entryOf(element *list.Element) (*lruEntry, bool) {
 }
 
 // get returns the digests stored for key and marks them as recently used.
-func (c *lru) get(key digestKey) (FileDigests, bool) {
-	if !key.identified {
-		return FileDigests{}, false
-	}
+func (c *lru) get(key digestcache.Key) (FileDigests, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	element, found := c.entries[key]
@@ -79,11 +57,8 @@ func (c *lru) get(key digestKey) (FileDigests, bool) {
 }
 
 // put stores the digests for key, evicting the least recently used entry when the
-// cache is full. A key that is not identified is not stored.
-func (c *lru) put(key digestKey, digests FileDigests) {
-	if !key.identified {
-		return
-	}
+// cache is full.
+func (c *lru) put(key digestcache.Key, digests FileDigests) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if element, found := c.entries[key]; found {

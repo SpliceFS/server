@@ -9,14 +9,25 @@ import (
 )
 
 // systemStat reads the Stamp of the file at path with one statx call. Flags 0 follow a
-// symbolic link, as os.Stat does. Asking for the creation time costs nothing extra; the
-// kernel says in the mask of the result whether it has one.
+// symbolic link, as os.Stat does.
 func systemStat(path string) (Stamp, error) {
+	return statx(unix.AT_FDCWD, path, 0)
+}
+
+// systemFstat reads the Stamp of the open file fd with one statx call: an empty path with
+// AT_EMPTY_PATH names the file the descriptor is open on.
+func systemFstat(fd int) (Stamp, error) {
+	return statx(fd, "", unix.AT_EMPTY_PATH)
+}
+
+// statx makes the statx call and takes the Stamp from its answer. Asking for the creation
+// time costs nothing extra; the kernel says in the mask of the result whether it has one.
+func statx(dirfd int, path string, flags int) (Stamp, error) {
 	var stx unix.Statx_t
-	statx := func() error {
-		return unix.Statx(unix.AT_FDCWD, path, 0, unix.STATX_BASIC_STATS|unix.STATX_BTIME, &stx)
+	call := func() error {
+		return unix.Statx(dirfd, path, flags, unix.STATX_BASIC_STATS|unix.STATX_BTIME, &stx)
 	}
-	if err := retryInterrupted(statx); err != nil {
+	if err := retryInterrupted(call); err != nil {
 		return Stamp{}, err
 	}
 	return stampFromStatx(&stx), nil

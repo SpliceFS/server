@@ -15,6 +15,8 @@ import (
 
 	"github.com/SpliceFS/common/wire"
 	"github.com/SpliceFS/server/config"
+	"github.com/SpliceFS/server/internal/digestcache"
+	"github.com/SpliceFS/server/internal/filestat"
 	"github.com/SpliceFS/server/internal/porttest"
 )
 
@@ -506,6 +508,20 @@ func refuseMissingShareFolder(
 	return refusal{err: err, want: "zzz", freed: []string{listenAddress(free)}}
 }
 
+// refuseStateFolderBlocked is a reload while a file sits where a state folder goes, which
+// the reload cannot make again.
+func refuseStateFolderBlocked(
+	t *testing.T, reloader *reloading, fix *fixture, shares map[string]config.Share,
+) refusal {
+	t.Helper()
+	mustRemoveAll(t, fix.data.digestsDir)
+	if err := os.WriteFile(fix.data.digestsDir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := reloader.refuse(t, loaded{cfg: reconfigured(fix, fix.cfg.Listen, shares)})
+	return refusal{err: err, want: ErrNotAFolder.Error()}
+}
+
 // expectRefused fails the test unless the refusal names what it must, in its error and in
 // the log, nothing was announced as listening, and everything the attempt opened is closed.
 func expectRefused(t *testing.T, reloader *reloading, got refusal) {
@@ -534,6 +550,7 @@ func TestReloadRefusesAConfigurationThatCannotBeApplied(t *testing.T) {
 		{"certificate file does not exist", refuseMissingCertificate},
 		{"address is already in use", refuseAddressInUse},
 		{"share folder does not exist", refuseMissingShareFolder},
+		{"a file is where a state folder goes", refuseStateFolderBlocked},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -581,7 +598,22 @@ func TestReloadLogsARemovedListenerThatDoesNotCloseCleanly(t *testing.T) {
 		Load: func() (*config.Config, error) { return fix.cfg, nil },
 	})
 	reloader.logger = logger
-	reloader.build = builder{data: layout(fix.state), version: "test", logger: logger}
+	// Run makes the state folders and the digest store before the first generation; this
+	// test builds one without it.
+	data := layout(fix.state)
+	if err := data.makeFolders(); err != nil {
+		t.Fatal(err)
+	}
+	digests, err := digestcache.Open(data.digestsDir, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := digests.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	reloader.build = builder{data: data, digests: digests, version: "test", logger: logger}
 	reloader.handlers = newLive(&generation{handler: http.NotFoundHandler(), closer: failingCloser{}}, logger)
 	reloader.srv = newServer(reloader.handlers, logger)
 	const removedAddress = "127.0.0.1:1"
@@ -638,5 +670,98 @@ func TestStartDropsAFailureThatFollowsTheFirst(t *testing.T) {
 	}
 	if err := <-reloader.failures; !strings.Contains(err.Error(), "serve on 127.0.0.1:") {
 		t.Errorf("failure = %v", err)
+	}
+}
+
+// A reload makes the digest folder again, as a start does, so digests are stored again after
+// the folder was removed while the server ran.
+func TestReloadMakesTheDigestFolderAgain(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t)
+	reloader := startReloading(t, fix)
+	session := logIn(t, fix, reloader.running)
+	mustRemoveAll(t, fix.data.digestsDir)
+	reloader.apply(t, fix.cfg)
+	session.request(t, http.MethodHead, "/v1/file/media/hello.bin", nil)
+	if _, err := os.Stat(filepath.Join(fix.data.digestsDir, "media", "hello.bin.splicefs_state")); err != nil {
+		t.Errorf("no entry after the reload: %v", err)
+	}
+	info, err := os.Stat(fix.data.digestsDir)
+	if err != nil || info.Mode().Perm() != 0o700 {
+		t.Errorf("digest folder = %v, %v, want mode 0700", info, err)
+	}
+}
+
+func mustRemoveAll(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// plantEntry saves an entry of the file hello.bin of the fixture under shareName, as a
+// server that had that share would have, and returns the digests in it, which no read of the
+// file gives.
+func plantEntry(t *testing.T, fix *fixture, shareName string) digestcache.Digests {
+	t.Helper()
+	stamp, err := filestat.Stat(filepath.Join(fix.shareDir, "hello.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(fix.data.digestsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := digestcache.Open(fix.data.digestsDir, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	digests := digestcache.Digests{Head: strings.Repeat("a", 64), Tail: strings.Repeat("b", 64)}
+	if err = errors.Join(store.Save(shareName, "hello.bin", stamp, digests), store.Close()); err != nil {
+		t.Fatal(err)
+	}
+	return digests
+}
+
+// The digest entries are swept after the start and after every reload: the folder of a share
+// that is not configured goes, and the entries of current files stay.
+func TestSweepAfterStartAndReload(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t)
+	plantEntry(t, fix, "old")
+	plantEntry(t, fix, "media")
+	reloader := startReloading(t, fix)
+	reloader.logs.waitFor(t, "digest entries swept", 1)
+	kept := filepath.Join(fix.data.digestsDir, "media", "hello.bin.splicefs_state")
+	for path, want := range map[string]bool{filepath.Join(fix.data.digestsDir, "old"): false, kept: true} {
+		if _, err := os.Stat(path); (err == nil) != want {
+			t.Errorf("after the start: %s exists = %v, want %v", path, err == nil, want)
+		}
+	}
+	reloader.apply(t, reconfigured(fix, fix.cfg.Listen, map[string]config.Share{}))
+	reloader.logs.waitFor(t, "digest entries swept", 2)
+	if _, err := os.Stat(filepath.Join(fix.data.digestsDir, "media")); err == nil {
+		t.Error("after the reload the folder of the removed share is still there")
+	}
+}
+
+// A sweep that fails is logged; the server goes on without it.
+func TestSweepFailureIsLogged(t *testing.T) {
+	t.Parallel()
+	logs := newSyncBuffer()
+	reloader := newRunner(http.NotFoundHandler(), Options{})
+	reloader.logger = slog.New(slog.NewTextHandler(logs, nil))
+	digests, err := digestcache.Open(t.TempDir(), reloader.logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = digests.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reloader.build = builder{digests: digests}
+	reloader.sweep(context.Background(), &generation{})
+	reloader.stopSweep()
+	got := logs.String()
+	if !strings.Contains(got, "level=WARN") || !strings.Contains(got, "cannot sweep digest entries") {
+		t.Errorf("log %q does not report the failed sweep", got)
 	}
 }

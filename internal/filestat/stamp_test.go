@@ -218,3 +218,103 @@ func TestStatOfAMissingFileFailsLikeOsStat(t *testing.T) {
 		})
 	}
 }
+
+func openFile(t *testing.T, path string) *os.File {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		// A test may have closed the file itself.
+		if err := file.Close(); err != nil && !errors.Is(err, fs.ErrClosed) {
+			t.Error(err)
+		}
+	})
+	return file
+}
+
+func TestStatFileMatchesStat(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	file := filepath.Join(dir, "file")
+	writeFile(t, file, "hello")
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(file, link); err != nil {
+		t.Fatal(err)
+	}
+	// A link is followed when it is opened, so the open file is its target, as Stat reports.
+	paths := map[string]string{"file": file, "directory": dir, "symbolic link": link}
+	for name, path := range paths {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, err := StatFile(openFile(t, path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := mustStat(t, path); got != want {
+				t.Errorf("StatFile = %+v, want what Stat gives, %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestStatFileDescribesTheOpenFileAfterItsNameMovesOn(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "file")
+	writeFile(t, path, "first")
+	opened := openFile(t, path)
+	before := mustStat(t, path)
+	other := filepath.Join(dir, "other")
+	writeFile(t, other, "other, longer")
+	if err := os.Rename(other, path); err != nil {
+		t.Fatal(err)
+	}
+	got, err := StatFile(opened)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Ino != before.Ino || got.Size != before.Size {
+		t.Errorf("StatFile = %+v, want the file that was opened, %+v, not what the name holds now", got, before)
+	}
+}
+
+func TestStatFileClosedFails(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "file")
+	writeFile(t, path, "data")
+	file := openFile(t, path)
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := StatFile(file)
+	var pathErr *fs.PathError
+	if !errors.As(err, &pathErr) || pathErr.Op != "stat" || pathErr.Path != path {
+		t.Errorf("StatFile error = %v, want a stat path error for %s", err, path)
+	}
+	if got != (Stamp{}) {
+		t.Errorf("StatFile = %+v with an error", got)
+	}
+}
+
+// A descriptor that is not open makes the system call itself fail. 1<<20 is far above any
+// descriptor a test run holds.
+func TestStatFileOfAnUnopenDescriptorFails(t *testing.T) {
+	t.Parallel()
+	file := os.NewFile(1<<20, "unopen")
+	got, err := StatFile(file)
+	if !errors.Is(err, syscall.EBADF) {
+		t.Errorf("StatFile error = %v, want one wrapping EBADF", err)
+	}
+	if got != (Stamp{}) {
+		t.Errorf("StatFile = %+v with an error", got)
+	}
+}
+
+func TestStatFileOfNoFileFails(t *testing.T) {
+	t.Parallel()
+	if _, err := StatFile(nil); !errors.Is(err, fs.ErrInvalid) {
+		t.Errorf("StatFile(nil) error = %v, want one wrapping fs.ErrInvalid", err)
+	}
+}

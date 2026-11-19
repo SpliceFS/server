@@ -21,6 +21,7 @@ import (
 	"github.com/SpliceFS/server/auth"
 	"github.com/SpliceFS/server/cluster"
 	"github.com/SpliceFS/server/config"
+	"github.com/SpliceFS/server/internal/digestcache"
 )
 
 // loginSlots is how many password verifications may run at once. Each one needs 64 MiB.
@@ -45,8 +46,10 @@ type Options struct {
 }
 
 // Run serves the API described by cfg, keeping its data in stateDir, until ctx is
-// cancelled, then shuts down and returns nil. It fails at once, before it accepts any
-// connection, if a share cannot be opened, the state directory cannot be written, this
+// cancelled, then shuts down and returns nil. It first makes what this node needs in the
+// state directory, so that a server with nothing configured and nothing stored starts. It
+// fails at once, before it accepts any connection, if a share cannot be opened, the state
+// directory or the digest folder in it cannot be written, this
 // node's signing key cannot be made or read, a certificate cannot be loaded or created or a
 // listener cannot be opened. It returns an error if serving fails. When it returns,
 // everything it started has stopped.
@@ -58,9 +61,22 @@ func Run(ctx context.Context, cfg *config.Config, stateDir string, opts Options)
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
+	data := layout(stateDir)
+	err = data.makeFolders()
+	if err != nil {
+		return err
+	}
+	// One store for every share and every reload: it empties its temporary folder when it
+	// opens, which is safe only before any share writes to it.
+	digests, err := digestcache.Open(data.digestsDir, logger)
+	if err != nil {
+		return err //nolint:wrapcheck // the error says it was opening the digest folder
+	}
+	defer func() { err = errors.Join(err, wrap(digests.Close(), "close the digest folder")) }()
 	r := &runner{
 		build: builder{
-			data:    layout(stateDir),
+			data:    data,
+			digests: digests,
 			version: opts.Version,
 			logger:  logger,
 			ownCert: sync.OnceValues(func() (tls.Certificate, error) {
@@ -84,6 +100,7 @@ func Run(ctx context.Context, cfg *config.Config, stateDir string, opts Options)
 		return err
 	}
 	r.srv = newServer(r.handlers, logger)
+	r.sweep(ctx, first)
 	return r.serve(ctx, changes.added, shutdownGrace)
 }
 
@@ -91,15 +108,25 @@ func Run(ctx context.Context, cfg *config.Config, stateDir string, opts Options)
 // whole run.
 type builder struct {
 	data    dataPaths
+	digests *digestcache.Store
 	version string
 	logger  *slog.Logger
 	// ownCert is the certificate the server made for itself, created on first use.
 	ownCert certificateSource
 }
 
+// heal makes the state folders that were removed while the server ran, as the start made
+// them, and points the digest store at its folder again.
+func (b *builder) heal() error {
+	if err := b.data.makeFolders(); err != nil {
+		return err
+	}
+	return b.digests.Reopen() //nolint:wrapcheck // the error says it was the digest folder
+}
+
 // generation opens the shares of cfg and builds the handler that serves them.
 func (b *builder) generation(cfg *config.Config) (*generation, error) {
-	shares, err := openShares(cfg)
+	shares, err := openShares(cfg, b.digests)
 	if err != nil {
 		return nil, err
 	}
@@ -107,18 +134,14 @@ func (b *builder) generation(cfg *config.Config) (*generation, error) {
 	if err != nil {
 		return nil, errors.Join(err, shares.Close())
 	}
-	return &generation{handler: handler, closer: shares}, nil
+	return &generation{handler: handler, closer: shares, files: shares.files}, nil
 }
 
-// newHandler builds the API handler. It first makes what this node needs in the state
-// directory, so that a server with nothing configured and nothing stored starts, and it
-// refuses to start if it cannot make or read its own key or announce itself.
+// newHandler builds the API handler. It refuses to start if it cannot make or read its own
+// key or announce itself.
 func newHandler(
 	cfg *config.Config, data *dataPaths, version string, logger *slog.Logger, shares *shareSet,
 ) (http.Handler, error) {
-	if err := data.makeFolders(); err != nil {
-		return nil, err
-	}
 	nodeID, err := data.nodeID(time.Now, rand.Reader)
 	if err != nil {
 		return nil, err

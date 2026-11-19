@@ -18,6 +18,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/SpliceFS/common/wire"
+
+	"github.com/SpliceFS/server/internal/digestcache"
+	"github.com/SpliceFS/server/internal/filestat"
 )
 
 // defaultDigestCacheSize is the digest cache size used when Options leaves it 0.
@@ -53,6 +56,9 @@ type Options struct {
 	// DigestCacheSize is the number of entries kept by the digest cache.
 	// 0 means a default of 65536.
 	DigestCacheSize int
+	// DigestStore keeps the digests in files of the state folder, so a restart does not
+	// read the files again. nil keeps them in memory only.
+	DigestStore *digestcache.Store
 }
 
 // Info describes a file or directory in a share.
@@ -80,12 +86,15 @@ type Share struct {
 	precision time.Duration
 	now       func() time.Time
 	digests   *lru
+	store     *digestcache.Store
 
 	// space reports the file system usage for a path. Tests replace it.
 	space func(string) (wire.Space, error)
 	// computeDigests computes the head and tail digests of a file of the given size.
 	// Tests replace it.
 	computeDigests func(io.ReaderAt, int64) (FileDigests, error)
+	// statFile reads the stamp of an open file. Tests replace it.
+	statFile func(*os.File) (filestat.Stamp, error)
 	// beforeOpen runs after a name has been resolved and before it is opened.
 	// Tests use it to change the file system at exactly that moment.
 	beforeOpen func(string)
@@ -112,8 +121,10 @@ func Open(opts Options) (*Share, error) {
 		follow:         opts.FollowSymlinks,
 		precision:      opts.MTimePrecision,
 		now:            opts.Now,
+		store:          opts.DigestStore,
 		space:          statSpace,
 		computeDigests: computeDigests,
+		statFile:       filestat.StatFile,
 		beforeOpen:     func(string) {},
 	}
 	if share.now == nil {
@@ -143,7 +154,7 @@ func (s *Share) Stat(name string) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
-	return s.info(path.Base(target.relPath), target.info), nil
+	return s.info(path.Base(target.relPath), factsOfInfo(target.info)), nil
 }
 
 // List returns the visible entries of the directory at name, sorted by name in
@@ -180,46 +191,37 @@ func (s *Share) OpenFile(name string) (*File, error) {
 	if err != nil {
 		return nil, s.fail(target.relPath, err)
 	}
-	info, stat, err := s.openInfo(target.relPath, file)
+	stamp, err := s.statFile(file)
+	if err != nil {
+		closeRead(file)
+		return nil, s.fail(target.relPath, err)
+	}
+	info, err := s.openInfo(target.relPath, stamp)
 	if err != nil {
 		closeRead(file)
 		return nil, err
 	}
-	return &File{f: file, info: info, stat: stat}, nil
+	return &File{f: file, info: info, stamp: stamp, relPath: target.relPath}, nil
 }
 
 // Digests returns the hex SHA-256 of the first wire.HeadDigestBytes bytes (the head
 // digest) and of the last wire.TailDigestBytes bytes (the tail digest) of the file at
 // name, and the file's Info. For a file of at most 64 KiB both cover the whole file. A
-// file is read once until it is changed or replaced: the cache is keyed on what the file
-// system reports (device, inode, size, modification time and change time, all at full
-// precision), so a replacement of the same size within the same second is seen too.
+// file is read once until it is changed or replaced: the in-memory cache and the digest
+// store are keyed on the stamp of the open file (inode, size, and modification, change and
+// creation time, all at full precision), so a replacement of the same size within the same
+// second is seen too. See "Digest cache" in docs/design.md.
 func (s *Share) Digests(name string) (FileDigests, Info, error) {
-	target, err := s.lookup(name)
-	if err != nil {
-		return FileDigests{}, Info{}, err
-	}
-	if target.info.IsDir() {
-		return FileDigests{}, Info{}, ErrIsDir
-	}
-	info := s.info(path.Base(target.relPath), target.info)
-	if cached, ok := s.digests.get(newDigestKey(target.relPath, target.info)); ok {
-		return cached, info, nil
-	}
 	file, err := s.OpenFile(name)
 	if err != nil {
 		return FileDigests{}, Info{}, err
 	}
 	defer closeRead(file)
-	info = file.Info()
-	digests, err := s.computeDigests(file.f, info.Size)
+	digests, err := s.digestsOf(file)
 	if err != nil {
-		return FileDigests{}, Info{}, fmt.Errorf("share %q: %s: read digests: %w", s.name, target.relPath, err)
+		return FileDigests{}, Info{}, err
 	}
-	// The key comes from the stat taken when the file was opened, before the read, so it can
-	// only be older than the digests; a change after that makes a different key.
-	s.digests.put(newDigestKey(target.relPath, file.stat), digests)
-	return digests, info, nil
+	return digests, file.Info(), nil
 }
 
 // Space reports the size and free space of the file system holding the share.
@@ -229,6 +231,51 @@ func (s *Share) Space() (wire.Space, error) {
 		return wire.Space{}, fmt.Errorf("share %q: space: %w", s.name, err)
 	}
 	return space, nil
+}
+
+// Stamp returns the stamp of the regular file at name as a request finds it, and false when
+// a request would not find it: it is gone, hidden or a folder. The digest store's sweep uses
+// it to tell which entries are still of use.
+func (s *Share) Stamp(name string) (filestat.Stamp, bool, error) {
+	file, err := s.OpenFile(name)
+	if errors.Is(err, ErrNotFound) || errors.Is(err, ErrIsDir) {
+		return filestat.Stamp{}, false, nil
+	}
+	if err != nil {
+		return filestat.Stamp{}, false, err
+	}
+	defer closeRead(file)
+	return file.stamp, true, nil
+}
+
+// digestsOf returns the digests of the open file, which had its stamp when it was opened:
+// from memory, else from the store, else read from the file.
+func (s *Share) digestsOf(file *File) (FileDigests, error) {
+	stamp := file.stamp
+	key := digestcache.KeyOf(file.relPath, stamp)
+	if cached, ok := s.digests.get(key); ok {
+		return cached, nil
+	}
+	if s.store != nil {
+		if stored, ok := s.store.Load(s.name, file.relPath, stamp); ok {
+			s.digests.put(key, stored)
+			return stored, nil
+		}
+	}
+	digests, err := s.computeDigests(file.f, stamp.Size)
+	if err != nil {
+		return FileDigests{}, fmt.Errorf("share %q: %s: read digests: %w", s.name, file.relPath, err)
+	}
+	// The digests are kept only when the file has the same stamp after the read as before
+	// it; otherwise they may be of bytes from two versions, and the answer is all they are
+	// good for.
+	if again, err := s.statFile(file.f); err == nil && again == stamp {
+		s.digests.put(key, digests)
+		if s.store != nil {
+			s.store.Keep(s.name, file.relPath, stamp, digests)
+		}
+	}
+	return digests, nil
 }
 
 // dirReader is the part of a directory handle that List needs.
@@ -257,32 +304,41 @@ func (s *Share) collect(relPath string, dir dirReader) ([]Info, error) {
 		if err != nil {
 			return nil, err
 		}
-		if s.visible(fileInfo) {
-			infos = append(infos, s.info(name, fileInfo))
+		if entry := factsOfInfo(fileInfo); s.visible(entry) {
+			infos = append(infos, s.info(name, entry))
 		}
 	}
 	return infos, nil
 }
 
-// handle is the part of an open file that openInfo needs.
-type handle interface {
-	Stat() (os.FileInfo, error)
+// openInfo checks the open file at relPath, which has stamp, and describes it.
+func (s *Share) openInfo(relPath string, stamp filestat.Stamp) (Info, error) {
+	opened := factsOfStamp(stamp)
+	if opened.mode.IsDir() {
+		return Info{}, ErrIsDir
+	}
+	if !s.visible(opened) {
+		return Info{}, ErrNotFound
+	}
+	return s.info(path.Base(relPath), opened), nil
 }
 
-// openInfo checks the open file h itself and describes it. It also returns what the file
-// system reported, for the digest cache key.
-func (s *Share) openInfo(relPath string, h handle) (Info, os.FileInfo, error) {
-	fileInfo, err := h.Stat()
-	if err != nil {
-		return Info{}, nil, s.fail(relPath, err)
-	}
-	if fileInfo.IsDir() {
-		return Info{}, nil, ErrIsDir
-	}
-	if !s.visible(fileInfo) {
-		return Info{}, nil, ErrNotFound
-	}
-	return s.info(path.Base(relPath), fileInfo), fileInfo, nil
+// facts is what decides whether an entry is shown and how it is described, whether it was
+// read by name or from an open file.
+type facts struct {
+	mode  fs.FileMode
+	size  int64
+	mtime time.Time
+}
+
+// factsOfInfo takes the facts from a FileInfo.
+func factsOfInfo(fileInfo os.FileInfo) facts {
+	return facts{mode: fileInfo.Mode(), size: fileInfo.Size(), mtime: fileInfo.ModTime()}
+}
+
+// factsOfStamp takes the facts from a Stamp.
+func factsOfStamp(stamp filestat.Stamp) facts {
+	return facts{mode: stamp.Mode, size: stamp.Size, mtime: time.Unix(0, stamp.Mtime)}
 }
 
 // excluded reports whether name matches an exclude pattern.
@@ -297,23 +353,23 @@ func (s *Share) excluded(name string) bool {
 }
 
 // visible reports whether an entry of this type and age is shown.
-func (s *Share) visible(fileInfo os.FileInfo) bool {
+func (s *Share) visible(entry facts) bool {
 	switch {
-	case fileInfo.IsDir():
+	case entry.mode.IsDir():
 		return true
-	case !fileInfo.Mode().IsRegular():
+	case !entry.mode.IsRegular():
 		return false
 	case s.minAge > 0:
-		return !fileInfo.ModTime().After(s.now().Add(-s.minAge))
+		return !entry.mtime.After(s.now().Add(-s.minAge))
 	}
 	return true
 }
 
-// info converts file information to an Info.
-func (s *Share) info(name string, fileInfo os.FileInfo) Info {
-	info := Info{Name: name, Dir: fileInfo.IsDir(), MTime: s.truncate(fileInfo.ModTime())}
+// info converts the facts of an entry to an Info.
+func (s *Share) info(name string, entry facts) Info {
+	info := Info{Name: name, Dir: entry.mode.IsDir(), MTime: s.truncate(entry.mtime)}
 	if !info.Dir {
-		info.Size = fileInfo.Size()
+		info.Size = entry.size
 		info.ETag = ETag(info.Size, info.MTime)
 	}
 	return info

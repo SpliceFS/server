@@ -4,7 +4,9 @@ package filestat
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
+	"os"
 	"syscall"
 )
 
@@ -33,6 +35,31 @@ func Stat(path string) (Stamp, error) {
 	stamp, err := systemStat(path)
 	if err != nil {
 		return Stamp{}, &fs.PathError{Op: "stat", Path: path, Err: err}
+	}
+	return stamp, nil
+}
+
+// StatFile reads the Stamp of an open file with one system call on its descriptor, so it
+// describes the file whose bytes are read through file, whatever the file's name has come to
+// mean since it was opened. It fails for a closed file and when the system call fails, with
+// an error that names the file and wraps the cause.
+func StatFile(file *os.File) (Stamp, error) {
+	raw, err := file.SyscallConn()
+	if err != nil {
+		return Stamp{}, fmt.Errorf("stat open file: %w", err)
+	}
+	var stamp Stamp
+	var statErr error
+	// Control holds the descriptor open while the call runs, and fails once file is closed,
+	// so the call can never reach a descriptor that another file has been given since.
+	err = raw.Control(func(fd uintptr) {
+		stamp, statErr = systemFstat(int(fd))
+	})
+	if err == nil {
+		err = statErr
+	}
+	if err != nil {
+		return Stamp{}, &fs.PathError{Op: "stat", Path: file.Name(), Err: err}
 	}
 	return stamp, nil
 }

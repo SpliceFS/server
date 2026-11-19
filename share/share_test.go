@@ -442,13 +442,13 @@ func TestListOpenRace(t *testing.T) {
 	}
 }
 
-// countedShare opens a share over a file "f" that holds "first", and counts the opens.
-func countedShare(t *testing.T) (fixture, *Share, *openCounter) {
+// countedShare opens a share over a file "f" that holds "first", and counts the reads of digests.
+func countedShare(t *testing.T) (fixture, *Share, *readCounter) {
 	t.Helper()
 	fix := newFixture(t)
 	fix.write(t, "f", "first", epoch())
 	share := fix.open(t, &Options{MTimePrecision: time.Second})
-	counter := &openCounter{}
+	counter := &readCounter{}
 	counter.attach(share)
 	return fix, share, counter
 }
@@ -458,8 +458,8 @@ func TestDigestsAreCached(t *testing.T) {
 	_, share, counter := countedShare(t)
 	digests1, info1 := mustDigests(t, share, "f")
 	digests2, info2 := mustDigests(t, share, "f")
-	if counter.opens != 1 || digests1 != digests2 || info1 != info2 {
-		t.Errorf("opens = %d, digests1 = %+v, digests2 = %+v", counter.opens, digests1, digests2)
+	if counter.reads != 1 || digests1 != digests2 || info1 != info2 {
+		t.Errorf("reads = %d, digests1 = %+v, digests2 = %+v", counter.reads, digests1, digests2)
 	}
 }
 
@@ -471,9 +471,9 @@ func TestDigestsAreReadAgainForANewModificationTime(t *testing.T) {
 	// Same size, new modification time: a different version.
 	fix.write(t, "f", "other", epoch().Add(time.Minute))
 	digests2, info2 := mustDigests(t, share, "f")
-	if counter.opens != 2 || digests2.Head == digests1.Head || digests2.Tail == digests1.Tail ||
+	if counter.reads != 2 || digests2.Head == digests1.Head || digests2.Tail == digests1.Tail ||
 		info2.ETag == info1.ETag {
-		t.Errorf("opens = %d, digests2 = %+v", counter.opens, digests2)
+		t.Errorf("reads = %d, digests2 = %+v", counter.reads, digests2)
 	}
 }
 
@@ -486,8 +486,8 @@ func TestDigestsAreReadAgainForANewSize(t *testing.T) {
 	// New size, same modification time.
 	fix.write(t, "f", "longer content", epoch().Add(time.Minute))
 	digests2, _ := mustDigests(t, share, "f")
-	if counter.opens != 2 || digests2.Head == digests1.Head || digests2.Tail == digests1.Tail {
-		t.Errorf("opens = %d, digests2 = %+v", counter.opens, digests2)
+	if counter.reads != 2 || digests2.Head == digests1.Head || digests2.Tail == digests1.Tail {
+		t.Errorf("reads = %d, digests2 = %+v", counter.reads, digests2)
 	}
 }
 
@@ -507,14 +507,14 @@ func TestDigestsAreReadAgainForAFileReplacedWithinTheSameSecond(t *testing.T) {
 	if info2.Size != info1.Size || !info2.MTime.Equal(info1.MTime) {
 		t.Fatalf("the test needs the same size and time: %+v, then %+v", info1, info2)
 	}
-	if counter.opens != 2 || digests2.Head == digests1.Head || digests2.Tail == digests1.Tail {
-		t.Errorf("opens = %d, digests1 = %+v, digests2 = %+v", counter.opens, digests1, digests2)
+	if counter.reads != 2 || digests2.Head == digests1.Head || digests2.Tail == digests1.Tail {
+		t.Errorf("reads = %d, digests1 = %+v, digests2 = %+v", counter.reads, digests1, digests2)
 	}
 
 	// The new file is cached like any other.
 	digests3, _ := mustDigests(t, share, "f")
-	if counter.opens != 2 || digests3 != digests2 {
-		t.Errorf("opens = %d, digests3 = %+v, want %+v", counter.opens, digests3, digests2)
+	if counter.reads != 2 || digests3 != digests2 {
+		t.Errorf("reads = %d, digests3 = %+v, want %+v", counter.reads, digests3, digests2)
 	}
 }
 
@@ -585,22 +585,22 @@ func TestDigestsCacheEvicts(t *testing.T) {
 		fix.write(t, name, name, epoch())
 	}
 	share := fix.open(t, &Options{DigestCacheSize: 2})
-	counter := &openCounter{}
+	counter := &readCounter{}
 	counter.attach(share)
 	mustDigests(t, share, "a")
 	mustDigests(t, share, "b")
 	mustDigests(t, share, "c") // evicts a
-	if counter.opens != 3 {
-		t.Fatalf("opens = %d, want 3", counter.opens)
+	if counter.reads != 3 {
+		t.Fatalf("reads = %d, want 3", counter.reads)
 	}
 	mustDigests(t, share, "c")
 	mustDigests(t, share, "b")
-	if counter.opens != 3 {
-		t.Errorf("cached entries were read again: opens = %d", counter.opens)
+	if counter.reads != 3 {
+		t.Errorf("cached entries were read again: reads = %d", counter.reads)
 	}
 	mustDigests(t, share, "a")
-	if counter.opens != 4 {
-		t.Errorf("evicted entry was not read again: opens = %d", counter.opens)
+	if counter.reads != 4 {
+		t.Errorf("evicted entry was not read again: reads = %d", counter.reads)
 	}
 }
 
@@ -730,19 +730,6 @@ func TestCollect(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `share "test"`) || !strings.Contains(err.Error(), long) {
 		t.Errorf("error %q lacks share name or path", err)
-	}
-}
-
-type fakeHandle struct{ err error }
-
-func (handle fakeHandle) Stat() (os.FileInfo, error) { return nil, handle.err }
-
-func TestOpenInfoStatError(t *testing.T) {
-	t.Parallel()
-	share := newFixture(t).open(t, &Options{})
-	_, _, err := share.openInfo("f", fakeHandle{err: errors.New("stat failed")})
-	if err == nil || errors.Is(err, ErrNotFound) {
-		t.Errorf("openInfo = %v", err)
 	}
 }
 

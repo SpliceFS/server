@@ -48,7 +48,7 @@ func (s *Share) lookup(name string) (resolved, error) {
 			return resolved{}, ErrNotFound
 		}
 	}
-	if !s.visible(fileInfo) {
+	if !s.visible(factsOfInfo(fileInfo)) {
 		return resolved{}, ErrNotFound
 	}
 	return resolved{relPath: relPath, info: fileInfo}, nil
