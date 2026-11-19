@@ -3,6 +3,8 @@ package digestcache
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"io/fs"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -84,8 +86,36 @@ func TestEntryPath(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if got := EntryPath(tt.path); got != tt.want {
-				t.Errorf("EntryPath(%q) = %q, want %q", tt.path, got, tt.want)
+			if got, err := EntryPath(tt.path); err != nil || got != tt.want {
+				t.Errorf("EntryPath(%q) = %q, %v, want %q", tt.path, got, err, tt.want)
+			}
+		})
+	}
+}
+
+// A path that is not clean would put an entry outside the folder of its share, or two paths
+// that name one file at two places.
+func TestEntryPathRefusesUncleanPaths(t *testing.T) {
+	t.Parallel()
+	tests := map[string]string{
+		"empty":                   "",
+		"the share root":          ".",
+		"the parent":              "..",
+		"a leading slash":         "/a",
+		"a trailing slash":        "a/",
+		"a double slash":          "a//b",
+		"a dot in the middle":     "a/./b",
+		"a parent in the middle":  "a/../b",
+		"a dot at the end":        "a/.",
+		"a parent at the start":   "../a",
+		"a slash only":            "/",
+		"invalid UTF-8 and a dot": "\xff/.",
+	}
+	for name, path := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got, err := EntryPath(path); !errors.Is(err, errNotClean) || got != "" {
+				t.Errorf("EntryPath(%q) = %q, %v, want %v", path, got, err, errNotClean)
 			}
 		})
 	}
@@ -111,7 +141,11 @@ func FuzzEntryPathInjective(f *testing.F) {
 		}
 	}
 	f.Fuzz(func(t *testing.T, first, second string) {
-		entry, other := EntryPath(first), EntryPath(second)
+		entry, err := EntryPath(first)
+		other, otherErr := EntryPath(second)
+		if err != nil || otherErr != nil {
+			return
+		}
 		if first != second && entry == other {
 			t.Fatalf("EntryPath(%q) and EntryPath(%q) are both %q", first, second, entry)
 		}
@@ -121,14 +155,27 @@ func FuzzEntryPathInjective(f *testing.F) {
 	})
 }
 
+// isClean says whether path is clean by the rules of fs.ValidPath, which also refuses invalid
+// UTF-8: a share may hold such names, so they are made valid first. Dots and slashes are
+// ASCII and stay as they are. The share root "." has no entry.
+func isClean(path string) bool {
+	return path != "." && fs.ValidPath(strings.ToValidUTF8(path, "x"))
+}
+
 // A file system takes at most 255 bytes in a name, and macOS takes only names that are valid
-// UTF-8, whatever the name in the share was.
+// UTF-8, whatever the name in the share was. A path that is not clean has no entry.
 func FuzzEntryPathNamesFit(f *testing.F) {
 	for _, seed := range pathSeeds() {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, path string) {
-		got := EntryPath(path)
+		got, err := EntryPath(path)
+		if (err == nil) != isClean(path) {
+			t.Fatalf("EntryPath(%q) = %q, %v", path, got, err)
+		}
+		if err != nil {
+			return
+		}
 		if !strings.HasSuffix(got, suffix) || strings.Count(got, "/") != strings.Count(path, "/") {
 			t.Fatalf("EntryPath(%q) = %q", path, got)
 		}

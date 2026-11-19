@@ -3,6 +3,8 @@ package digestcache
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"strings"
 	"unicode/utf8"
 )
@@ -19,6 +21,8 @@ const (
 	upperHex     = "0123456789ABCDEF"
 )
 
+var errNotClean = errors.New("is not a clean path inside a share")
+
 // Escape returns path as an entry stores it: every name of the path, split at slashes, with
 // rules 1 to 3 of the design applied. They can be undone, so two paths never share an
 // escaped form, and the result is valid UTF-8 whatever bytes the names held.
@@ -32,15 +36,20 @@ func Escape(path string) string {
 
 // EntryPath returns where the entry of the file at path is, relative to the folder of its
 // share in the digest folder: every name escaped by rules 1 to 4 of the design, and the
-// suffix after the last one. path is a clean path inside the share, names separated by
-// slashes, none empty, none "." or "..". Two different paths give two different entry paths,
-// so no two files share an entry, unless two names have the same SHA-256 sum.
-func EntryPath(path string) string {
+// suffix after the last one. path must be a clean path inside the share, names separated by
+// slashes, none empty, none "." or "..": any other path fails, because it could put an entry
+// outside the folder of its share or give one file two entries. Two different paths give two
+// different entry paths, so no two files share an entry, unless two names have the same
+// SHA-256 sum.
+func EntryPath(path string) (string, error) {
 	names := strings.Split(path, "/")
 	for i, name := range names {
+		if name == "" || name == "." || name == ".." {
+			return "", fmt.Errorf("digest entry of %q: %w", path, errNotClean)
+		}
 		names[i] = entryName(name)
 	}
-	return strings.Join(names, "/") + stateSuffix
+	return strings.Join(names, "/") + stateSuffix, nil
 }
 
 // entryName escapes one name by rules 1 to 4: the escaped form, unless that form with the
