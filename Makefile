@@ -99,8 +99,8 @@ race: | $(CACHE_DIRS)
 race-here:
 	go test -race ./...
 
-# Every program, for every system and CPU type, into ./dist/bin. The release archives and the
-# packages job of CI read from there; nothing is compiled twice.
+# Every program, for every system and CPU type, into ./dist/bin. The release archives read from
+# there; nothing is compiled twice.
 build-all: | $(CACHE_DIRS)
 	scripts/part.sh build-all $(LINUX_RUN) make $(BUILD_VARS) build-all-here
 
