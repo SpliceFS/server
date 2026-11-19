@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/SpliceFS/common/api"
 )
 
 func TestOpenErrors(t *testing.T) {
@@ -74,12 +76,12 @@ func listingShare(t *testing.T) *Share {
 func TestStatFile(t *testing.T) {
 	t.Parallel()
 	got := mustStat(t, listingShare(t), "b.txt")
-	want := Info{
+	want := api.Info{
 		Name:  "b.txt",
 		Size:  5,
 		MTime: time.Date(2021, 5, 6, 7, 8, 9, 0, time.UTC),
 	}
-	want.ETag = ETag(5, want.MTime)
+	want.ETag = api.ETag(5, want.MTime)
 	if got != want {
 		t.Errorf("Stat = %+v, want %+v", got, want)
 	}
@@ -126,7 +128,7 @@ func TestFullResolutionKeptWithoutPrecision(t *testing.T) {
 
 func TestETagFormat(t *testing.T) {
 	t.Parallel()
-	got := ETag(255, time.Unix(4096, 16).UTC())
+	got := api.ETag(255, time.Unix(4096, 16).UTC())
 	if want := `"ff-1000-10"`; got != want {
 		t.Errorf("ETag = %s, want %s", got, want)
 	}
@@ -138,14 +140,14 @@ func TestErrorKindsForTheWrongType(t *testing.T) {
 	fix.write(t, "dir/file.txt", "x", epoch())
 	share := fix.open(t, &Options{})
 
-	if _, err := share.List("dir/file.txt"); !errors.Is(err, ErrNotDir) {
-		t.Errorf("List(file) = %v, want ErrNotDir", err)
+	if _, err := share.List("dir/file.txt"); !errors.Is(err, api.ErrNotDir) {
+		t.Errorf("List(file) = %v, want api.ErrNotDir", err)
 	}
-	if _, err := share.OpenFile("dir"); !errors.Is(err, ErrIsDir) {
-		t.Errorf("OpenFile(dir) = %v, want ErrIsDir", err)
+	if _, err := share.OpenFile("dir"); !errors.Is(err, api.ErrIsDir) {
+		t.Errorf("OpenFile(dir) = %v, want api.ErrIsDir", err)
 	}
-	if _, _, err := share.Digests("dir"); !errors.Is(err, ErrIsDir) {
-		t.Errorf("Digests(dir) = %v, want ErrIsDir", err)
+	if _, _, err := share.Digests("dir"); !errors.Is(err, api.ErrIsDir) {
+		t.Errorf("Digests(dir) = %v, want api.ErrIsDir", err)
 	}
 }
 
@@ -157,8 +159,8 @@ func TestErrorKindsForMissingNames(t *testing.T) {
 
 	requireHidden(t, share, "missing")
 	for _, name := range []string{"dir/file.txt/x", "dir/missing/x"} {
-		if _, err := share.Stat(name); !errors.Is(err, ErrNotFound) {
-			t.Errorf("Stat(%q) = %v, want ErrNotFound", name, err)
+		if _, err := share.Stat(name); !errors.Is(err, api.ErrNotFound) {
+			t.Errorf("Stat(%q) = %v, want api.ErrNotFound", name, err)
 		}
 	}
 }
@@ -366,8 +368,8 @@ func TestOpenFileReportsTheFileActuallyOpened(t *testing.T) {
 	}
 	defer mustClose(t, file)
 	got := file.Info()
-	if got.Size != 11 || !got.MTime.Equal(newTime) || got.ETag != ETag(11, newTime) || got == before {
-		t.Errorf("Info = %+v, before = %+v", got, before)
+	if got.Size != 11 || !got.MTime.Equal(newTime) || got.ETag != api.ETag(11, newTime) || got == before {
+		t.Errorf("api.Info = %+v, before = %+v", got, before)
 	}
 }
 
@@ -404,10 +406,10 @@ func TestOpenFileRacesAreRechecked(t *testing.T) {
 		mutate func(t *testing.T, full string)
 		want   error
 	}{
-		{"deleted", mustRemove, ErrNotFound},
-		{"replaced by directory", replaceWithDirectory, ErrIsDir},
-		{"replaced by pipe", replaceWithPipe, ErrNotFound},
-		{"replaced by fresh file", touchToClock, ErrNotFound},
+		{"deleted", mustRemove, api.ErrNotFound},
+		{"replaced by directory", replaceWithDirectory, api.ErrIsDir},
+		{"replaced by pipe", replaceWithPipe, api.ErrNotFound},
+		{"replaced by fresh file", touchToClock, api.ErrNotFound},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -437,8 +439,8 @@ func TestListOpenRace(t *testing.T) {
 			t.Error(err)
 		}
 	}
-	if _, err := share.List("d"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("List = %v, want ErrNotFound", err)
+	if _, err := share.List("d"); !errors.Is(err, api.ErrNotFound) {
+		t.Errorf("List = %v, want api.ErrNotFound", err)
 	}
 }
 
@@ -610,8 +612,8 @@ func TestDigestsOpenFailure(t *testing.T) {
 	fix.write(t, "f", "x", epoch())
 	share := fix.open(t, &Options{})
 	share.beforeOpen = func(string) { mustRemove(t, filepath.Join(fix.root, "f")) }
-	if _, _, err := share.Digests("f"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("Digests = %v, want ErrNotFound", err)
+	if _, _, err := share.Digests("f"); !errors.Is(err, api.ErrNotFound) {
+		t.Errorf("Digests = %v, want api.ErrNotFound", err)
 	}
 }
 
@@ -646,11 +648,11 @@ func TestDigestsReadError(t *testing.T) {
 	fix := newFixture(t)
 	fix.write(t, "f", "x", epoch())
 	share := fix.open(t, &Options{})
-	share.computeDigests = func(io.ReaderAt, int64) (FileDigests, error) {
+	share.computeDigests = func(io.ReaderAt, int64) (api.FileDigests, error) {
 		return computeDigests(failingReaderAt{content: "x"}, 1)
 	}
 	_, _, err := share.Digests("f")
-	if err == nil || errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), `share "test"`) {
+	if err == nil || errors.Is(err, api.ErrNotFound) || !strings.Contains(err.Error(), `share "test"`) {
 		t.Errorf("Digests = %v", err)
 	}
 }
@@ -666,7 +668,7 @@ func TestFile(t *testing.T) {
 	}
 	var _ io.ReadSeeker = file
 	if file.Info().Size != 10 {
-		t.Errorf("Info = %+v", file.Info())
+		t.Errorf("api.Info = %+v", file.Info())
 	}
 	if _, err := file.Seek(4, io.SeekStart); err != nil {
 		t.Fatal(err)
@@ -714,7 +716,8 @@ func TestCollect(t *testing.T) {
 	fix.write(t, "d/real", "x", epoch())
 	share := fix.open(t, &Options{})
 
-	if _, err := share.collect("d", fakeDir{err: errors.New("read failed")}); err == nil || errors.Is(err, ErrNotFound) {
+	_, err := share.collect("d", fakeDir{err: errors.New("read failed")})
+	if err == nil || errors.Is(err, api.ErrNotFound) {
 		t.Errorf("collect with a read error = %v", err)
 	}
 	// An entry that vanished after the directory was read is skipped.
@@ -725,7 +728,7 @@ func TestCollect(t *testing.T) {
 	// An entry that cannot be examined fails the listing.
 	long := strings.Repeat("a", 300)
 	_, err = share.collect("d", fakeDir{names: []string{long}})
-	if err == nil || errors.Is(err, ErrNotFound) {
+	if err == nil || errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("collect with an unreadable entry = %v", err)
 	}
 	if !strings.Contains(err.Error(), `share "test"`) || !strings.Contains(err.Error(), long) {

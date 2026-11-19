@@ -21,20 +21,13 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/server/internal/datadir"
 )
 
 // Leeway is the clock difference tolerated between nodes when checking the "exp" and
 // "iat" claims of a token.
 const Leeway = 30 * time.Second
-
-var (
-	// ErrInvalidToken means the token is malformed, uses another algorithm, names an
-	// unknown key, has a bad signature or is not valid yet. The error wraps the reason.
-	ErrInvalidToken = errors.New("invalid token")
-	// ErrExpiredToken means the token is genuine but past its expiry.
-	ErrExpiredToken = errors.New("expired token")
-)
 
 // Errors of a keys file. The text of one never contains the content of the file, because
 // they are logged and a mistake in the file may put a secret where a name belongs.
@@ -61,21 +54,6 @@ const (
 // tokenEncoding is the base64 flavor of JWT segments: URL alphabet, no padding.
 func tokenEncoding() *base64.Encoding {
 	return base64.RawURLEncoding
-}
-
-// Claims is what a valid token states.
-type Claims struct {
-	// User is the user name the token was issued to.
-	User string
-	// Shares lists the shares the token allows; "*" means every share.
-	Shares []string
-	// Expires is the expiry time carried by the token.
-	Expires time.Time
-}
-
-// Allows reports whether the token allows the named share.
-func (c Claims) Allows(share string) bool {
-	return allowsShare(c.Shares, share)
 }
 
 // tokenHeader is the JWT header.
@@ -192,36 +170,36 @@ func (t *Tokens) Issue(user string, shares []string) (string, time.Time, error) 
 	return input + "." + tokenEncoding().EncodeToString(sign(key.secret, input)), time.Unix(expiresSec, 0), nil
 }
 
-// Verify checks the token and returns what it states. It returns ErrInvalidToken for a
+// Verify checks the token and returns what it states. It returns api.ErrInvalidToken for a
 // token that is malformed, has an algorithm other than HS256, an unknown key id or a bad
-// signature, or was issued more than Leeway in the future, and ErrExpiredToken for one
+// signature, or was issued more than Leeway in the future, and api.ErrExpiredToken for one
 // that expired more than Leeway ago. The signature is checked before any claim is used.
-func (t *Tokens) Verify(token string) (Claims, error) {
+func (t *Tokens) Verify(token string) (api.Claims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != tokenSegments {
-		return Claims{}, invalidToken("wrong number of segments")
+		return api.Claims{}, invalidToken("wrong number of segments")
 	}
 	var header tokenHeader
 	if err := decodeSegment(parts[0], &header); err != nil {
-		return Claims{}, invalidToken("bad header")
+		return api.Claims{}, invalidToken("bad header")
 	}
 	if header.Alg != tokenAlgorithm {
-		return Claims{}, invalidToken("unsupported algorithm")
+		return api.Claims{}, invalidToken("unsupported algorithm")
 	}
 	key, ok := t.currentRing().byID[header.Kid]
 	if !ok {
-		return Claims{}, invalidToken("unknown key id")
+		return api.Claims{}, invalidToken("unknown key id")
 	}
 	signature, err := tokenEncoding().DecodeString(parts[2])
 	if err != nil {
-		return Claims{}, invalidToken("bad signature encoding")
+		return api.Claims{}, invalidToken("bad signature encoding")
 	}
 	if !hmac.Equal(signature, sign(key.secret, parts[0]+"."+parts[1])) {
-		return Claims{}, invalidToken("bad signature")
+		return api.Claims{}, invalidToken("bad signature")
 	}
 	var payload tokenPayload
 	if err := decodeSegment(parts[1], &payload); err != nil {
-		return Claims{}, invalidToken("bad payload")
+		return api.Claims{}, invalidToken("bad payload")
 	}
 	return t.claims(payload)
 }
@@ -240,20 +218,20 @@ func (t *Tokens) createOwnKey(path string) error {
 	return nil
 }
 
-// claims turns an authenticated payload into Claims, checking the claims and the time.
-func (t *Tokens) claims(payload tokenPayload) (Claims, error) {
+// claims turns an authenticated payload into api.Claims, checking the claims and the time.
+func (t *Tokens) claims(payload tokenPayload) (api.Claims, error) {
 	if payload.Sub == "" || payload.Iat == nil || payload.Exp == nil {
-		return Claims{}, invalidToken("missing claim")
+		return api.Claims{}, invalidToken("missing claim")
 	}
 	now := t.now()
 	if time.Unix(*payload.Iat, 0).Sub(now) > Leeway {
-		return Claims{}, invalidToken("issued in the future")
+		return api.Claims{}, invalidToken("issued in the future")
 	}
 	expires := time.Unix(*payload.Exp, 0)
 	if now.Sub(expires) > Leeway {
-		return Claims{}, ErrExpiredToken
+		return api.Claims{}, api.ErrExpiredToken
 	}
-	return Claims{User: payload.Sub, Shares: payload.Shares, Expires: expires}, nil
+	return api.Claims{User: payload.Sub, Shares: payload.Shares, Expires: expires}, nil
 }
 
 // segment returns v as JSON in base64url.
@@ -265,9 +243,9 @@ func (t *Tokens) segment(v any) (string, error) {
 	return tokenEncoding().EncodeToString(data), nil
 }
 
-// invalidToken returns ErrInvalidToken with a reason that never contains token content.
+// invalidToken returns api.ErrInvalidToken with a reason that never contains token content.
 func invalidToken(reason string) error {
-	return fmt.Errorf("%w: %s", ErrInvalidToken, reason)
+	return fmt.Errorf("%w: %s", api.ErrInvalidToken, reason)
 }
 
 // decodeSegment decodes one base64url JSON segment into v.

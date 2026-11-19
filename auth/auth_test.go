@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/SpliceFS/common/api"
 )
 
 // verifyCall records one call of the injected password verifier.
@@ -95,8 +97,8 @@ func TestLoginBadCredentials(t *testing.T) {
 			fixture := newAuthFixture(t, 10)
 			fixture.result = tt.result
 			token, expires, err := fixture.auth.Login(context.Background(), "192.0.2.1", tt.user, "pw")
-			if !errors.Is(err, ErrBadCredentials) {
-				t.Fatalf("err = %v, want ErrBadCredentials", err)
+			if !errors.Is(err, api.ErrBadCredentials) {
+				t.Fatalf("err = %v, want api.ErrBadCredentials", err)
 			}
 			if token != "" || !expires.IsZero() {
 				t.Errorf("token %q and expires %v must be empty", token, expires)
@@ -114,8 +116,8 @@ func TestLoginUnknownUserIgnoresVerifierFailure(t *testing.T) {
 	fixture := newAuthFixture(t, 10)
 	fixture.err = errors.New("verifier broke")
 	_, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "nobody", "pw")
-	if !errors.Is(err, ErrBadCredentials) {
-		t.Errorf("err = %v, want ErrBadCredentials", err)
+	if !errors.Is(err, api.ErrBadCredentials) {
+		t.Errorf("err = %v, want api.ErrBadCredentials", err)
 	}
 }
 
@@ -129,8 +131,8 @@ func TestLoginRateLimited(t *testing.T) {
 	}
 	fixture.calls = nil
 	token, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "alice", "pw")
-	if !errors.Is(err, ErrRateLimited) || token != "" {
-		t.Fatalf("token %q, err = %v, want ErrRateLimited", token, err)
+	if !errors.Is(err, api.ErrRateLimited) || token != "" {
+		t.Fatalf("token %q, err = %v, want api.ErrRateLimited", token, err)
 	}
 	if len(fixture.calls) != 0 {
 		t.Errorf("a rate limited attempt must not verify a password: %v", fixture.calls)
@@ -144,10 +146,11 @@ func TestLoginCountsEveryAttempt(t *testing.T) {
 	t.Parallel()
 	fixture := newAuthFixture(t, 2)
 	fixture.result = false
-	fixture.wantLoginError(t, "nobody", ErrBadCredentials)
-	fixture.wantLoginError(t, "dave", ErrBadCredentials)
-	if _, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "alice", "pw"); !errors.Is(err, ErrRateLimited) {
-		t.Errorf("err = %v, want ErrRateLimited", err)
+	fixture.wantLoginError(t, "nobody", api.ErrBadCredentials)
+	fixture.wantLoginError(t, "dave", api.ErrBadCredentials)
+	_, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "alice", "pw")
+	if !errors.Is(err, api.ErrRateLimited) {
+		t.Errorf("err = %v, want api.ErrRateLimited", err)
 	}
 }
 
@@ -158,7 +161,7 @@ func TestLoginOtherFailuresAreNotBadCredentials(t *testing.T) {
 		fixture := newAuthFixture(t, 10)
 		writeFile(t, fixture.usersDir, "erin.yaml", "password_hash: [\n")
 		_, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "erin", "pw")
-		if err == nil || errors.Is(err, ErrBadCredentials) || errors.Is(err, ErrNoUser) {
+		if err == nil || errors.Is(err, api.ErrBadCredentials) || errors.Is(err, ErrNoUser) {
 			t.Errorf("err = %v", err)
 		}
 	})
@@ -167,7 +170,7 @@ func TestLoginOtherFailuresAreNotBadCredentials(t *testing.T) {
 		fixture := newAuthFixture(t, 10)
 		fixture.err = errors.New("invalid password hash")
 		_, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "alice", "pw-secret")
-		if err == nil || errors.Is(err, ErrBadCredentials) {
+		if err == nil || errors.Is(err, api.ErrBadCredentials) {
 			t.Fatalf("err = %v", err)
 		}
 		if !errors.Is(err, fixture.err) || strings.Contains(err.Error(), "pw-secret") {
@@ -179,7 +182,7 @@ func TestLoginOtherFailuresAreNotBadCredentials(t *testing.T) {
 		fixture := newAuthFixture(t, 10)
 		writeFile(t, filepath.Dir(fixture.keysPath), testNode+".yaml", "keys: []\n")
 		_, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "alice", "pw")
-		if err == nil || errors.Is(err, ErrBadCredentials) {
+		if err == nil || errors.Is(err, api.ErrBadCredentials) {
 			t.Errorf("err = %v", err)
 		}
 	})
@@ -188,16 +191,16 @@ func TestLoginOtherFailuresAreNotBadCredentials(t *testing.T) {
 func TestAuthenticatorVerify(t *testing.T) {
 	t.Parallel()
 	fixture := newAuthFixture(t, 10)
-	if _, err := fixture.auth.Verify("not-a-token"); !errors.Is(err, ErrInvalidToken) {
-		t.Errorf("err = %v, want ErrInvalidToken", err)
+	if _, err := fixture.auth.Verify("not-a-token"); !errors.Is(err, api.ErrInvalidToken) {
+		t.Errorf("err = %v, want api.ErrInvalidToken", err)
 	}
 	token, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "alice", "pw")
 	if err != nil {
 		t.Fatal(err)
 	}
 	fixture.clock.Advance(time.Hour)
-	if _, err := fixture.auth.Verify(token); !errors.Is(err, ErrExpiredToken) {
-		t.Errorf("err = %v, want ErrExpiredToken", err)
+	if _, err := fixture.auth.Verify(token); !errors.Is(err, api.ErrExpiredToken) {
+		t.Errorf("err = %v, want api.ErrExpiredToken", err)
 	}
 }
 
@@ -219,7 +222,7 @@ func TestLoginWithRealPasswordHash(t *testing.T) {
 		t.Errorf("right password: %v", err)
 	}
 	_, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "frank", "wrong")
-	if !errors.Is(err, ErrBadCredentials) {
+	if !errors.Is(err, api.ErrBadCredentials) {
 		t.Errorf("wrong password: err = %v", err)
 	}
 }
@@ -254,7 +257,7 @@ func TestLoginWaitsForSlotUntilContextEnds(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	token, expires, err := fixture.auth.Login(ctx, "192.0.2.1", "alice", "pw")
-	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrBadCredentials) {
+	if !errors.Is(err, context.Canceled) || errors.Is(err, api.ErrBadCredentials) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	if token != "" || !expires.IsZero() || len(fixture.calls) != 0 {
@@ -269,7 +272,7 @@ func TestLoginReleasesSlot(t *testing.T) {
 	for _, attempt := range []struct {
 		user string
 		want error
-	}{{"alice", nil}, {"nobody", ErrBadCredentials}, {"alice", nil}} {
+	}{{"alice", nil}, {"nobody", api.ErrBadCredentials}, {"alice", nil}} {
 		fixture.result = attempt.user == "alice"
 		fixture.wantLoginError(t, attempt.user, attempt.want)
 		if n := len(fixture.auth.slots); n != 0 {

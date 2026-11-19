@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/common/units"
 	"github.com/SpliceFS/server/config"
-	"github.com/SpliceFS/server/share"
 )
 
 func TestShareAdapterOpen(t *testing.T) {
@@ -30,13 +30,13 @@ func TestShareAdapterOpen(t *testing.T) {
 	if err != nil || string(data) != "0123456789" {
 		t.Errorf("read %q, %v", data, err)
 	}
-	if info := file.Info(); info.Size != 10 || info.ETag != share.ETag(10, fileTime()) {
+	if info := file.Info(); info.Size != 10 || info.ETag != api.ETag(10, fileTime()) {
 		t.Errorf("info = %+v", info)
 	}
 
 	missing, err := media.Open("nope")
-	if !errors.Is(err, share.ErrNotFound) {
-		t.Errorf("err = %v, want share.ErrNotFound", err)
+	if !errors.Is(err, api.ErrNotFound) {
+		t.Errorf("err = %v, want api.ErrNotFound", err)
 	}
 	if missing != nil {
 		t.Errorf("a failed Open returned the non-nil value %v", missing)

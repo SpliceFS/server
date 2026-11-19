@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/server/internal/filestat"
 )
 
@@ -25,8 +26,8 @@ func testStamp(size int64) filestat.Stamp {
 }
 
 // testDigests are the digests of the version of a file of size, different for every size.
-func testDigests(size int64) Digests {
-	return Digests{Head: fmt.Sprintf("a%063x", size), Tail: fmt.Sprintf("b%063x", size)}
+func testDigests(size int64) api.FileDigests {
+	return api.FileDigests{Head: fmt.Sprintf("a%063x", size), Tail: fmt.Sprintf("b%063x", size)}
 }
 
 // testEntry is the entry Save writes for the file at path with the stamp of size.

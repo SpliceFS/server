@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/server/internal/filestat"
 )
 
@@ -150,20 +151,20 @@ func isFolder(root *os.Root, dir string) (bool, error) {
 // entry was saved for that path and that stamp. A path that is not clean, and an entry that
 // is missing, unreadable, not a regular file, not exactly what the server writes or of
 // another path or stamp, is a miss: the caller computes the digests again and saves them.
-func (s *Store) Load(share, filePath string, stamp filestat.Stamp) (Digests, bool) {
+func (s *Store) Load(share, filePath string, stamp filestat.Stamp) (api.FileDigests, bool) {
 	name, err := entryPath(filePath)
 	if err != nil {
-		return Digests{}, false
+		return api.FileDigests{}, false
 	}
 	data, err := read(s.root.Load(), share+"/"+name)
 	if err != nil {
-		return Digests{}, false
+		return api.FileDigests{}, false
 	}
 	found, err := decode(data)
 	if err != nil || found.Key != KeyOf(filePath, stamp) {
-		return Digests{}, false
+		return api.FileDigests{}, false
 	}
-	return Digests{Head: found.Head, Tail: found.Tail}, true
+	return api.FileDigests{Head: found.Head, Tail: found.Tail}, true
 }
 
 // Save writes the entry of the file at filePath in share, which had stamp when digests were
@@ -171,7 +172,7 @@ func (s *Store) Load(share, filePath string, stamp filestat.Stamp) (Digests, boo
 // folder first and is renamed into place, so a reader sees the old entry or the new one,
 // never a part of one, and two writers of one entry never write into the same file. The
 // entry is not flushed: a lost entry costs one recompute.
-func (s *Store) Save(share, filePath string, stamp filestat.Stamp, digests Digests) error {
+func (s *Store) Save(share, filePath string, stamp filestat.Stamp, digests api.FileDigests) error {
 	name, err := entryPath(filePath)
 	if err != nil {
 		return err
@@ -196,7 +197,7 @@ func (s *Store) Save(share, filePath string, stamp filestat.Stamp, digests Diges
 
 // Keep saves the entry like Save. A failed save costs a read after the next restart, not the
 // request, so it is only logged: once, and again only after a save has worked in between.
-func (s *Store) Keep(share, filePath string, stamp filestat.Stamp, digests Digests) {
+func (s *Store) Keep(share, filePath string, stamp filestat.Stamp, digests api.FileDigests) {
 	err := s.Save(share, filePath, stamp, digests)
 	if err == nil {
 		s.failing.Store(false)

@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/SpliceFS/common/api"
 )
 
 // epoch is a fixed modification time far in the past of the test clock.
@@ -97,7 +99,7 @@ func (fix fixture) open(tb testing.TB, opts *Options) *Share {
 }
 
 // names returns the names of a listing.
-func names(infos []Info) []string {
+func names(infos []api.Info) []string {
 	out := make([]string, len(infos))
 	for i, info := range infos {
 		out[i] = info.Name
@@ -117,16 +119,16 @@ func mustClose(tb testing.TB, closer io.Closer) {
 func requireHidden(t *testing.T, share *Share, names ...string) {
 	t.Helper()
 	for _, name := range names {
-		if _, err := share.Stat(name); !errors.Is(err, ErrNotFound) {
+		if _, err := share.Stat(name); !errors.Is(err, api.ErrNotFound) {
 			t.Errorf("Stat(%q) = %v", name, err)
 		}
-		if _, err := share.List(name); !errors.Is(err, ErrNotFound) {
+		if _, err := share.List(name); !errors.Is(err, api.ErrNotFound) {
 			t.Errorf("List(%q) = %v", name, err)
 		}
-		if _, err := share.OpenFile(name); !errors.Is(err, ErrNotFound) {
+		if _, err := share.OpenFile(name); !errors.Is(err, api.ErrNotFound) {
 			t.Errorf("OpenFile(%q) = %v", name, err)
 		}
-		if _, _, err := share.Digests(name); !errors.Is(err, ErrNotFound) {
+		if _, _, err := share.Digests(name); !errors.Is(err, api.ErrNotFound) {
 			t.Errorf("Digests(%q) = %v", name, err)
 		}
 	}
@@ -145,7 +147,7 @@ func requireListing(t *testing.T, share *Share, dir string, want []string) {
 }
 
 // mustStat returns the Info of name and fails the test when Stat fails.
-func mustStat(t *testing.T, share *Share, name string) Info {
+func mustStat(t *testing.T, share *Share, name string) api.Info {
 	t.Helper()
 	info, err := share.Stat(name)
 	if err != nil {
@@ -155,7 +157,7 @@ func mustStat(t *testing.T, share *Share, name string) Info {
 }
 
 // mustDigests returns the digests and Info of name and fails the test when Digests fails.
-func mustDigests(t *testing.T, share *Share, name string) (FileDigests, Info) {
+func mustDigests(t *testing.T, share *Share, name string) (api.FileDigests, api.Info) {
 	t.Helper()
 	digests, info, err := share.Digests(name)
 	if err != nil {
@@ -194,7 +196,7 @@ type readCounter struct{ reads int }
 // attach makes share report every read of digests to the counter.
 func (counter *readCounter) attach(share *Share) {
 	read := share.computeDigests
-	share.computeDigests = func(r io.ReaderAt, size int64) (FileDigests, error) {
+	share.computeDigests = func(r io.ReaderAt, size int64) (api.FileDigests, error) {
 		counter.reads++
 		return read(r, size)
 	}

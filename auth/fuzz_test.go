@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/argon2"
+
+	"github.com/SpliceFS/common/api"
 )
 
 // fuzzTokens writes a keys file with one key and returns Tokens over it, with a clock
@@ -31,7 +33,7 @@ func FuzzTokensVerify(f *testing.F) {
 	if err != nil {
 		f.Fatal(err)
 	}
-	want := Claims{User: "alice", Shares: []string{"media"}, Expires: expires}
+	want := api.Claims{User: "alice", Shares: []string{"media"}, Expires: expires}
 	header := tokenEncoding().EncodeToString([]byte(`{"alg":"HS256","typ":"JWT","kid":"new"}`))
 	payload := tokenEncoding().EncodeToString(
 		[]byte(`{"sub":"alice","shares":["*"],"iat":1,"exp":9999999999}`))
@@ -49,7 +51,7 @@ func FuzzTokensVerify(f *testing.F) {
 		claims, err := tokens.Verify(token)
 		if err != nil {
 			// Callers branch on these two errors, so nothing else may escape for input.
-			if !errors.Is(err, ErrInvalidToken) && !errors.Is(err, ErrExpiredToken) {
+			if !errors.Is(err, api.ErrInvalidToken) && !errors.Is(err, api.ErrExpiredToken) {
 				t.Fatalf("Verify(%q) failed with %v", token, err)
 			}
 			if claims.User != "" || claims.Shares != nil {
@@ -86,7 +88,7 @@ func FuzzTokensVerifySigned(f *testing.F) {
 		token := forge(secretA, header, tokenEncoding().EncodeToString(payload))
 		claims, err := tokens.Verify(token)
 		if err != nil {
-			if !errors.Is(err, ErrInvalidToken) && !errors.Is(err, ErrExpiredToken) {
+			if !errors.Is(err, api.ErrInvalidToken) && !errors.Is(err, api.ErrExpiredToken) {
 				t.Fatalf("Verify of payload %q failed with %v", payload, err)
 			}
 			return

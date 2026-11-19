@@ -4,13 +4,9 @@ import (
 	"container/list"
 	"sync"
 
+	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/server/internal/digestcache"
 )
-
-// FileDigests holds the head digest and the tail digest of one version of a file: the
-// hex SHA-256 of its first wire.HeadDigestBytes bytes and of its last
-// wire.TailDigestBytes bytes.
-type FileDigests = digestcache.Digests
 
 // lru is a fixed-size least-recently-used cache of digest pairs, keyed like the entries of
 // the digest store, so that both agree on when a file has changed. It is safe for concurrent
@@ -25,7 +21,7 @@ type lru struct {
 // lruEntry is the value stored in the list.
 type lruEntry struct {
 	key     digestcache.Key
-	digests FileDigests
+	digests api.FileDigests
 }
 
 // newLRU returns a cache holding at most limit entries.
@@ -41,16 +37,16 @@ func entryOf(element *list.Element) (*lruEntry, bool) {
 }
 
 // get returns the digests stored for key and marks them as recently used.
-func (c *lru) get(key digestcache.Key) (FileDigests, bool) {
+func (c *lru) get(key digestcache.Key) (api.FileDigests, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	element, found := c.entries[key]
 	if !found {
-		return FileDigests{}, false
+		return api.FileDigests{}, false
 	}
 	entry, ok := entryOf(element)
 	if !ok {
-		return FileDigests{}, false
+		return api.FileDigests{}, false
 	}
 	c.order.MoveToFront(element)
 	return entry.digests, true
@@ -58,7 +54,7 @@ func (c *lru) get(key digestcache.Key) (FileDigests, bool) {
 
 // put stores the digests for key, evicting the least recently used entry when the
 // cache is full.
-func (c *lru) put(key digestcache.Key, digests FileDigests) {
+func (c *lru) put(key digestcache.Key, digests api.FileDigests) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if element, found := c.entries[key]; found {

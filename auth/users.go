@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/SpliceFS/common/api"
 )
 
 // ErrNoUser means that no user of that name exists.
@@ -33,9 +35,6 @@ var (
 	errUserOtherProblem = errors.New("a key or value that cannot be used")
 )
 
-// allShares is the entry in a user's share list that allows every share.
-const allShares = "*"
-
 // maxNameLength is the longest accepted user name.
 const maxNameLength = 64
 
@@ -53,17 +52,7 @@ type User struct {
 
 // Allows reports whether the user may use the named share.
 func (u User) Allows(share string) bool {
-	return allowsShare(u.Shares, share)
-}
-
-// allowsShare reports whether shares lists share or the wildcard.
-func allowsShare(shares []string, share string) bool {
-	for _, s := range shares {
-		if s == allShares || s == share {
-			return true
-		}
-	}
-	return false
+	return api.SharesAllow(u.Shares, share)
 }
 
 // userFile is the YAML layout of one user file.

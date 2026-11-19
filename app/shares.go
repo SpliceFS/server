@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/SpliceFS/server/api"
+	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/server/config"
 	"github.com/SpliceFS/server/internal/digestcache"
 	"github.com/SpliceFS/server/share"

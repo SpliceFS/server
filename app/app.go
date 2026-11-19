@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/common/wire"
-	"github.com/SpliceFS/server/api"
 	"github.com/SpliceFS/server/auth"
 	"github.com/SpliceFS/server/cluster"
 	"github.com/SpliceFS/server/config"

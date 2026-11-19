@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/common/wire"
 	"github.com/SpliceFS/server/config"
 	"github.com/SpliceFS/server/internal/digestcache"
@@ -702,7 +703,7 @@ func mustRemoveAll(t *testing.T, dir string) {
 // plantEntry saves an entry of the file hello.bin of the fixture under shareName, as a
 // server that had that share would have, and returns the digests in it, which no read of the
 // file gives.
-func plantEntry(t *testing.T, fix *fixture, shareName string) digestcache.Digests {
+func plantEntry(t *testing.T, fix *fixture, shareName string) api.FileDigests {
 	t.Helper()
 	stamp, err := filestat.Stat(filepath.Join(fix.shareDir, "hello.bin"))
 	if err != nil {
@@ -715,7 +716,7 @@ func plantEntry(t *testing.T, fix *fixture, shareName string) digestcache.Digest
 	if err != nil {
 		t.Fatal(err)
 	}
-	digests := digestcache.Digests{Head: strings.Repeat("a", 64), Tail: strings.Repeat("b", 64)}
+	digests := api.FileDigests{Head: strings.Repeat("a", 64), Tail: strings.Repeat("b", 64)}
 	if err = errors.Join(store.Save(shareName, "hello.bin", stamp, digests), store.Close()); err != nil {
 		t.Fatal(err)
 	}

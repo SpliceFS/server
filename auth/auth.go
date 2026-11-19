@@ -7,14 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
-)
 
-var (
-	// ErrBadCredentials means the user is unknown or disabled, or the password is wrong.
-	// The three cases are deliberately indistinguishable.
-	ErrBadCredentials = errors.New("bad credentials")
-	// ErrRateLimited means the client address has made too many login attempts.
-	ErrRateLimited = errors.New("too many login attempts")
+	"github.com/SpliceFS/common/api"
 )
 
 // dummyHash is verified when the user is unknown or disabled, so that the response time
@@ -44,10 +38,10 @@ func New(users *Users, tokens *Tokens, limiter *Limiter, slots int) *Authenticat
 	}
 }
 
-// Login checks the password of user and issues a token. It returns ErrRateLimited when
-// clientAddr has used up its attempts, and ErrBadCredentials for an unknown user, a
+// Login checks the password of user and issues a token. It returns api.ErrRateLimited when
+// clientAddr has used up its attempts, and api.ErrBadCredentials for an unknown user, a
 // disabled user or a wrong password. Any other failure, such as an unreadable user file or
-// keys file, is returned wrapped and is not ErrBadCredentials.
+// keys file, is returned wrapped and is not api.ErrBadCredentials.
 //
 // After the rate limit check, Login waits for a free verification slot. If ctx ends first
 // it returns ctx.Err() wrapped, so a client that gave up does not queue for memory.
@@ -55,7 +49,7 @@ func (a *Authenticator) Login(
 	ctx context.Context, clientAddr, user, password string,
 ) (string, time.Time, error) {
 	if !a.limiter.Allow(clientAddr) {
-		return "", time.Time{}, ErrRateLimited
+		return "", time.Time{}, api.ErrRateLimited
 	}
 	if !a.acquire(ctx) {
 		return "", time.Time{}, fmt.Errorf("login: %w", ctx.Err())
@@ -76,7 +70,7 @@ func (a *Authenticator) Login(
 		return "", time.Time{}, fmt.Errorf("login: user %q: %w", account.Name, err)
 	}
 	if !ok {
-		return "", time.Time{}, ErrBadCredentials
+		return "", time.Time{}, api.ErrBadCredentials
 	}
 	token, expires, err := a.tokens.Issue(account.Name, account.Shares)
 	if err != nil {
@@ -86,7 +80,7 @@ func (a *Authenticator) Login(
 }
 
 // Verify checks a token and returns its claims; see Tokens.Verify.
-func (a *Authenticator) Verify(token string) (Claims, error) {
+func (a *Authenticator) Verify(token string) (api.Claims, error) {
 	return a.tokens.Verify(token)
 }
 
@@ -106,9 +100,9 @@ func (a *Authenticator) release() {
 }
 
 // reject spends the time of one password verification against dummyHash and returns
-// ErrBadCredentials.
+// api.ErrBadCredentials.
 func (a *Authenticator) reject(password string) error {
 	//nolint:errcheck // only the time of the call matters, and the reply must not depend on its result
 	_, _ = a.verify(dummyHash, password)
-	return ErrBadCredentials
+	return api.ErrBadCredentials
 }
