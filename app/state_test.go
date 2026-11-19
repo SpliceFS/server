@@ -131,19 +131,6 @@ func rfcRandom() io.Reader {
 
 const rfcNodeID = "017f22e2-79b0-7cc3-98c4-dc0c0c07398f"
 
-// The digest folder holds what this node alone may read: it is made private, like local/.
-func TestDigestFolderIsPrivate(t *testing.T) {
-	t.Parallel()
-	paths := layout(t.TempDir())
-	if err := paths.makeFolders(); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(paths.digestsDir)
-	if err != nil || info.Mode() != os.ModeDir|0o700 {
-		t.Errorf("digest folder = %v, %v, want a folder of mode 0700", info, err)
-	}
-}
-
 func TestNodeIDIsMadeOnceAndKept(t *testing.T) {
 	t.Parallel()
 	paths := layout(t.TempDir())

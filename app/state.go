@@ -21,7 +21,8 @@ import (
 // which is why every file in it has exactly one writer.
 type dataPaths struct {
 	nodeIDFile, digestsDir, usersDir, keysDir, nodesDir string
-	// folders lists every folder the server makes, parents first, with its mode.
+	// folders lists every folder the server makes, parents first, with its mode. The digest
+	// folder is not one of them: the digest store makes it.
 	folders []folder
 }
 
@@ -56,7 +57,6 @@ func layout(stateDir string) dataPaths {
 	paths.folders = []folder{
 		{stateDir, 0o750},
 		{local, 0o700},
-		{paths.digestsDir, 0o700},
 		{shared, 0o750},
 		{paths.usersDir, 0o750},
 		{paths.keysDir, 0o700},

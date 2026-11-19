@@ -93,6 +93,14 @@ linters:
         # message types has as many as the protocol has messages.
         - name: max-public-structs
           disabled: true
+        # The write methods of strings.Builder return an error only to satisfy io.Writer;
+        # the documentation says it is always nil.
+        - name: unhandled-error
+          arguments:
+            - "strings.Builder.Write"
+            - "strings.Builder.WriteByte"
+            - "strings.Builder.WriteRune"
+            - "strings.Builder.WriteString"
     # Log values are passed as typed attributes (slog.String, slog.Int), never as loose
     # key and value pairs: a missing value or a key that is not a string cannot compile.
     sloglint:
