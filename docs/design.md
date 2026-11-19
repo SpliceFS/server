@@ -176,10 +176,12 @@ it is logged once as a warning, and again only after a write has succeeded in be
 folder is the node's, so that holds for the node, not for each share: a full disk gives one
 warning, whatever share the requests are for.
 
-**Self-healing.** A reload makes the state folders that are missing, the same way a start
-does, and the store opens `local/digests/` again when it is a new folder, so a digest folder
-removed while the server runs is back, with its `.tmp/`, at the next reload. A reload leaves
-what is in `.tmp/`, since requests may be writing there.
+**Self-healing.** The digest store owns its folder: it makes `local/digests/` (mode 0700)
+and its `.tmp/` when they are missing, at start and at every reload, and opens
+`local/digests/` again when it is a new folder. A reload also makes the other state folders
+that are missing, the same way a start does. So a digest folder removed while the server runs
+is back, with its `.tmp/`, at the next reload. A reload leaves what is in `.tmp/`, since
+requests may be writing there.
 
 **Concurrency.** Two requests for one file may both miss and both write; each writes its own
 temporary file and the last rename wins. Both hold the same digests for the same stamp, so no
