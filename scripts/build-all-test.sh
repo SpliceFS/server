@@ -13,7 +13,9 @@ failed=0
 
 # A small repository of its own: two programs, a package name and the real libraries.
 tree="$work/tree"
-mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/cmd/beta" "$tree/packaging/deb" "$work/bin"
+mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/cmd/beta" "$tree/packaging/deb" \
+    "$tree/packaging/systemd" "$work/bin"
+: > "$tree/packaging/systemd/alpha.service"
 cp "$root/scripts/build-all.sh" "$root/scripts/package-lib.sh" "$tree/scripts/"
 printf 'Package: splicefs-demo\n' > "$tree/packaging/deb/control"
 printf 'conf.d\n' > "$tree/packaging/config-folders"

@@ -217,7 +217,7 @@ disabled: false     # true: the user cannot log in
 
 To add a user:
 
-1. Run `splicefsd hash-password`. It reads one line from standard input, the password, and
+1. Run `splicefsdctl hash-password`. It reads one line from standard input, the password, and
    prints the hash. Typed input is shown on the screen; to avoid that, pipe the password in
    from a file.
 2. Create `<state>/shared/users/<name>.yaml` with the file content above. Paste the printed

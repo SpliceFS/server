@@ -152,8 +152,10 @@ $RECYCLE.BIN/
 # it as well, because an ignore rule does not stop "git add -f".
 /splicefs
 /splicefsd
+/splicefsdctl
 /cmd/*/splicefs
 /cmd/*/splicefsd
+/cmd/*/splicefsdctl
 *.core
 
 # --- Leftovers of tools that edit files in place ------------------------------------

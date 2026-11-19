@@ -7,7 +7,9 @@
 : "${PACKAGE_DATE:?PACKAGE_DATE is not set}"
 
 name="$(sed -n 's/^Package: //p' packaging/deb/control)"
-program="$(basename cmd/*)"
+# The program is the daemon, the one with a service unit: its name is the name of the service,
+# the init script and the log. cmd/ holds more than one folder, so it cannot be named from there.
+program="$(basename packaging/systemd/*.service .service)"
 confdir="/etc/splicefs/${name#splicefs-}"
 # One folder name per line; see the file for why the package ships them empty.
 confsubdirs="$(grep -v -e '^#' -e '^$' packaging/config-folders)"
