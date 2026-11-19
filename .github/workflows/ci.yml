@@ -176,10 +176,11 @@ jobs:
         release: ["14.5", "15.1"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The save took 48 s of a job that runs for minutes, so this job only restores.
+      # The save took 48 s of a job that runs for minutes, so a pull request only restores.
+      # A push to main saves, so that the entry does not expire.
       - uses: ./.github/actions/go-cache
         with:
-          save: "false"
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Tests on FreeBSD, as root, 100% coverage
         run: make check-freebsd FREEBSD=${{ matrix.release }}
 
