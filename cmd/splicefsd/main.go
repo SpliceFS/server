@@ -1,33 +1,22 @@
 // Command splicefsd is the SpliceFS server. It serves the shares of its configuration
-// directory over HTTP. The config subcommands check and show that configuration, and
-// hash-password makes a password hash for a user file.
+// directory over HTTP. The config subcommands check and show that configuration. What an
+// administrator runs by hand besides that is in splicefsdctl.
 package main
 
 import (
-	"bufio"
 	"context"
-	"crypto/rand"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/SpliceFS/server/app"
-	"github.com/SpliceFS/server/auth"
 	"github.com/SpliceFS/server/config"
+	"github.com/SpliceFS/server/internal/cli"
 	"github.com/SpliceFS/server/internal/version"
-)
-
-// Exit statuses.
-const (
-	exitOK    = 0
-	exitError = 1
-	exitUsage = 2
 )
 
 const (
@@ -35,7 +24,6 @@ const (
 	usage   = `usage: splicefsd [--config DIR] [--state DIR]
        splicefsd [--config DIR] config check
        splicefsd [--config DIR] config show
-       splicefsd hash-password
        splicefsd --version
 
 SIGHUP applies the configuration without a restart.
@@ -54,27 +42,19 @@ var (
 	errUnexpectedArgument = errors.New("unexpected argument")
 )
 
+// self is how this program speaks: its name and its usage text.
+func self() cli.Program { return cli.Program{Name: program, Usage: usage} }
+
 func main() {
-	exit(run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+	exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
 }
 
 // run is the whole program. It returns the exit status. The server stops when ctx is
 // cancelled or the process receives SIGINT or SIGTERM.
-func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	if len(args) > 0 && args[0] == "hash-password" {
-		return runHashPassword(args[1:], stdin, stdout, stderr)
-	}
+func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	opts, err := parseArgs(args)
-	switch {
-	case errors.Is(err, flag.ErrHelp):
-		sayf(stdout, "%s", usage)
-		return exitOK
-	case err != nil:
-		sayf(stderr, "%s: %v\n%s", program, err, usage)
-		return exitUsage
-	case opts.showVersion:
-		sayf(stdout, "%s %s\n", program, version.String())
-		return exitOK
+	if status, handled := self().Handled(stdout, stderr, err, opts.showVersion); handled {
+		return status
 	}
 	if opts.command != "" {
 		return runConfig(opts, systemDirs(), stdout, stderr)
@@ -100,8 +80,7 @@ type options struct {
 // parseArgs reads the command line of the server.
 func parseArgs(args []string) (options, error) {
 	var opts options
-	fs := flag.NewFlagSet(program, flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
+	fs := self().FlagSet()
 	fs.StringVar(&opts.configDir, "config", "", "")
 	fs.StringVar(&opts.stateDir, "state", "", "")
 	fs.BoolVar(&opts.showVersion, "version", false, "")
@@ -147,11 +126,11 @@ func directory(given string, fallback func() (string, error)) (string, error) {
 func runConfig(opts options, defaults defaultDirs, stdout, stderr io.Writer) int {
 	dir, err := directory(opts.configDir, defaults.config)
 	if err != nil {
-		return fail(stderr, err)
+		return self().Fail(stderr, err)
 	}
 	cfg, err := config.LoadDir(dir)
 	if err != nil {
-		return fail(stderr, err)
+		return self().Fail(stderr, err)
 	}
 	if opts.command == commandCheck {
 		_, err = io.WriteString(stdout, "configuration ok\n")
@@ -159,40 +138,9 @@ func runConfig(opts options, defaults defaultDirs, stdout, stderr io.Writer) int
 		err = showConfig(stdout, cfg)
 	}
 	if err != nil {
-		return fail(stderr, err)
+		return self().Fail(stderr, err)
 	}
-	return exitOK
-}
-
-// runHashPassword implements the hash-password subcommand.
-func runHashPassword(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	if len(args) > 0 {
-		sayf(stderr, "%s: hash-password takes no arguments\n%s", program, usage)
-		return exitUsage
-	}
-	if err := hashPassword(stdin, stdout, rand.Reader); err != nil {
-		return fail(stderr, err)
-	}
-	return exitOK
-}
-
-// hashPassword reads one line from in and writes the argon2id hash of it to out. The salt
-// comes from random. The password is the line without its line ending.
-func hashPassword(in io.Reader, out io.Writer, random io.Reader) error {
-	line, err := bufio.NewReader(in).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("read password: %w", err)
-	}
-	password := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
-	hash, err := auth.HashPassword(password, random)
-	if err != nil {
-		// The message already says what failed and is printed to the user as it is.
-		return err //nolint:wrapcheck // printed to the user as it is
-	}
-	if _, err := fmt.Fprintln(out, hash); err != nil {
-		return fmt.Errorf("write hash: %w", err)
-	}
-	return nil
+	return cli.ExitOK
 }
 
 // runServer loads the configuration and serves until ctx is cancelled or a termination
@@ -201,15 +149,15 @@ func hashPassword(in io.Reader, out io.Writer, random io.Reader) error {
 func runServer(ctx context.Context, opts options, defaults defaultDirs, stderr io.Writer) int {
 	configDir, err := directory(opts.configDir, defaults.config)
 	if err != nil {
-		return fail(stderr, err)
+		return self().Fail(stderr, err)
 	}
 	stateDir, err := directory(opts.stateDir, defaults.state)
 	if err != nil {
-		return fail(stderr, err)
+		return self().Fail(stderr, err)
 	}
 	cfg, err := config.LoadDir(configDir)
 	if err != nil {
-		return fail(stderr, err)
+		return self().Fail(stderr, err)
 	}
 	var level slog.LevelVar
 	level.Set(levelOf(cfg.Log))
@@ -230,9 +178,9 @@ func runServer(ctx context.Context, opts options, defaults defaultDirs, stderr i
 		Applied: followLevel(&level),
 	})
 	if err != nil {
-		return fail(stderr, err)
+		return self().Fail(stderr, err)
 	}
-	return exitOK
+	return cli.ExitOK
 }
 
 // levelOf returns the log level the settings name. The configuration loader has already
@@ -260,16 +208,4 @@ func newLogger(format string, level *slog.LevelVar, w io.Writer) *slog.Logger {
 		return slog.New(slog.NewJSONHandler(w, opts))
 	}
 	return slog.New(slog.NewTextHandler(w, opts))
-}
-
-// fail prints err and returns the exit status for a runtime error.
-func fail(stderr io.Writer, err error) int {
-	sayf(stderr, "%s: %v\n", program, err)
-	return exitError
-}
-
-// sayf writes a message to w. A failed write is ignored: it means the terminal or pipe is
-// gone, so nobody is left to read a report of it, and the exit status says what happened.
-func sayf(w io.Writer, format string, args ...any) {
-	_, _ = fmt.Fprintf(w, format, args...) //nolint:errcheck // nobody is left to report a failed write to
 }

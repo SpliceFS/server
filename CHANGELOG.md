@@ -6,6 +6,19 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.39] - 2026-11-19
+
+- Internal: the server's packages are built and tested by the packages repository.
+
+## [0.5.38] - 2026-11-18
+
+- Internal: a dependency is updated. Nothing changes for users.
+
+## [0.5.37] - 2026-11-18
+
+- New program `splicefsdctl` for the server's utility commands; `splicefsdctl hash-password`
+  replaces `splicefsd hash-password`.
+
 ## [0.5.36] - 2026-11-18
 
 - Internal: package upgrades are tested in the packages repository.
