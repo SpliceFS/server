@@ -290,7 +290,7 @@ func startServer(
 			prepare(setup)
 		}
 		var err error
-		server, err = tryStartServer(ctx, setup, startLimit)
+		server, err = tryStartServer(ctx, t, setup, startLimit)
 		return err
 	})
 	return setup, server
@@ -302,13 +302,26 @@ const startLimit = 10 * time.Second
 
 // tryStartServer runs the server in the background and waits until it listens. It returns the
 // error of a server that stopped first, or of one that did neither within limit.
-func tryStartServer(ctx context.Context, setup serverSetup, limit time.Duration) (runningServer, error) {
+func tryStartServer(
+	ctx context.Context, t *testing.T, setup serverSetup, limit time.Duration,
+) (runningServer, error) {
+	t.Helper()
+	ctx, stop := context.WithCancel(ctx)
 	logs := newWatchedLog()
 	status := make(chan int, 1)
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		args := []string{"--config", setup.configDir, "--state", setup.stateDir}
 		status <- run(ctx, args, io.Discard, logs)
 	}()
+	// The server writes into the folders of the test until run returns, also after a start
+	// that failed by the time limit. Cleanups run last in first out, and the folders were
+	// made before this one is registered, so they are removed only after the server stopped.
+	t.Cleanup(func() {
+		stop()
+		<-stopped
+	})
 	select {
 	case <-logs.ready:
 		return runningServer{logs: logs, status: status}, nil
@@ -355,7 +368,7 @@ func TestAServerThatStopsBeforeItListensReportsWhetherThePortWasTaken(t *testing
 			t.Parallel()
 			setup := setUpServer(t, tt.port)
 			tt.mutate(t, setup)
-			_, err := tryStartServer(context.Background(), setup, startLimit)
+			_, err := tryStartServer(context.Background(), t, setup, startLimit)
 			if err == nil {
 				t.Fatal("the server started")
 			}
@@ -374,13 +387,11 @@ const noLogLimit = 50 * time.Millisecond
 // logs errors only, and "listening" is an info record, so it never writes it.
 func TestAServerThatNeverLogsListeningFailsTheStart(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 	var failure error
 	porttest.Try(t, func(port int) error {
 		setup := setUpServer(t, port)
 		writeFiles(t, setup.configDir, map[string]string{"conf.d/20-quiet.yaml": "log:\n  level: error\n"})
-		_, failure = tryStartServer(ctx, setup, noLogLimit)
+		_, failure = tryStartServer(context.Background(), t, setup, noLogLimit)
 		if errors.Is(failure, syscall.EADDRINUSE) {
 			return failure
 		}

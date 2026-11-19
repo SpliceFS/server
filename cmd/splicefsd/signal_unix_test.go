@@ -70,16 +70,10 @@ type reloadServer struct {
 // startReloadServer starts a server whose user may use every share.
 func startReloadServer(t *testing.T) reloadServer {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	setup, server := startServer(ctx, t, func(setup serverSetup) {
+	setup, server := startServer(context.Background(), t, func(setup serverSetup) {
 		writeFiles(t, setup.stateDir, map[string]string{
 			"shared/users/alice.yaml": "password_hash: \"" + lowCostHash("secret") + "\"\nshares: [\"*\"]\n",
 		})
-	})
-	// A stopped server no longer asks for SIGHUP, so no later test reloads it.
-	t.Cleanup(func() {
-		cancel()
-		<-server.status
 	})
 	return reloadServer{setup: setup, logs: server.logs}
 }
