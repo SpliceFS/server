@@ -55,11 +55,7 @@ func Open(dir string, logger *slog.Logger) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open the digest folder: %w", err)
 	}
-	store, err := start(dir, root, logger)
-	if err != nil {
-		return nil, errors.Join(err, root.Close())
-	}
-	return store, nil
+	return start(dir, root, logger)
 }
 
 // Close releases the digest folder. The store must not be used after it.
@@ -74,12 +70,14 @@ func (s *Store) Close() error {
 	return errors.Join(errs...)
 }
 
-// start starts the store on the digest folder dir, open as root.
+// start starts the store on the digest folder dir, open as root. A failed start closes root.
 func start(dir string, root *os.Root, logger *slog.Logger) (*Store, error) {
-	// After a successful removal only a folder that cannot be written fails the creation.
+	// After a successful removal only a folder that cannot be written, or is gone, fails the
+	// creation.
 	err := errors.Join(root.RemoveAll(tempFolder), root.Mkdir(tempFolder, folderMode))
 	if err != nil {
-		return nil, fmt.Errorf("empty the temporary folder of the digest entries: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("empty the temporary folder of the digest entries: %w", err), root.Close())
 	}
 	store := &Store{dir: dir, logger: logger}
 	store.root.Store(root)

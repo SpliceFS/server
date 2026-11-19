@@ -368,21 +368,26 @@ func TestOpenFailsWithoutFolder(t *testing.T) {
 	}
 }
 
-// A folder that can be opened but not written cannot take the temporary folder, and the
-// failed start leaves nothing open.
-func TestOpenFailsOnAFolderThatCannotBeWritten(t *testing.T) {
+// A folder removed after it was opened cannot take the temporary folder, whoever runs the
+// server, and the failed start closes the folder.
+func TestStartFailsOnAFolderRemovedAfterOpen(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o500); err != nil {
+	dir := filepath.Join(t.TempDir(), "digests")
+	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if err := os.Chmod(dir, 0o700); err != nil {
-			t.Error(err)
-		}
-	})
-	if store, err := Open(dir, slog.New(slog.DiscardHandler)); err == nil || store != nil {
-		t.Errorf("Open = %v, %v, want an error", store, err)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if store, err := start(dir, root, slog.New(slog.DiscardHandler)); err == nil || store != nil {
+		t.Errorf("start = %v, %v, want an error", store, err)
+	}
+	if _, err := root.Stat("."); !errors.Is(err, os.ErrClosed) {
+		t.Errorf("root.Stat after the failed start = %v, want %v", err, os.ErrClosed)
 	}
 }
 
