@@ -152,8 +152,9 @@ is accepted only in exactly the form the server writes, byte for byte, so a numb
 fraction or out of range, an unknown or missing field, a digest in upper case or a second YAML
 document makes it invalid.
 
-**Use.** A `HEAD` request resolves and opens the file, takes the stamp, then asks the
-in-memory cache and, if that misses, the entry. An entry is used only when `version`, `path`
+**Use.** A `HEAD` request resolves and opens the file and takes the stamp, the one stat of
+the request: the size and the modification time it answers with come from the same stamp.
+It then asks the in-memory cache and, if that misses, the entry. An entry is used only when `version`, `path`
 and every stamp field (size, modification, change and creation time, inode) are equal to what
 was just read; `path` is compared in its escaped form, as the entry stores it. Anything else is
 a miss.
@@ -171,7 +172,14 @@ an `os.Root` on that folder, so a link placed inside it cannot send a write else
 another version, with a malformed field or in any form other than the one the server writes
 is a miss: the digests are computed and the entry is
 replaced. A failed write (full disk, no inodes left, read-only folder) never fails the request;
-it is logged once as a warning, and again only after a write has succeeded in between.
+it is logged once as a warning, and again only after a write has succeeded in between. The
+folder is the node's, so that holds for the node, not for each share: a full disk gives one
+warning, whatever share the requests are for.
+
+**Self-healing.** A reload makes the state folders that are missing, the same way a start
+does, and the store opens `local/digests/` again when it is a new folder, so a digest folder
+removed while the server runs is back, with its `.tmp/`, at the next reload. A reload leaves
+what is in `.tmp/`, since requests may be writing there.
 
 **Concurrency.** Two requests for one file may both miss and both write; each writes its own
 temporary file and the last rename wins. Both hold the same digests for the same stamp, so no
@@ -184,7 +192,11 @@ share, with the same rules as a request, and removes the entry when the file is 
 its stamp differs. It removes folders left empty and the folders of shares that are no longer
 configured. A renamed file therefore gets a new entry on its first request and its old entry
 goes at the next sweep. A sweep can remove an entry written while it ran; that costs one
-recompute, never a wrong answer. A sweep that fails on one entry logs it and goes on.
+recompute, never a wrong answer. A sweep that fails on one entry logs it and goes on; an entry
+whose file cannot be looked up (an error other than "not found") stays. Anything in a share's
+folder that is not an entry the server wrote, at the place of the path it holds, is removed.
+Only one sweep runs at a time: a reload ends the one that runs, and waits for it, before the
+shares it uses are closed, and a stop ends it and waits for it too.
 
 **Memory.** The in-memory cache stays in front of the entries and keeps its size (65536 per
 share by default). It holds the same thing, keyed by the path and the same stamp fields with the

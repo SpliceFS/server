@@ -172,6 +172,7 @@ folders it needs. It must be able to write to the state folder.
     node-id
     tls/cert.pem
     tls/key.pem
+    digests/<share>/<path>.splicefs_state
   shared/                   may be synced between servers
     users/<name>.yaml
     keys/<node-id>.yaml
@@ -182,6 +183,7 @@ folders it needs. It must be able to write to the state folder.
 |------------------------------|-----------------------|-----------------------------------------|
 | `local/node-id`              | the server, once      | a UUIDv7 in lower case                  |
 | `local/tls/cert.pem`, `key.pem` | the server, once   | the certificate the server made for itself |
+| `local/digests/`             | the server            | the digests of each file read, one small file per file |
 | `shared/users/<name>.yaml`   | you                   | one user                                |
 | `shared/keys/<node-id>.yaml` | that server only      | token signing keys                      |
 | `shared/nodes/<node-id>.yaml`| that server only      | name and address of that server         |
@@ -198,6 +200,14 @@ Never copy or sync `local/`. It belongs to this machine.
 - `tls/` holds a self-signed certificate (ECDSA P-256, valid for 10 years) made on the first
   start for the host name, `localhost`, `127.0.0.1` and `::1`. Files that exist are never
   replaced. To use your own certificate, set `tls` on the listener instead.
+- `digests/` keeps the head and tail digests of every file a client has asked about, so a
+  restart or a reload does not read the files again. Each entry is one small file: about one
+  inode and one 4 KiB block per data file read, which is about 4 GB and a million inodes per
+  million files. Give the file system of the state folder room for that. The server removes
+  entries of files that are gone, hidden or changed, and of shares no longer configured, after
+  each start and reload. You may delete the folder at any time; the server makes it again at
+  the next reload or start and reads the files again as clients ask for them. If it cannot
+  write there, it logs one warning and keeps answering.
 
 ### shared/
 
