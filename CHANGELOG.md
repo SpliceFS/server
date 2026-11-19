@@ -6,6 +6,10 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.46] - 2026-11-19
+
+- Internal: the server serves the API of the common library.
+
 ## [0.5.45] - 2026-11-19
 
 - Internal: the digest store makes its own folder.
