@@ -581,7 +581,11 @@ func TestReloadLogsARemovedListenerThatDoesNotCloseCleanly(t *testing.T) {
 		Load: func() (*config.Config, error) { return fix.cfg, nil },
 	})
 	reloader.logger = logger
+	// Run makes the state folders before the first generation; this test builds one without it.
 	reloader.build = builder{data: layout(fix.state), version: "test", logger: logger}
+	if err := reloader.build.data.makeFolders(); err != nil {
+		t.Fatal(err)
+	}
 	reloader.handlers = newLive(&generation{handler: http.NotFoundHandler(), closer: failingCloser{}}, logger)
 	reloader.srv = newServer(reloader.handlers, logger)
 	const removedAddress = "127.0.0.1:1"

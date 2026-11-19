@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -21,6 +22,8 @@ import (
 	"github.com/SpliceFS/common/wire"
 	"github.com/SpliceFS/server/config"
 	"github.com/SpliceFS/server/internal/datadir"
+	"github.com/SpliceFS/server/internal/digestcache"
+	"github.com/SpliceFS/server/internal/filestat"
 	"github.com/SpliceFS/server/internal/porttest"
 	"github.com/SpliceFS/server/share"
 )
@@ -72,7 +75,12 @@ type signedIn struct {
 
 func startSignedIn(t *testing.T) *signedIn {
 	t.Helper()
-	fix := newFixture(t)
+	return signIn(t, newFixture(t))
+}
+
+// signIn starts a server on fix and logs in as alice.
+func signIn(t *testing.T, fix *fixture) *signedIn {
+	t.Helper()
 	srv := start(t, fix)
 	httpClient := client(nil)
 	resp := call(t, httpClient, http.MethodPost, srv.url("/api/v1/login"), "", nil, goodLogin)
@@ -169,6 +177,35 @@ func TestHeadReportsTheDigests(t *testing.T) {
 		if got := resp.Header.Get(name); got != want {
 			t.Errorf("%s = %q, want %q", name, got, want)
 		}
+	}
+}
+
+// An entry in the state folder from before the start is what a request gets: the digests are
+// not read again after a restart.
+func TestPlantedEntryIsServed(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t)
+	planted := digestcache.Digests{Head: strings.Repeat("a", 64), Tail: strings.Repeat("b", 64)}
+	stamp, err := filestat.Stat(filepath.Join(fix.shareDir, "hello.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = os.MkdirAll(fix.data.digestsDir, 0o700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := digestcache.Open(fix.data.digestsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = errors.Join(store.Save("media", "hello.bin", stamp, planted), store.Close())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := signIn(t, fix).request(t, http.MethodHead, "/v1/file/media/hello.bin", nil)
+	head, tail := resp.Header.Get(wire.HeaderHeadDigest), resp.Header.Get(wire.HeaderTailDigest)
+	if head != planted.Head || tail != planted.Tail {
+		t.Errorf("digests = %q, %q, want the planted entry", head, tail)
 	}
 }
 
@@ -415,6 +452,13 @@ func TestRunFailsAtStart(t *testing.T) {
 		{"certificate is missing", func(fix *fixture) {
 			fix.cfg.Listen[0] = configEndpoint(&config.TLS{CertFile: missing, KeyFile: missing}, false)
 		}, "load certificate"},
+		{"digest folder cannot be written", func(fix *fixture) {
+			err := errors.Join(os.MkdirAll(fix.data.digestsDir, 0o700), os.Chmod(fix.data.digestsDir, 0o500))
+			// The folder stays empty, so the test can remove it whatever its mode.
+			if err != nil {
+				t.Fatal(err)
+			}
+		}, "digest"},
 		{"own certificate cannot be made", func(fix *fixture) {
 			write(t, fix.state, "local/tls", "a file where a folder belongs")
 			fix.cfg.Listen[0] = configEndpoint(nil, false)

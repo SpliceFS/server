@@ -20,7 +20,7 @@ import (
 // "local" is for this machine only; "shared" may be copied between servers by any sync tool,
 // which is why every file in it has exactly one writer.
 type dataPaths struct {
-	nodeIDFile, usersDir, keysDir, nodesDir string
+	nodeIDFile, digestsDir, usersDir, keysDir, nodesDir string
 	// folders lists every folder the server makes, parents first, with its mode.
 	folders []folder
 }
@@ -48,6 +48,7 @@ func layout(stateDir string) dataPaths {
 	shared := filepath.Join(stateDir, "shared")
 	paths := dataPaths{
 		nodeIDFile: filepath.Join(local, "node-id"),
+		digestsDir: filepath.Join(local, "digests"),
 		usersDir:   filepath.Join(shared, "users"),
 		keysDir:    filepath.Join(shared, "keys"),
 		nodesDir:   filepath.Join(shared, "nodes"),
@@ -55,6 +56,7 @@ func layout(stateDir string) dataPaths {
 	paths.folders = []folder{
 		{stateDir, 0o750},
 		{local, 0o700},
+		{paths.digestsDir, 0o700},
 		{shared, 0o750},
 		{paths.usersDir, 0o750},
 		{paths.keysDir, 0o700},
