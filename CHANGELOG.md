@@ -6,6 +6,10 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.42] - 2026-11-19
+
+- Internal: the start tests wait for the server to stop before they clean up.
+
 ## [0.5.41] - 2026-11-19
 
 - Internal: every workflow job has a time limit.

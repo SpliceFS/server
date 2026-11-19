@@ -356,13 +356,12 @@ func assertNotListening(t *testing.T, events *eventLog) {
 
 // running is a server started with Run.
 type running struct {
-	addrs  []string // where the listeners of the configuration are, in its order
-	events *eventLog
-	cancel context.CancelFunc
-	done   chan error
-	logs   *syncBuffer
-	once   sync.Once
-	err    error
+	addrs   []string // where the listeners of the configuration are, in its order
+	events  *eventLog
+	cancel  context.CancelFunc
+	stopped chan struct{} // closed when Run has returned; err is then what it returned
+	logs    *syncBuffer
+	err     error
 }
 
 // start runs the server and waits until it is serving. The server is stopped when the test
@@ -389,36 +388,38 @@ func startWith(t *testing.T, fix *fixture, adjust func(*Options)) *running {
 func tryStart(t *testing.T, fix *fixture, adjust func(*Options)) (*running, error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &running{cancel: cancel, done: make(chan error, 1), logs: newSyncBuffer()}
+	r := &running{cancel: cancel, stopped: make(chan struct{}), logs: newSyncBuffer()}
 	r.events = newEventLog(slog.NewTextHandler(r.logs, nil))
 	opts := Options{Version: "test", Logger: slog.New(r.events)}
 	if adjust != nil {
 		adjust(&opts)
 	}
-	go func() { r.done <- Run(ctx, fix.cfg, fix.state, opts) }()
+	go func() {
+		defer close(r.stopped)
+		r.err = Run(ctx, fix.cfg, fix.state, opts)
+	}()
+	// Run writes into the state folder of the test until it returns, also after a start that
+	// failed by the time limit. Cleanups run last in first out and the folder was made
+	// before this one is registered, so it is removed only after Run has returned.
+	t.Cleanup(r.stopForCleanup)
 	for range fix.cfg.Listen {
 		select {
 		case address := <-r.events.listening:
 			r.addrs = append(r.addrs, address)
-		case err := <-r.done:
-			cancel()
-			return nil, fmt.Errorf("run returned before every listener was serving: %w", err)
+		case <-r.stopped:
+			return nil, fmt.Errorf("run returned before every listener was serving: %w", r.err)
 		case <-time.After(testTimeout):
-			cancel()
 			t.Fatalf("not every listener is serving in time:\n%s", r.logs)
 		}
 	}
-	t.Cleanup(func() { r.stopForCleanup() })
 	return r, nil
 }
 
 // stop cancels the server, waits for Run and returns what it returned. It can be called
 // more than once.
 func (r *running) stop() error {
-	r.once.Do(func() {
-		r.cancel()
-		r.err = <-r.done
-	})
+	r.cancel()
+	<-r.stopped
 	return r.err
 }
 
