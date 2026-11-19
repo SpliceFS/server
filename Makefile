@@ -45,7 +45,7 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 
 .PHONY: script-modes all build check check-in-images fmt fmt-check vet cover lint \
 	freebsd-lib-test version-test part-test build-all-test fuzz-test release-assets \
-	client-compat-test clean archives archive-programs-test release-assets-test
+	client-compat-test clean archives archive-programs-test release-assets-test workflow-timeout-test
 
 all: check build
 
@@ -90,7 +90,7 @@ unit: | $(CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
 unit-here: cover freebsd-lib-test version-test part-test build-all-test \
-	archive-programs-test release-assets-test fuzz-test client-compat-test
+	archive-programs-test release-assets-test fuzz-test client-compat-test workflow-timeout-test
 
 # The same tests with the race detector, which makes them several times slower.
 race: | $(CACHE_DIRS)
@@ -279,6 +279,11 @@ release-assets:
 
 client-compat-test:
 	scripts/client-compat-test.sh
+
+# Every job of the workflows that runs on a runner has a time limit, so that a hang fails in
+# minutes and not after the 6 hours GitHub allows by default. Needs no Docker.
+workflow-timeout-test:
+	scripts/workflow-timeout-test.sh
 
 clean:
 	rm -rf bin dist coverage.out coverage.html

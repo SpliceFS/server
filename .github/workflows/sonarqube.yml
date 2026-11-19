@@ -1,4 +1,5 @@
 name: SonarQube
+# Every job has a time limit: 3 times its longest run, so a hang fails in minutes.
 
 # Code quality and security rating on SonarQube Cloud. The job does nothing until the
 # repository secret SONAR_TOKEN exists; see CONTRIBUTING.md for the one-time setup.
@@ -16,6 +17,7 @@ jobs:
   scan:
     name: Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:

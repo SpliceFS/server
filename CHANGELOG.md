@@ -10,6 +10,10 @@ The change log of all parts of SpliceFS, side by side: https://splicefs.org/chan
 
 - Internal: the start tests wait for the server to stop before they clean up.
 
+## [0.5.41] - 2026-11-19
+
+- Internal: every workflow job has a time limit.
+
 ## [0.5.40] - 2026-11-19
 
 - Internal: packaging lives only in the packages repository.
