@@ -179,8 +179,8 @@ cover:
 # to the targets of one package, FUZZ_TARGET=package:Target to one target; both can be given.
 # make -s fuzz-targets prints the targets as package:Target lines and make -s fuzz-packages the
 # packages that have any. They are found in the code, so a new Fuzz function needs no edit
-# here. CI starts one job for each package, with the same command. A failing input is written
-# to testdata/fuzz in the package's folder.
+# here. The Fuzz workflow starts one job for each package every day, with the same command. A
+# failing input is written to testdata/fuzz in the package's folder.
 FUZZTIME ?= 10s
 FUZZ_PACKAGE ?=
 FUZZ_TARGET ?=
