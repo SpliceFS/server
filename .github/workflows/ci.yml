@@ -259,6 +259,7 @@ jobs:
       - packages
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Every job succeeded
         env:
