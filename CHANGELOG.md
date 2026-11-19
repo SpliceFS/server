@@ -6,6 +6,10 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.47] - 2026-11-19
+
+- Internal: the server's pull requests no longer run the cross-repo integration jobs.
+
 ## [0.5.46] - 2026-11-19
 
 - Internal: the server serves the API of the common library.

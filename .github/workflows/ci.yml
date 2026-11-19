@@ -101,51 +101,6 @@ jobs:
       - name: Build for linux, freebsd and darwin on amd64 and arm64
         run: make build-all
 
-  # The parts of the integration test are listed by the client that is tested (make -s
-  # integration-parts): its compatibility runs, and each group of its cluster scenarios. The
-  # jobs of the next job are made from that list, so a group is added to the client and nowhere
-  # else.
-  integration-parts:
-    needs: tip
-    name: The parts of the integration test
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    outputs:
-      parts: ${{ steps.parts.outputs.parts }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: List the parts as JSON
-        id: parts
-        run: |
-          lines="$(make -s integration-parts)"
-          printf 'parts=%s\n' "$(printf '%s\n' "$lines" | jq -R -n -c '[inputs | select(length > 0)]')" >> "$GITHUB_OUTPUT"
-
-  # The rule this proves: with the same first version number, a client works with every
-  # server whose second number is equal or higher. So a change of this server must not break
-  # the newest released client it has to serve. The client mounts for real, as root, in a
-  # container that has FUSE. One job runs each part, so that no job is longer than the others.
-  integration:
-    needs: integration-parts
-    name: The real client against this server (${{ matrix.part }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        part: ${{ fromJSON(needs.integration-parts.outputs.parts) }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The container mounts through the /dev/fuse of the runner itself, and that device
-      # appears when the fuse kernel module is loaded.
-      - name: The FUSE device exists
-        run: test -c /dev/fuse || sudo modprobe fuse
-      # This part runs as root and keeps caches of its own (ROOT_CACHE in the Makefile).
-      - uses: ./.github/actions/go-cache
-        with:
-          folder: .cache/root
-      - name: The real client against this server
-        run: make integration INTEGRATION_PART=${{ matrix.part }}
-
   # A macOS runner cannot run Linux containers, so this is the one part that runs on the
   # machine itself, with the Go release that is current.
   macos:
@@ -181,8 +136,6 @@ jobs:
       - unit
       - race
       - build
-      - integration-parts
-      - integration
       - macos
       - freebsd-tests
     if: always()

@@ -22,13 +22,12 @@ of ghcr.io/splicefs, as your own user, and keeps the Go caches in `./.cache`.
 make build        # build splicefsd and splicefsdctl into ./bin
 make check        # with the tools installed: format check, vet, module files tidy, both linters, tests with the coverage gate, tests with the race detector
 make check-in-images # the same in our images (Docker); prints how long each part took
-make integration  # runs the newest released client against this server (Docker; make compat on Linux as root); INTEGRATION_PART=compat or a group of the client's cluster scenarios runs one part of it, and make -s integration-parts lists the parts
 make lint         # golangci-lint (the configuration CI uses), then ShellCheck with every optional check on
 make fmt          # rewrite files with gofmt
 ```
 
-The parts of a build are make targets: `make static`, `make unit`, `make race`, `make build-all`,
-and `make integration`. Each runs in an image of ghcr.io/splicefs and prints `part NAME: Ns` when
+The parts of a build are make targets: `make static`, `make unit`, `make race` and `make build-all`.
+Each runs in an image of ghcr.io/splicefs and prints `part NAME: Ns` when
 it ends; `make build-all` leaves the programs in `./dist/bin`, which the release archives read.
 
 Packages (deb, rpm, Alpine and FreeBSD) are built, tested and published in
@@ -150,7 +149,7 @@ A pull request merges with one merge commit. Squash and fast-forward merges are 
 
 | Workflow | What it does |
 |---|---|
-| CI | every part of a build as a job of its own, all at once: static checks (format, vet, module files, ShellCheck, and `golangci-lint` with the `gosec` security rules for each system), unit tests with the 100% coverage gate, tests with the race detector, the build for every system, the real client against this server, macOS, and FreeBSD. The job "All checks" needs all of them and is the one check a pull request must pass. |
+| CI | every part of a build as a job of its own, all at once: static checks (format, vet, module files, ShellCheck, and `golangci-lint` with the `gosec` security rules for each system), unit tests with the 100% coverage gate, tests with the race detector, the build for every system, macOS, and FreeBSD. The job "All checks" needs all of them and is the one check a pull request must pass. |
 | Daily | every day on `main`, and on request: every fuzz target, one job for each package, and the FreeBSD tests, which keep the Go cache warm for pull requests. A failure opens an issue. |
 | Rules | on pull requests: checks the `change_scope` line and the `VERSION` file the bot sets |
 | Main | on every push to `main`: tags the new version and rebuilds the open pull requests |

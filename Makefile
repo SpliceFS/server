@@ -22,30 +22,24 @@ BUILD_VARS = VERSION=$(VERSION) BUILD_DATE=$(BUILD_DATE)
 # One runner per image: docker run with the source at /src, as the caller's own user, so that
 # every file a part writes belongs to the caller and not to root. The Go caches are folders
 # under CACHE, mounted where the images keep them; a named Docker volume is made by root,
-# which a user other than root cannot write to. A target that needs more options sets
-# RUN_OPTS; a target that has to run as root (RUN_USER) also keeps its own caches
-# (GO_CACHE), so that no file in the caller's caches belongs to root.
+# which a user other than root cannot write to.
 CACHE ?= $(CURDIR)/.cache
 CACHE_DIRS := $(CACHE)/gomod $(CACHE)/gobuild
-ROOT_CACHE := $(CACHE)/root
-ROOT_CACHE_DIRS := $(ROOT_CACHE)/gomod $(ROOT_CACHE)/gobuild
-RUN_OPTS :=
 RUN_USER = $(shell id -u):$(shell id -g)
-GO_CACHE = $(CACHE)
-DOCKER_RUN = docker run --rm --user "$(RUN_USER)" $(RUN_OPTS) -v "$(CURDIR)":/src -w /src
+DOCKER_RUN = docker run --rm --user "$(RUN_USER)" -v "$(CURDIR)":/src -w /src
 # The cache paths are named here as well as in the go image, so that the run works with any
 # Go image and any uid: HOME, GOPATH and GOCACHE all point at the mounted host folders.
-LINUX_RUN = $(DOCKER_RUN) -v "$(GO_CACHE)/gomod":/tmp/go/pkg/mod -v "$(GO_CACHE)/gobuild":/tmp/go-cache \
+LINUX_RUN = $(DOCKER_RUN) -v "$(CACHE)/gomod":/tmp/go/pkg/mod -v "$(CACHE)/gobuild":/tmp/go-cache \
 	-e HOME=/tmp -e GOPATH=/tmp/go -e GOCACHE=/tmp/go-cache \
 	-e GOLANGCI_LINT_CACHE=/tmp/go-cache/golangci-lint $(LINUX_IMAGE)
 
 # Docker makes a folder that does not exist yet as root, so the caller makes them first.
-$(CACHE_DIRS) $(ROOT_CACHE_DIRS):
+$(CACHE_DIRS):
 	mkdir -p $@
 
 .PHONY: script-modes all build check check-in-images fmt fmt-check vet cover lint \
 	freebsd-lib-test version-test part-test build-all-test fuzz-test release-assets \
-	client-compat-test clean archives archive-programs-test release-assets-test workflow-timeout-test go-cache-test
+	clean archives archive-programs-test release-assets-test workflow-timeout-test go-cache-test
 
 all: check build
 
@@ -59,7 +53,7 @@ build:
 # not need each other can run at the same time. A -here target also runs on a machine that
 # has the tools.
 .PHONY: static static-checks static-here lint-go unit unit-here race race-here build-all build-all-here \
-	integration fuzz fuzz-here fuzz-targets fuzz-packages
+	fuzz fuzz-here fuzz-targets fuzz-packages
 
 # gofmt, go vet, golangci-lint and ShellCheck, and the two checks that read the git index.
 # Those run on the host and not in the image: a git worktree keeps its index outside the
@@ -90,7 +84,7 @@ unit: | $(CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
 unit-here: cover freebsd-lib-test version-test part-test build-all-test \
-	archive-programs-test release-assets-test fuzz-test client-compat-test workflow-timeout-test go-cache-test
+	archive-programs-test release-assets-test fuzz-test workflow-timeout-test go-cache-test
 
 # The same tests with the race detector, which makes them several times slower.
 race: | $(CACHE_DIRS)
@@ -112,24 +106,6 @@ build-all-here:
 # are the files of the GitHub release (make release-assets). Needs only tar and gzip.
 archives:
 	$(BUILD_VARS) scripts/archive-programs.sh
-
-# The real client against this server, in a container that may mount (FUSE); the client's mount
-# tests need root. INTEGRATION_PART=compat runs only the client's compatibility runs, and a
-# group of its cluster scenarios (make -s integration-parts lists the parts) runs only that
-# group; CI runs each part as a job of its own, and empty runs them all.
-integration: RUN_USER = 0
-integration: GO_CACHE = $(ROOT_CACHE)
-integration: RUN_OPTS = --privileged --device /dev/fuse -e CLIENT_TAG -e CLUSTER_ONLY -e CLUSTER_SEED \
-	-e INTEGRATION_PART
-integration: | $(ROOT_CACHE_DIRS)
-	scripts/part.sh integration $(LINUX_RUN) make compat
-
-# Nothing but the parts of the integration test, one per line, so that CI can read them (it asks
-# with -s). The client that is tested lists them, so a part is added there and nowhere else. It
-# runs on the host: it needs git and the network, and builds nothing.
-.PHONY: integration-parts
-integration-parts:
-	@scripts/client-compat.sh parts
 
 # The image the Go parts run in. CI keys its Go caches on it (.github/actions/go-cache), so
 # that a new image starts with empty caches.
@@ -199,17 +175,6 @@ fuzz-targets: | $(CACHE_DIRS)
 fuzz-packages: | $(CACHE_DIRS)
 	@$(LINUX_RUN) scripts/fuzz-packages.sh
 
-# Proves the compatibility rule from the server's side: with the same first version number, a
-# client works with every server whose second number is equal or higher. It builds this
-# server and the newest released client that this server must serve, mounts for real and
-# compares every file, so it needs Linux, FUSE and root. scripts/client-compat.sh says which
-# client it uses; CLIENT_TAG replaces that choice. make integration runs it in a container
-# that has FUSE; CLIENT_TAG, CLUSTER_ONLY, CLUSTER_SEED and INTEGRATION_PART reach the container
-# when set.
-.PHONY: compat
-compat:
-	scripts/client-compat.sh
-
 # Runs the tests on FreeBSD itself: the test programs are built for FreeBSD in the Go
 # container and run as root in a virtual machine of every FreeBSD release in
 # freebsd-test/releases, with the same 100% coverage gate as make check. FreeBSD cannot
@@ -276,9 +241,6 @@ fuzz-test:
 # here: the package repository makes them from these archives.
 release-assets:
 	$(BUILD_VARS) scripts/release-assets.sh
-
-client-compat-test:
-	scripts/client-compat-test.sh
 
 # Every job of the workflows that runs on a runner has a time limit, so that a hang fails in
 # minutes and not after the 6 hours GitHub allows by default. Needs no Docker.

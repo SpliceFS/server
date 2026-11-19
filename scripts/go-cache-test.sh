@@ -39,16 +39,16 @@ if grep -qF "\${{" "$tree/step.sh" || [ ! -s "$tree/step.sh" ]; then
     exit 1
 fi
 
-# $1 the folder input. Prints the file the step wrote its outputs to.
+# Prints what the step wrote to its outputs.
 run_step() {
     : > "$tree/out"
-    PATH="$tree/bin:$PATH" FOLDER="$1" GITHUB_OUTPUT="$tree/out" bash --noprofile --norc -e -o pipefail "$tree/step.sh"
+    PATH="$tree/bin:$PATH" GITHUB_OUTPUT="$tree/out" bash --noprofile --norc -e -o pipefail "$tree/step.sh"
     cat "$tree/out"
 }
 
-# $1 case name, $2 the wanted lines of the output (whole lines, in this order), $3 the folder input.
+# $1 case name, $2 the wanted lines of the output (whole lines, in this order).
 expect() {
-    out="$(run_step "$3")"
+    out="$(run_step)"
     case "
 $out
 " in
@@ -63,9 +63,9 @@ $2
 }
 
 prefix=go-scan-Linux-X64-registry.example/go:v1-
-expect "the prefix names job, system, architecture and image" "prefix=$prefix" .cache
-expect "the key is the prefix and the hash of go.sum" "key=$prefix$hash" .cache
-expect "the paths are the two caches of the folder" "$(printf 'path<<END_OF_PATHS\n.cache/gomod\n.cache/gobuild\nEND_OF_PATHS')" .cache
+expect "the prefix names job, system, architecture and image" "prefix=$prefix"
+expect "the key is the prefix and the hash of go.sum" "key=$prefix$hash"
+expect "the paths are the two caches" "$(printf 'path<<END_OF_PATHS\n.cache/gomod\n.cache/gobuild\nEND_OF_PATHS')"
 
 [ "$failed" -eq 0 ] || { echo "$failed check(s) failed"; exit 1; }
 echo "go-cache checks done"
