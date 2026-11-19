@@ -458,7 +458,10 @@ func TestRunFailsAtStart(t *testing.T) {
 			tt.mutate(fix)
 			givePorts(t, fix)
 			listening := newEventLog(slog.DiscardHandler)
-			err := Run(context.Background(), fix.cfg, fix.state, Options{Logger: slog.New(listening)})
+			// Cancelled, so a start that wrongly works returns at once instead of serving.
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			err := Run(ctx, fix.cfg, fix.state, Options{Logger: slog.New(listening)})
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("Run = %v, want an error containing %q", err, tt.want)
 			}
