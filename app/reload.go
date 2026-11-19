@@ -87,6 +87,11 @@ func (r *runner) reload(ctx context.Context) {
 		r.logger.ErrorContext(ctx, "configuration not applied", slog.Any("error", err))
 		return
 	}
+	err = r.build.heal()
+	if err != nil {
+		r.logger.ErrorContext(ctx, "configuration not applied", slog.Any("error", err))
+		return
+	}
 	changes, err := r.plan(ctx, cfg.Listen)
 	if err != nil {
 		r.logger.ErrorContext(ctx, "configuration not applied", slog.Any("error", err))

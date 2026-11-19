@@ -114,6 +114,15 @@ type builder struct {
 	ownCert certificateSource
 }
 
+// heal makes the state folders that were removed while the server ran, as the start made
+// them, and points the digest store at its folder again.
+func (b *builder) heal() error {
+	if err := b.data.makeFolders(); err != nil {
+		return err
+	}
+	return b.digests.Reopen() //nolint:wrapcheck // the error says it was the digest folder
+}
+
 // generation opens the shares of cfg and builds the handler that serves them.
 func (b *builder) generation(cfg *config.Config) (*generation, error) {
 	shares, err := openShares(cfg, b.digests)

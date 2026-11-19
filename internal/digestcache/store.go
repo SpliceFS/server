@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path"
+	"sync"
 	"sync/atomic"
 	"syscall"
 
@@ -25,12 +26,22 @@ const (
 
 var errNotRegular = errors.New("is not a regular file")
 
+// ErrNotAFolder is the cause of a Reopen that fails because a file sits where a folder goes.
+var ErrNotAFolder = errors.New("is not a folder")
+
 // Store keeps the entries in the digest folder, local/digests of the state folder. Every
 // access goes through an os.Root on that folder, so a link placed inside it cannot send a
 // read or a write elsewhere. A Store is safe for concurrent use.
 type Store struct {
-	root   *os.Root
+	dir string
+	// root is the digest folder that every access goes through. Reopen replaces it.
+	root   atomic.Pointer[os.Root]
 	logger *slog.Logger
+	// mu serializes Reopen and Close, which change retired.
+	mu sync.Mutex
+	// retired are the folders Reopen replaced. A request may still be using one, so they are
+	// closed with the store. There is one for each time the folder was removed.
+	retired []*os.Root
 	// failing is true from a failed Keep to the next one that works. The folder is the node's,
 	// so a full or read-only one is logged once for all shares, not once per share or request.
 	failing atomic.Bool
@@ -44,7 +55,7 @@ func Open(dir string, logger *slog.Logger) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open the digest folder: %w", err)
 	}
-	store, err := start(root, logger)
+	store, err := start(dir, root, logger)
 	if err != nil {
 		return nil, errors.Join(err, root.Close())
 	}
@@ -53,17 +64,67 @@ func Open(dir string, logger *slog.Logger) (*Store, error) {
 
 // Close releases the digest folder. The store must not be used after it.
 func (s *Store) Close() error {
-	return s.root.Close() //nolint:wrapcheck // the caller says it was closing the digest folder
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	errs := make([]error, 0, 1+len(s.retired))
+	errs = append(errs, s.root.Load().Close())
+	for _, root := range s.retired {
+		errs = append(errs, root.Close())
+	}
+	return errors.Join(errs...)
 }
 
-// start starts the store on the digest folder open as root.
-func start(root *os.Root, logger *slog.Logger) (*Store, error) {
+// start starts the store on the digest folder dir, open as root.
+func start(dir string, root *os.Root, logger *slog.Logger) (*Store, error) {
 	// After a successful removal only a folder that cannot be written fails the creation.
 	err := errors.Join(root.RemoveAll(tempFolder), root.Mkdir(tempFolder, folderMode))
 	if err != nil {
 		return nil, fmt.Errorf("empty the temporary folder of the digest entries: %w", err)
 	}
-	return &Store{root: root, logger: logger}, nil
+	store := &Store{dir: dir, logger: logger}
+	store.root.Store(root)
+	return store, nil
+}
+
+// Reopen heals the store after its folders were removed while it ran: it opens the digest
+// folder again when the one at its path is not the one open, and makes the temporary folder
+// when it is missing. What is in the temporary folder stays, since requests may be writing
+// there.
+func (s *Store) Reopen() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	root := s.root.Load()
+	same, err := isFolder(root, s.dir)
+	if err != nil {
+		return err
+	}
+	if !same {
+		root, err = os.OpenRoot(s.dir)
+		if err != nil {
+			return fmt.Errorf("open the digest folder again: %w", err)
+		}
+		s.retired = append(s.retired, s.root.Swap(root))
+	}
+	// It usually exists. Whatever kept it from being made shows in the check after.
+	mkdirErr := root.Mkdir(tempFolder, folderMode)
+	info, err := root.Stat(tempFolder)
+	if err == nil && !info.IsDir() {
+		err = ErrNotAFolder
+	}
+	if err != nil {
+		return fmt.Errorf("make the temporary folder of the digest entries: %w", errors.Join(mkdirErr, err))
+	}
+	return nil
+}
+
+// isFolder reports whether root is the folder at dir. A root whose folder was removed is not.
+func isFolder(root *os.Root, dir string) (bool, error) {
+	want, err := os.Stat(dir)
+	if err != nil {
+		return false, fmt.Errorf("find the digest folder: %w", err)
+	}
+	have, err := root.Stat(".")
+	return err == nil && os.SameFile(have, want), nil
 }
 
 // Load returns the digests of the file at filePath in share, which has stamp now, when its
@@ -97,17 +158,19 @@ func (s *Store) Save(share, filePath string, stamp filestat.Stamp, digests Diges
 		return err
 	}
 	name = share + "/" + name
-	err = s.root.MkdirAll(path.Dir(name), folderMode)
+	// One folder for the whole save, even if Reopen replaces it meanwhile.
+	root := s.root.Load()
+	err = root.MkdirAll(path.Dir(name), folderMode)
 	if err != nil {
 		return fmt.Errorf("make the folder of digest entry %s: %w", name, err)
 	}
 	temp := tempFolder + "/" + rand.Text()
-	err = s.root.WriteFile(temp, newEntry(filePath, stamp, digests).encode(), fileMode)
+	err = root.WriteFile(temp, newEntry(filePath, stamp, digests).encode(), fileMode)
 	if err == nil {
-		err = s.root.Rename(temp, name)
+		err = root.Rename(temp, name)
 	}
 	if err != nil {
-		return fmt.Errorf("save digest entry %s: %w", name, errors.Join(err, s.removeTemp(temp)))
+		return fmt.Errorf("save digest entry %s: %w", name, errors.Join(err, removeTemp(root, temp)))
 	}
 	return nil
 }
@@ -127,8 +190,8 @@ func (s *Store) Keep(share, filePath string, stamp filestat.Stamp, digests Diges
 }
 
 // removeTemp removes the temporary file of a failed save, which a failed creation never made.
-func (s *Store) removeTemp(temp string) error {
-	err := s.root.Remove(temp)
+func removeTemp(root *os.Root, temp string) error {
+	err := root.Remove(temp)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
@@ -138,7 +201,7 @@ func (s *Store) removeTemp(temp string) error {
 // read returns the content of the regular file name. It opens without blocking, because
 // opening a FIFO for reading would otherwise wait for a writer.
 func (s *Store) read(name string) ([]byte, error) {
-	file, err := s.root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	file, err := s.root.Load().OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open digest entry: %w", err)
 	}

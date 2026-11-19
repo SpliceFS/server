@@ -2,6 +2,7 @@ package digestcache
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -354,7 +355,7 @@ func TestStartFailsWithoutFolder(t *testing.T) {
 	if err := os.Remove(dir); err != nil {
 		t.Fatal(err)
 	}
-	if store, err := start(root, slog.New(slog.DiscardHandler)); err == nil || store != nil {
+	if store, err := start(dir, root, slog.New(slog.DiscardHandler)); err == nil || store != nil {
 		t.Errorf("start = %v, %v, want an error", store, err)
 	}
 }
@@ -440,5 +441,92 @@ func TestKeepWarnsOnceUntilASaveWorks(t *testing.T) {
 	store.Keep("a", "f", testStamp(1), testDigests(1))
 	if warnings() != 2 {
 		t.Errorf("%d warnings, want a second one after the save that worked:\n%s", warnings(), log)
+	}
+}
+
+// Reopen finds the digest folder again after it was removed and made again, and makes the
+// temporary folder in it, so saves work again without a restart.
+func TestReopenFindsTheFolderAgain(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store := openStore(t, dir)
+	save(t, store, share, "a", 1)
+	if err := errors.Join(os.RemoveAll(dir), os.Mkdir(dir, folderMode)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Reopen(); err != nil {
+		t.Fatal(err)
+	}
+	checkTempEmpty(t, dir)
+	save(t, store, share, "b", 2)
+	if !load(store, share, "b", 2) || load(store, share, "a", 1) {
+		t.Error("the store does not use the folder made again")
+	}
+}
+
+// Reopen on the folder the store has open keeps what is being written in the temporary
+// folder, since requests may be writing there, and makes that folder if it is missing.
+func TestReopenKeepsTheSameFolder(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store := openStore(t, dir)
+	writing := filepath.Join(dir, tempFolder, "writing")
+	if err := os.WriteFile(writing, nil, fileMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Reopen(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(writing); err != nil {
+		t.Errorf("Reopen removed a file being written: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(dir, tempFolder)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Reopen(); err != nil {
+		t.Fatal(err)
+	}
+	checkTempEmpty(t, dir)
+}
+
+func TestReopenFails(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		breakIt func(t *testing.T, dir string)
+	}{
+		{"the folder is missing", func(t *testing.T, dir string) {
+			t.Helper()
+			if err := os.RemoveAll(dir); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a file is where the temporary folder goes", func(t *testing.T, dir string) {
+			t.Helper()
+			temp := filepath.Join(dir, tempFolder)
+			if err := errors.Join(os.RemoveAll(temp), os.WriteFile(temp, nil, fileMode)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a file is where the folder was", func(t *testing.T, dir string) {
+			t.Helper()
+			if err := errors.Join(os.RemoveAll(dir), os.WriteFile(dir, nil, fileMode)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := filepath.Join(t.TempDir(), "digests")
+			if err := os.Mkdir(dir, folderMode); err != nil {
+				t.Fatal(err)
+			}
+			store := openStore(t, dir)
+			tt.breakIt(t, dir)
+			if err := store.Reopen(); err == nil {
+				t.Error("Reopen = nil, want an error")
+			}
+		})
 	}
 }

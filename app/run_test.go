@@ -81,7 +81,12 @@ func startSignedIn(t *testing.T) *signedIn {
 // signIn starts a server on fix and logs in as alice.
 func signIn(t *testing.T, fix *fixture) *signedIn {
 	t.Helper()
-	srv := start(t, fix)
+	return logIn(t, fix, start(t, fix))
+}
+
+// logIn logs in as alice on srv, which serves fix.
+func logIn(t *testing.T, fix *fixture, srv *running) *signedIn {
+	t.Helper()
 	httpClient := client(nil)
 	resp := call(t, httpClient, http.MethodPost, srv.url("/api/v1/login"), "", nil, goodLogin)
 	var login wire.LoginResponse
