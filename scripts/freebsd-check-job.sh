@@ -31,7 +31,7 @@ failed=""
 while read -r name rel <&3; do
     if [ -n "$only" ] && [ "$only" != "$rel" ]; then continue; fi
     echo "=== $rel"
-    if (cd "$rel" && "$work/tests/$name.test" -test.coverprofile="$out/cover/$name.out" -test.timeout=10m); then
+    if (cd "$rel" && "$work/tests/$name.test" -test.coverprofile="$out/cover/$name.out" -test.v -test.timeout=3m); then
         :
     else
         failed="$failed $rel"
