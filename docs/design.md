@@ -111,13 +111,20 @@ Each name in `<path>` is escaped before it becomes a file or folder name:
    is valid UTF-8, which macOS requires.
 3. In a name that ends in `.splicefs_state`, that last `.` becomes `%2E`.
 4. A name whose escaped form plus `.splicefs_state` would be longer than 255 bytes becomes
-   `%_` and the hex SHA-256 of the original name. `%_` cannot come from rules 1 to 3.
+   `%_` and the hex SHA-256 of the original name. `%_` cannot come from rules 1 to 3. The rule
+   applies to every name in the path, folders too, with the length of the suffix counted
+   even where no suffix follows.
 
 Rule 3 keeps the two kinds of names apart: an entry always ends in `.splicefs_state` and a
 folder never does, so a file `a` next to a folder `a.splicefs_state` gets two separate places.
 Rules 1 to 3 can be undone, so two different paths never share an entry; rule 4 and file
 systems that fold case or Unicode forms could still bring two paths to one file, which is why
 the entry also holds the path (below).
+
+`<path>` must be clean: names separated by single slashes, none empty, `.` or `..`, no slash
+at the start or the end. Any other path is refused and has no entry, so no entry lands outside
+the folder of its share and no file has two entries. Invalid UTF-8 is not a reason to refuse,
+as rule 2 handles it.
 
 The share root is a folder and has no digests, so it has no entry. A path that is not inside
 the share, is hidden by the share's rules, or is too young for `min_age` gets `404` before the
@@ -138,13 +145,18 @@ head: <64 hex digits>
 tail: <64 hex digits>
 ```
 
-`version` changes whenever what an entry means changes, for example the 64 KiB of the
-digests; an entry of another version is stale.
+`version` is a constant of the server, not a field a caller sets: the server writes it into
+every entry and accepts only an entry that has it. It changes whenever what an entry means
+changes, for example the 64 KiB of the digests; an entry of another version is stale. An entry
+is accepted only in exactly the form the server writes, byte for byte, so a number with a
+fraction or out of range, an unknown or missing field, a digest in upper case or a second YAML
+document makes it invalid.
 
 **Use.** A `HEAD` request resolves and opens the file, takes the stamp, then asks the
 in-memory cache and, if that misses, the entry. An entry is used only when `version`, `path`
 and every stamp field (size, modification, change and creation time, inode) are equal to what
-was just read. Anything else is a miss.
+was just read; `path` is compared in its escaped form, as the entry stores it. Anything else is
+a miss.
 
 **Write.** On a miss the server reads the two 64 KiB ranges from the open file, takes the
 stamp again, and stores the entry only if the two stamps are equal, so an entry never pairs a
@@ -156,7 +168,8 @@ flushed to disk: a lost entry costs one recompute. All access to `local/digests/
 an `os.Root` on that folder, so a link placed inside it cannot send a write elsewhere.
 
 **Failures.** An entry that is missing, unreadable, not a regular file, not valid YAML, of
-another version or with a malformed field is a miss: the digests are computed and the entry is
+another version, with a malformed field or in any form other than the one the server writes
+is a miss: the digests are computed and the entry is
 replaced. A failed write (full disk, no inodes left, read-only folder) never fails the request;
 it is logged once as a warning, and again only after a write has succeeded in between.
 
