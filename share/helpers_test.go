@@ -22,34 +22,34 @@ type fixture struct {
 	root string
 }
 
-func newFixture(t *testing.T) fixture {
-	t.Helper()
-	base, err := filepath.EvalSymlinks(t.TempDir())
+func newFixture(tb testing.TB) fixture {
+	tb.Helper()
+	base, err := filepath.EvalSymlinks(tb.TempDir())
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	fix := fixture{base: base, root: filepath.Join(base, "share")}
 	if err := os.Mkdir(fix.root, 0o755); err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(base, "secret.txt"), []byte("SECRET"), 0o644); err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	return fix
 }
 
 // write creates a file below the share root with the given modification time.
-func (fix fixture) write(t *testing.T, rel, content string, mtime time.Time) {
-	t.Helper()
+func (fix fixture) write(tb testing.TB, rel, content string, mtime time.Time) {
+	tb.Helper()
 	full := filepath.Join(fix.root, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	if err := os.Chtimes(full, mtime, mtime); err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 }
 
@@ -80,8 +80,8 @@ func (fix fixture) writeOutside(t *testing.T, rel, content string) {
 
 // open opens a share over the fixture root with a fixed clock. It takes the options
 // by pointer and does not change them.
-func (fix fixture) open(t *testing.T, opts *Options) *Share {
-	t.Helper()
+func (fix fixture) open(tb testing.TB, opts *Options) *Share {
+	tb.Helper()
 	options := *opts
 	options.Name = "test"
 	options.Path = fix.root
@@ -90,9 +90,9 @@ func (fix fixture) open(t *testing.T, opts *Options) *Share {
 	}
 	share, err := Open(options)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
-	t.Cleanup(func() { mustClose(t, share) })
+	tb.Cleanup(func() { mustClose(tb, share) })
 	return share
 }
 
@@ -187,10 +187,15 @@ func mustRemove(t *testing.T, path string) {
 	}
 }
 
-// openCounter counts how many files a share opens, so a test can tell a read from a cache hit.
-type openCounter struct{ opens int }
+// readCounter counts how many times a share reads the digests of a file, so a test can tell
+// a read from a cache hit.
+type readCounter struct{ reads int }
 
-// attach makes share report every open to the counter.
-func (counter *openCounter) attach(share *Share) {
-	share.beforeOpen = func(string) { counter.opens++ }
+// attach makes share report every read of digests to the counter.
+func (counter *readCounter) attach(share *Share) {
+	read := share.computeDigests
+	share.computeDigests = func(r io.ReaderAt, size int64) (FileDigests, error) {
+		counter.reads++
+		return read(r, size)
+	}
 }
