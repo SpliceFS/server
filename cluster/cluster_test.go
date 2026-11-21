@@ -51,6 +51,17 @@ func listed(n int, name, url string) wire.Node {
 	return node
 }
 
+// keyLines is the id and key lines of a node file; a field that is empty is left out.
+func keyLines(id, sign, encrypt string) string {
+	var lines strings.Builder
+	for _, field := range []struct{ name, value string }{{"id", id}, {"sign_key", sign}, {"encrypt_key", encrypt}} {
+		if field.value != "" {
+			lines.WriteString(field.name + ": " + field.value + "\n")
+		}
+	}
+	return lines.String()
+}
+
 // announcedContent is the content of the node file that Announce writes for node number n
 // and the node self.
 func announcedContent(n int, self wire.Node) string {
@@ -346,6 +357,22 @@ func TestAnnounceThenLoad(t *testing.T) {
 	}
 }
 
+func TestLoaderListsTheIDAndKeysOfAFullFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// The first node runs an older version and leaves out the id and the keys.
+	put(t, dir, nodeFile(1), nodeContent("old", "https://old.example.com"), 0)
+	put(t, dir, nodeFile(2), nodeContent("new", "https://new.example.com")+keyLines(nodeID(2), signKey, encryptKey), 0)
+	log, buf := testLog()
+
+	checkNodes(t, load(t, NewLoader(dir, log)), []wire.Node{
+		listed(2, "new", "https://new.example.com"), {Name: "old", URL: "https://old.example.com"},
+	})
+	if buf.Len() != 0 {
+		t.Errorf("unexpected log output: %s", buf)
+	}
+}
+
 func TestLoaderURLForms(t *testing.T) {
 	t.Parallel()
 	tests := []struct{ in, want string }{
@@ -372,6 +399,17 @@ func TestLoaderIgnoresInvalidFile(t *testing.T) {
 	badFile := nodeFile(9)
 	withURL := func(u string) string { return nodeContent("a", u) }
 	withName := func(n string) string { return nodeContent(n, okURL) }
+	withKeys := func(id, sign, encrypt string) string { return withURL(okURL) + keyLines(id, sign, encrypt) }
+	const allSet, onlySome = "must be the node id in the file name", "must be all set or all left out"
+	const notKey = "must be the base64 of 32 bytes"
+	short, long := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 31)), key(1)+"AAAA"
+	urlSafe := base64.URLEncoding.EncodeToString(bytes.Repeat([]byte{0xfb}, 32))
+	// The last character of a key of 32 bytes carries 4 bits, so a last character with other
+	// bits is a second spelling of the same key.
+	strayBits := strings.TrimSuffix(signKey, "E=") + "F="
+	unpadded := strings.TrimSuffix(encryptKey, "=")
+	// The decoder skips a line break, which YAML writes in a double quoted text as \n.
+	lineBreak := `"` + signKey[:20] + `\n` + signKey[20:] + `"`
 	tests := []struct {
 		name    string
 		file    string
@@ -399,6 +437,21 @@ func TestLoaderIgnoresInvalidFile(t *testing.T) {
 		{"ftp url", badFile, withURL("ftp://a.example.com"), "absolute http or https URL"},
 		{"no host", badFile, withURL("http:///api"), "no host"},
 		{"port without host", badFile, withURL("http://:8480/api"), "no host"},
+		{"id differs from the file name", badFile, withKeys(nodeID(2), signKey, encryptKey), allSet},
+		{"id is not an id", badFile, withKeys("abc", signKey, encryptKey), allSet},
+		{"id in upper case", nodeFile(0xe9), withKeys(strings.ToUpper(nodeID(0xe9)), signKey, encryptKey), allSet},
+		{"id and no keys", badFile, withKeys(nodeID(9), "", ""), onlySome},
+		{"keys and no id", badFile, withKeys("", signKey, encryptKey), onlySome},
+		{"no signing key", badFile, withKeys(nodeID(9), "", encryptKey), onlySome},
+		{"no encryption key", badFile, withKeys(nodeID(9), signKey, ""), onlySome},
+		{"empty keys and an id", badFile, withKeys(nodeID(9), "''", "''"), onlySome},
+		{"signing key is not base64", badFile, withKeys(nodeID(9), "not base64!", encryptKey), "sign_key " + notKey},
+		{"signing key is short", badFile, withKeys(nodeID(9), short, encryptKey), "sign_key " + notKey},
+		{"encryption key is long", badFile, withKeys(nodeID(9), signKey, long), "encrypt_key " + notKey},
+		{"encryption key without padding", badFile, withKeys(nodeID(9), signKey, unpadded), "encrypt_key " + notKey},
+		{"key in the URL alphabet", badFile, withKeys(nodeID(9), urlSafe, encryptKey), "sign_key " + notKey},
+		{"key with stray bits", badFile, withKeys(nodeID(9), strayBits, encryptKey), "sign_key " + notKey},
+		{"key with a line break", badFile, withKeys(nodeID(9), lineBreak, encryptKey), "sign_key " + notKey},
 		{"query", badFile, withURL(okURL + "/api?x=1"), "query or a fragment"},
 		{"empty query", badFile, withURL(okURL + "/api?"), "query or a fragment"},
 		{"fragment", badFile, withURL(okURL + "/api#top"), "query or a fragment"},

@@ -5,6 +5,7 @@ package cluster
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -35,7 +36,13 @@ var (
 	errURLNotHTTP  = errors.New("must be an absolute http or https URL")
 	errURLNoHost   = errors.New("has no host")
 	errURLExtra    = errors.New("must not have a query or a fragment")
+	errIDName      = errors.New("must be the node id in the file name")
+	errKeysPartial = errors.New("id, sign_key and encrypt_key must be all set or all left out")
+	errKeyForm     = errors.New("must be the base64 of 32 bytes")
 )
+
+// keySize is the size in bytes of a public key, Ed25519 and X25519 alike.
+const keySize = 32
 
 // announcementMode lets every user on the machine and every sync tool read the file: it holds
 // only what clients are told anyway.
@@ -117,7 +124,8 @@ func (l *Loader) merge(entries []datadir.Entry[wire.Node]) []wire.Node {
 // parseNode validates one node file. The name of the file must be a node id, so a stray
 // file never adds a node.
 func parseNode(name string, data []byte) (wire.Node, error) {
-	if _, ok := datadir.NodeOfFile(name); !ok {
+	fileID, ok := datadir.NodeOfFile(name)
+	if !ok {
 		return wire.Node{}, errNotNodeFile
 	}
 	var node wire.Node
@@ -134,7 +142,50 @@ func parseNode(name string, data []byte) (wire.Node, error) {
 		return wire.Node{}, fmt.Errorf("url: %w", err)
 	}
 	node.URL = cleaned
+	if err := checkKeys(fileID, node); err != nil {
+		return wire.Node{}, err
+	}
 	return node, nil
+}
+
+// checkKeys checks the id and the public keys of a node whose file is named for fileID. A file
+// without any of the three is from a node that runs an older version and is accepted; a file
+// with only some of them is wrong, because a client that sees an id expects the keys that
+// go with it.
+func checkKeys(fileID string, node wire.Node) error {
+	set := 0
+	for _, field := range []string{node.ID, node.SignKey, node.EncryptKey} {
+		if field != "" {
+			set++
+		}
+	}
+	switch {
+	case set == 0:
+		return nil
+	case set < 3: //nolint:mnd // an id and two keys
+		return errKeysPartial
+	case node.ID != fileID:
+		return fmt.Errorf("id %q %w", node.ID, errIDName)
+	}
+	if err := checkKey(node.SignKey); err != nil {
+		return fmt.Errorf("sign_key %w", err)
+	}
+	if err := checkKey(node.EncryptKey); err != nil {
+		return fmt.Errorf("encrypt_key %w", err)
+	}
+	return nil
+}
+
+// checkKey checks that text is the base64 of 32 bytes in the standard alphabet. Encoding the
+// bytes again must give text back: the decoder skips line breaks and ignores the unused bits
+// of the last character, and a key with more than one spelling would look like two keys to a
+// client that compares them as text.
+func checkKey(text string) error {
+	raw, err := base64.StdEncoding.DecodeString(text)
+	if err != nil || len(raw) != keySize || base64.StdEncoding.EncodeToString(raw) != text {
+		return errKeyForm
+	}
+	return nil
 }
 
 // cleanURL checks that raw is an absolute http or https URL with a host and no
