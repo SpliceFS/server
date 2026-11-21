@@ -12,7 +12,6 @@ import (
 
 	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/common/wire"
-	"github.com/SpliceFS/server/internal/datadir"
 	"github.com/SpliceFS/server/internal/uuid7"
 )
 
@@ -106,39 +105,23 @@ func checkFolder(path string) error {
 // is saved but malformed is an error and is never replaced: the id names this node's files
 // in the shared folder, and a new one would orphan them.
 func (d *dataPaths) nodeID(now func() time.Time, random io.Reader) (string, error) {
-	id, err := d.readNodeID()
-	if errors.Is(err, fs.ErrNotExist) {
-		return d.createNodeID(now(), random)
-	}
-	return id, err
+	return localValue[string]{
+		what:  "node id",
+		path:  d.nodeIDFile,
+		mode:  nodeIDMode,
+		parse: parseNodeID,
+		create: func() ([]byte, error) {
+			id, err := uuid7.New(now(), random)
+			return []byte(id + "\n"), err
+		},
+	}.load()
 }
 
-// readNodeID returns the saved id. The error is fs.ErrNotExist when there is none.
-func (d *dataPaths) readNodeID() (string, error) {
-	data, err := os.ReadFile(d.nodeIDFile)
-	if err != nil {
-		return "", fmt.Errorf("read node id file: %w", err)
-	}
+// parseNodeID returns the id that the content of a node id file holds.
+func parseNodeID(data []byte) (string, error) {
 	id := strings.TrimSpace(string(data))
 	if !uuid7.Valid(id) {
-		return "", fmt.Errorf("node id file %s %w", d.nodeIDFile, ErrMalformedNodeID)
-	}
-	return id, nil
-}
-
-// createNodeID makes a new id and saves it. When another start saved its id first, that id
-// is the node's id and the new one is dropped.
-func (d *dataPaths) createNodeID(now time.Time, random io.Reader) (string, error) {
-	id, err := uuid7.New(now, random)
-	if err != nil {
-		return "", fmt.Errorf("make node id: %w", err)
-	}
-	err = datadir.WriteOnce(d.nodeIDFile, []byte(id+"\n"), nodeIDMode)
-	if errors.Is(err, fs.ErrExist) {
-		return d.readNodeID()
-	}
-	if err != nil {
-		return "", fmt.Errorf("write node id file %s: %w", d.nodeIDFile, err)
+		return "", ErrMalformedNodeID
 	}
 	return id, nil
 }
