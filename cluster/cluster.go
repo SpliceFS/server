@@ -54,7 +54,7 @@ const announcementMode = 0o644
 // differs, so that a restart does not make a sync tool copy it again. A node with no URL is
 // not announced, so its file is removed. The directory must exist.
 func Announce(dir, nodeID string, self wire.Node) error {
-	path := filepath.Join(dir, datadir.NodeFile(nodeID))
+	path := filepath.Join(dir, datadir.IDFile(nodeID))
 	if self.URL == "" {
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("remove node file: %w", err)
@@ -124,7 +124,7 @@ func (l *Loader) merge(entries []datadir.Entry[wire.Node]) []wire.Node {
 // parseNode validates one node file. The name of the file must be a node id, so a stray
 // file never adds a node.
 func parseNode(name string, data []byte) (wire.Node, error) {
-	fileID, ok := datadir.NodeOfFile(name)
+	fileID, ok := datadir.IDOfFile(name)
 	if !ok {
 		return wire.Node{}, errNotNodeFile
 	}

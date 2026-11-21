@@ -246,18 +246,18 @@ func TestWriteOnceFailures(t *testing.T) {
 func TestNodeFile(t *testing.T) {
 	t.Parallel()
 	const id = "017f22e2-79b0-7cc3-98c4-dc0c0c07398f"
-	if got := NodeFile(id); got != id+".yaml" {
-		t.Errorf("NodeFile = %q", got)
+	if got := IDFile(id); got != id+".yaml" {
+		t.Errorf("IDFile = %q", got)
 	}
-	if got, ok := NodeOfFile(id + ".yaml"); !ok || got != id {
-		t.Errorf("NodeOfFile = %q, %v", got, ok)
+	if got, ok := IDOfFile(id + ".yaml"); !ok || got != id {
+		t.Errorf("IDOfFile = %q, %v", got, ok)
 	}
 	for _, name := range []string{
 		"x.yaml", id, id + ".yml", ".yaml", strings.ToUpper(id) + ".yaml",
 		"0123456789abcdef.yaml", // the id of the earlier form
 	} {
-		if _, ok := NodeOfFile(name); ok {
-			t.Errorf("NodeOfFile(%q) accepted", name)
+		if _, ok := IDOfFile(name); ok {
+			t.Errorf("IDOfFile(%q) accepted", name)
 		}
 	}
 }
@@ -373,6 +373,62 @@ func TestDirStampHoldsTheIdentityOfTheFile(t *testing.T) {
 			checkNames(t, name, entries, test.want)
 			checkNoLog(t, buf)
 		})
+	}
+}
+
+// A reader that keeps a value between calls compares the stamp of the file with the stamp the
+// value was loaded at, so an entry holds the stamp of the file as Dir last looked at it.
+func TestEntryHoldsTheStampOfItsFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	follower, buf := newTestDir(dir)
+	path := filepath.Join(dir, "a.yaml")
+	stampNow := func() Stamp {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return StampOf(info)
+	}
+	put(t, dir, "a.yaml", "good", 0)
+	first := stampNow()
+	entries, _ := follower.Refresh()
+	if len(entries) != 1 || entries[0].Stamp != first {
+		t.Fatalf("entries = %+v, want the stamp %+v", entries, first)
+	}
+	// A bad write keeps the last good value; the stamp is that of the bad file, which is the
+	// file Dir has looked at, so it is not read again until it changes.
+	put(t, dir, "a.yaml", "bad", time.Second)
+	second := stampNow()
+	entries, _ = follower.Refresh()
+	if second == first || entries[0].Value != "good" || entries[0].Stamp != second {
+		t.Errorf("after a bad write: %+v, want the value good with the stamp %+v", entries, second)
+	}
+	checkNames(t, "bad", entries, "a.yaml=good")
+	if got := strings.Count(buf.String(), "a.yaml"); got != 1 {
+		t.Errorf("the bad file was warned about %d times, want once", got)
+	}
+}
+
+func TestStampOfTellsVersionsOfAFileApart(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.yaml")
+	stampOfFile := func() Stamp {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return StampOf(info)
+	}
+	put(t, dir, "a.yaml", "one", 0)
+	first := stampOfFile()
+	if again := stampOfFile(); again != first {
+		t.Errorf("the same file has two stamps: %+v and %+v", first, again)
+	}
+	put(t, dir, "a.yaml", "two", time.Second)
+	if changed := stampOfFile(); changed == first {
+		t.Errorf("a changed file has the stamp %+v again", first)
 	}
 }
 

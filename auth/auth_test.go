@@ -3,6 +3,10 @@ package auth
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -27,10 +31,10 @@ type authFixture struct {
 func newAuthFixture(t *testing.T, limit int) *authFixture {
 	t.Helper()
 	fixture := &authFixture{usersDir: t.TempDir(), clock: newFakeClock(), result: true}
-	writeFile(t, fixture.usersDir, "alice.yaml", "password_hash: alice-hash\nshares: [media]\n")
-	writeFile(t, fixture.usersDir, "dave.yaml", "password_hash: dave-hash\nshares: [media]\ndisabled: true\n")
+	writeUser(t, fixture.usersDir, aliceID, "name: alice\npassword_hash: alice-hash\nshares: [media]\n")
+	writeUser(t, fixture.usersDir, daveID, "name: dave\npassword_hash: dave-hash\nshares: [media]\ndisabled: true\n")
 	fixture.auth = New(
-		NewUsers(fixture.usersDir),
+		newUsersAt(fixture.usersDir, fixture.clock),
 		newTestTokens(stubNodes{}, fixture.clock),
 		NewLimiter(limit, time.Minute, fixture.clock.Now),
 		4,
@@ -68,8 +72,139 @@ func TestLoginSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claims.User != "alice" || !claims.Allows("media") || claims.Allows("docs") {
-		t.Errorf("claims = %+v", claims)
+	if claims.User != "alice" || !claims.Allows("media") || claims.Allows("docs") || !claims.Expires.Equal(expires) {
+		t.Errorf("claims = %+v, want alice, the share media and the expiry %v", claims, expires)
+	}
+}
+
+// The token names the user by id and carries no shares: what the user may do is read from the
+// state of the user.
+func TestLoginTokenCarriesTheUserIDAndNoShares(t *testing.T) {
+	t.Parallel()
+	fixture := newAuthFixture(t, 10)
+	token, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "alice", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := decodeSegment(strings.Split(token, ".")[1], &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["sub"] != aliceID || len(payload) != 3 || payload["iat"] == nil || payload["exp"] == nil {
+		t.Errorf("payload = %v, want sub, iat and exp, with the id of alice as sub", payload)
+	}
+}
+
+// loginAlice logs alice in and returns her token.
+func (fixture *authFixture) loginAlice(t *testing.T) string {
+	t.Helper()
+	token, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "alice", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
+func TestVerifyTakesTheSharesFromTheStateOfTheUser(t *testing.T) {
+	t.Parallel()
+	fixture := newAuthFixture(t, 10)
+	token := fixture.loginAlice(t)
+	writeUser(t, fixture.usersDir, aliceID, "name: alice\npassword_hash: alice-hash\nshares: [docs, music]\n")
+
+	fixture.clock.Advance(RecheckInterval - time.Second)
+	if claims, err := fixture.auth.Verify(token); err != nil || !claims.Allows("media") {
+		t.Errorf("inside the interval: %+v, %v, want the shares as they were", claims, err)
+	}
+	fixture.clock.Advance(time.Second)
+	claims, err := fixture.auth.Verify(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.Allows("media") || !claims.Allows("docs") || !claims.Allows("music") {
+		t.Errorf("after the interval: shares of %+v, want docs and music", claims)
+	}
+}
+
+func TestVerifyRefusesTheTokenOfAUserWhoIsGoneOrDisabled(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		change func(t *testing.T, fixture *authFixture)
+	}{
+		{"disabled", func(t *testing.T, fixture *authFixture) {
+			t.Helper()
+			writeUser(t, fixture.usersDir, aliceID, "name: alice\npassword_hash: h\ndisabled: true\n")
+		}},
+		{"removed", func(t *testing.T, fixture *authFixture) {
+			t.Helper()
+			if err := os.Remove(filepath.Join(fixture.usersDir, aliceID+".yaml")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newAuthFixture(t, 10)
+			token := fixture.loginAlice(t)
+			tt.change(t, fixture)
+			if _, err := fixture.auth.Verify(token); err != nil {
+				t.Fatalf("inside the interval: %v, want the token accepted until the next check", err)
+			}
+			fixture.clock.Advance(RecheckInterval)
+			claims, err := fixture.auth.Verify(token)
+			if !errors.Is(err, api.ErrInvalidToken) || !reflect.DeepEqual(claims, api.Claims{}) {
+				t.Errorf("after the interval: %+v, %v, want api.ErrInvalidToken and no claims", claims, err)
+			}
+		})
+	}
+}
+
+// A token is only as good as the user it names: one signed by this node for an id without a
+// file, or for a name, as earlier versions did, is no login.
+func TestVerifyRefusesTokensOfUnknownUsers(t *testing.T) {
+	t.Parallel()
+	fixture := newAuthFixture(t, 10)
+	for _, sub := range []string{carolID, "alice", "../alice"} {
+		token, _, err := fixture.auth.tokens.Issue(sub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.auth.Verify(token); !errors.Is(err, api.ErrInvalidToken) {
+			t.Errorf("sub %q: err = %v, want api.ErrInvalidToken", sub, err)
+		}
+	}
+}
+
+func TestVerifyChecksTheTokenBeforeTheUser(t *testing.T) {
+	t.Parallel()
+	fixture := newAuthFixture(t, 10)
+	token := fixture.loginAlice(t)
+	fixture.clock.Advance(time.Hour)
+	fixture.auth.users.stat = func(string) (fs.FileInfo, error) {
+		t.Error("the file of a user was checked for a token that has expired")
+		return nil, errors.New("must not be called")
+	}
+	if _, err := fixture.auth.Verify(token); !errors.Is(err, api.ErrExpiredToken) {
+		t.Errorf("err = %v, want api.ErrExpiredToken", err)
+	}
+}
+
+// When the file of the user cannot be checked the answer is an error of the server, not a 401
+// the client would answer with a new login, and never an accepted token.
+func TestVerifyFailsClosedWhenTheUserCannotBeChecked(t *testing.T) {
+	t.Parallel()
+	fixture := newAuthFixture(t, 10)
+	token := fixture.loginAlice(t)
+	fixture.clock.Advance(RecheckInterval)
+	cause := &fs.PathError{Op: "stat", Path: aliceID, Err: fs.ErrPermission}
+	fixture.auth.users.stat = func(string) (fs.FileInfo, error) { return nil, cause }
+	claims, err := fixture.auth.Verify(token)
+	if !errors.Is(err, cause) || errors.Is(err, api.ErrInvalidToken) || errors.Is(err, api.ErrExpiredToken) {
+		t.Errorf("err = %v, want the cause and neither of the token errors", err)
+	}
+	if !reflect.DeepEqual(claims, api.Claims{}) {
+		t.Errorf("claims = %+v, want none", claims)
 	}
 }
 
@@ -149,17 +284,18 @@ func TestLoginCountsEveryAttempt(t *testing.T) {
 	}
 }
 
+func TestLoginBrokenUserFileIsNoUser(t *testing.T) {
+	t.Parallel()
+	fixture := newAuthFixture(t, 10)
+	writeUser(t, fixture.usersDir, carolID, "name: carol\npassword_hash: [\n")
+	fixture.wantLoginError(t, "carol", api.ErrBadCredentials)
+	if len(fixture.calls) != 1 || fixture.calls[0].encoded != dummyHash {
+		t.Errorf("verify calls = %v, want one against the dummy hash", fixture.calls)
+	}
+}
+
 func TestLoginOtherFailuresAreNotBadCredentials(t *testing.T) {
 	t.Parallel()
-	t.Run("broken user file", func(t *testing.T) {
-		t.Parallel()
-		fixture := newAuthFixture(t, 10)
-		writeFile(t, fixture.usersDir, "erin.yaml", "password_hash: [\n")
-		_, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "erin", "pw")
-		if err == nil || errors.Is(err, api.ErrBadCredentials) || errors.Is(err, ErrNoUser) {
-			t.Errorf("err = %v", err)
-		}
-	})
 	t.Run("verifier error", func(t *testing.T) {
 		t.Parallel()
 		fixture := newAuthFixture(t, 10)
@@ -201,7 +337,7 @@ func TestAuthenticatorVerify(t *testing.T) {
 
 func TestNewUsesRealVerifier(t *testing.T) {
 	t.Parallel()
-	a := New(NewUsers(t.TempDir()), nil, nil, 1)
+	a := New(newTestUsers(t.TempDir()), nil, nil, 1)
 	ok, err := a.verify(smallHash("pw"), "pw")
 	if err != nil || !ok {
 		t.Errorf("default verifier = %v, %v; want true, nil", ok, err)
@@ -212,7 +348,8 @@ func TestLoginWithRealPasswordHash(t *testing.T) {
 	t.Parallel()
 	fixture := newAuthFixture(t, 10)
 	fixture.auth.verify = VerifyPassword
-	writeFile(t, fixture.usersDir, "frank.yaml", "password_hash: \""+smallHash("right")+"\"\nshares: [\"*\"]\n")
+	writeUser(t, fixture.usersDir, carolID,
+		"name: frank\npassword_hash: \""+smallHash("right")+"\"\nshares: [\"*\"]\n")
 	if _, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "frank", "right"); err != nil {
 		t.Errorf("right password: %v", err)
 	}

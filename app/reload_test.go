@@ -160,8 +160,8 @@ func (reloader *reloading) addListener(t *testing.T, fix *fixture) config.Endpoi
 // knowing which ones the configuration has at that moment.
 func addAdmin(t *testing.T, fix *fixture) {
 	t.Helper()
-	admin := "password_hash: \"" + lowCostHash("right-password") + "\"\nshares: [\"*\"]\n"
-	write(t, fix.data.usersDir, "carol.yaml", admin)
+	admin := "name: carol\npassword_hash: \"" + lowCostHash("right-password") + "\"\nshares: [\"*\"]\n"
+	write(t, fix.data.usersDir, carolFile, admin)
 }
 
 // apiGet logs in as the user from addAdmin and returns the response to GET path.
@@ -700,8 +700,8 @@ func TestStartAndReloadRemoveTheOldTokenKeysOfThisNode(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t)
 	write(t, fix.state, "local/node-id", rfcNodeID+"\n")
-	own := write(t, fix.data.oldKeysDir, datadir.NodeFile(rfcNodeID), "keys: []\n")
-	other := write(t, fix.data.oldKeysDir, datadir.NodeFile(anotherNodeID), "keys: []\n")
+	own := write(t, fix.data.oldKeysDir, datadir.IDFile(rfcNodeID), "keys: []\n")
+	other := write(t, fix.data.oldKeysDir, datadir.IDFile(anotherNodeID), "keys: []\n")
 	reloader := startReloading(t, fix)
 	if _, err := os.Stat(own); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("own file after the start: %v", err)
@@ -710,7 +710,7 @@ func TestStartAndReloadRemoveTheOldTokenKeysOfThisNode(t *testing.T) {
 		t.Errorf("file of another node after the start: %v", err)
 	}
 	mustRemoveAll(t, other)
-	write(t, fix.data.oldKeysDir, datadir.NodeFile(rfcNodeID), "keys: []\n")
+	write(t, fix.data.oldKeysDir, datadir.IDFile(rfcNodeID), "keys: []\n")
 	reloader.apply(t, fix.cfg)
 	if _, err := os.Stat(fix.data.oldKeysDir); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("old keys folder after the reload: %v", err)

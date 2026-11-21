@@ -201,8 +201,8 @@ func newFixture(t *testing.T) *fixture {
 	setMTime(t, page, fileTime())
 	write(t, fix.shareDir, ".hidden", "never served")
 
-	alice := "password_hash: \"" + lowCostHash("right-password") + "\"\nshares: [media]\n"
-	write(t, fix.data.usersDir, "alice.yaml", alice)
+	alice := "name: alice\npassword_hash: \"" + lowCostHash("right-password") + "\"\nshares: [media]\n"
+	write(t, fix.data.usersDir, aliceFile, alice)
 
 	fix.cfg = loadConfig(t,
 		map[string]string{"10-test.yaml": testSettings},

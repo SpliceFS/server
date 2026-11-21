@@ -69,6 +69,12 @@ func layout(stateDir string) dataPaths {
 	return paths
 }
 
+// UsersDir returns the folder of the user files inside stateDir. The server reads it, and the
+// tools that make user files write to it, so the path is stated once, in the layout.
+func UsersDir(stateDir string) string {
+	return layout(stateDir).usersDir
+}
+
 // makeFolders creates the folders that are missing. A folder that exists keeps its mode,
 // because the operator or the package may have set it on purpose.
 func (d *dataPaths) makeFolders() error {
@@ -131,7 +137,7 @@ func (d *dataPaths) removeOldKeys(nodeID string) error {
 	if !isFolder(d.oldKeysDir) {
 		return nil
 	}
-	err := wrap(removeFile(filepath.Join(d.oldKeysDir, datadir.NodeFile(nodeID))), "remove old token keys")
+	err := wrap(removeFile(filepath.Join(d.oldKeysDir, datadir.IDFile(nodeID))), "remove old token keys")
 	if err != nil {
 		return err
 	}

@@ -24,7 +24,7 @@ import (
 // Defaults applied to keys that are absent.
 const (
 	defaultBasePath       = "/api"
-	defaultTokenTTL       = 30 * time.Minute
+	defaultTokenTTL       = 5 * time.Minute
 	defaultMTimePrecision = time.Second
 	defaultLogLevel       = "info"
 	defaultLogFormat      = "text"
@@ -47,8 +47,14 @@ const (
 	minMTimePrecision = time.Second
 )
 
-// namePattern is the form of a share name.
+// namePattern is the form of a share name, a user name and a node name.
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+// ValidName reports whether name is a valid name of a share, a user or a node. It is the one
+// place of that rule.
+func ValidName(name string) bool {
+	return namePattern.MatchString(name)
+}
 
 // Listener is one address and port to serve on.
 type Listener struct {

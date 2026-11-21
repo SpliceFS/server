@@ -35,17 +35,26 @@ func readPassword(in io.Reader) (string, error) {
 	return strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r"), nil
 }
 
-// hashPassword reads the password from in and writes its argon2id hash to out. The salt
-// comes from random.
-func hashPassword(in io.Reader, out io.Writer, random io.Reader) error {
+// passwordHash reads the password from in and returns its argon2id hash. The salt comes from
+// random. It is what hash-password and user add both do with a password.
+func passwordHash(in, random io.Reader) (string, error) {
 	password, err := readPassword(in)
 	if err != nil {
-		return err
+		return "", err
 	}
 	hash, err := auth.HashPassword(password, random)
 	if err != nil {
 		// The message already says what failed and is printed to the user as it is.
-		return err //nolint:wrapcheck // printed to the user as it is
+		return "", err //nolint:wrapcheck // printed to the user as it is
+	}
+	return hash, nil
+}
+
+// hashPassword reads the password from in and writes its argon2id hash to out.
+func hashPassword(in io.Reader, out io.Writer, random io.Reader) error {
+	hash, err := passwordHash(in, random)
+	if err != nil {
+		return err
 	}
 	if _, err := fmt.Fprintln(out, hash); err != nil {
 		return fmt.Errorf("write hash: %w", err)

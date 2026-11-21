@@ -77,3 +77,28 @@ func TestDefaultDirs(t *testing.T) {
 		t.Errorf("DefaultStateDir = %q, %v, want the build setting", got, err)
 	}
 }
+
+func TestGivenOrDefault(t *testing.T) {
+	t.Parallel()
+	errNoHome := errors.New("no home directory")
+	tests := []struct {
+		name, given string
+		fallback    func() (string, error)
+		want        string
+		wantErr     error
+	}{
+		{"given wins", "/given", func() (string, error) { return "/default", nil }, "/given", nil},
+		{"default when none is given", "", func() (string, error) { return "/default", nil }, "/default", nil},
+		{"the default cannot be found", "", func() (string, error) { return "", errNoHome }, "", errNoHome},
+		{"given needs no default", "/given", func() (string, error) { return "", errNoHome }, "/given", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := GivenOrDefault(tt.given, tt.fallback)
+			if got != tt.want || !errors.Is(err, tt.wantErr) {
+				t.Errorf("GivenOrDefault = %q, %v, want %q, %v", got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}

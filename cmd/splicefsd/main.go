@@ -114,17 +114,9 @@ func systemDirs() defaultDirs {
 
 func isConfigCommand(name string) bool { return name == commandCheck || name == commandShow }
 
-// directory returns given, or the default when none was given.
-func directory(given string, fallback func() (string, error)) (string, error) {
-	if given != "" {
-		return given, nil
-	}
-	return fallback()
-}
-
 // runConfig implements config check and config show.
 func runConfig(opts options, defaults defaultDirs, stdout, stderr io.Writer) int {
-	dir, err := directory(opts.configDir, defaults.config)
+	dir, err := config.GivenOrDefault(opts.configDir, defaults.config)
 	if err != nil {
 		return self().Fail(stderr, err)
 	}
@@ -147,11 +139,11 @@ func runConfig(opts options, defaults defaultDirs, stdout, stderr io.Writer) int
 // signal arrives. An invalid configuration is reported before anything is opened. SIGHUP
 // applies the configuration again.
 func runServer(ctx context.Context, opts options, defaults defaultDirs, stderr io.Writer) int {
-	configDir, err := directory(opts.configDir, defaults.config)
+	configDir, err := config.GivenOrDefault(opts.configDir, defaults.config)
 	if err != nil {
 		return self().Fail(stderr, err)
 	}
-	stateDir, err := directory(opts.stateDir, defaults.state)
+	stateDir, err := config.GivenOrDefault(opts.stateDir, defaults.state)
 	if err != nil {
 		return self().Fail(stderr, err)
 	}

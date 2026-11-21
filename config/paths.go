@@ -31,6 +31,16 @@ func DefaultStateDir() (string, error) {
 	return resolveDir(defaultStateDir, osStateDir, os.UserHomeDir)
 }
 
+// GivenOrDefault returns given, or what fallback finds when none was given. Both programs
+// use it for the directories their command lines may name, so a directory that is named never
+// needs the default, which may not be found.
+func GivenOrDefault(given string, fallback func() (string, error)) (string, error) {
+	if given != "" {
+		return given, nil
+	}
+	return fallback()
+}
+
 // resolveDir returns built, or fallback when the build set nothing, with a leading "~/"
 // replaced by the home directory. The operating system defaults are arguments so that a
 // test covers both variants on any system.

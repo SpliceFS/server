@@ -448,7 +448,7 @@ func TestRunFailsAtStart(t *testing.T) {
 		{"node file cannot be written", func(fix *fixture) {
 			// A folder where this node's file belongs cannot be replaced by the file.
 			write(t, fix.state, "local/node-id", rfcNodeID+"\n")
-			node := filepath.Join(fix.state, "shared", "nodes", datadir.NodeFile(rfcNodeID))
+			node := filepath.Join(fix.state, "shared", "nodes", datadir.IDFile(rfcNodeID))
 			if err := os.MkdirAll(node, 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -459,7 +459,7 @@ func TestRunFailsAtStart(t *testing.T) {
 		{"old keys file of this node cannot be removed", func(fix *fixture) {
 			// A folder that holds a file, where this node's old keys file belongs.
 			write(t, fix.state, "local/node-id", rfcNodeID+"\n")
-			write(t, filepath.Join(fix.state, "shared", "keys", datadir.NodeFile(rfcNodeID)), "inside", "x")
+			write(t, filepath.Join(fix.state, "shared", "keys", datadir.IDFile(rfcNodeID)), "inside", "x")
 		}, "remove old token keys"},
 		{"state folders cannot be made", func(fix *fixture) {
 			parent := write(t, t.TempDir(), "file", "a file where a folder belongs")
