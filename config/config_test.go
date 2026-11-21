@@ -87,3 +87,18 @@ func TestRateMarshalText(t *testing.T) {
 		t.Errorf("MarshalText = %q, %v", got, err)
 	}
 }
+
+func TestValidName(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("a", 64)
+	for _, name := range []string{"a", "media", "a.b-c_d", "0", long} {
+		if !ValidName(name) {
+			t.Errorf("ValidName(%q) = false", name)
+		}
+	}
+	for _, name := range []string{"", "A", ".", "..", "-a", "a/b", long + "a", "a b"} {
+		if ValidName(name) {
+			t.Errorf("ValidName(%q) = true", name)
+		}
+	}
+}

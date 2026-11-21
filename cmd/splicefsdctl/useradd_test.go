@@ -342,6 +342,36 @@ func TestUserAddRefusals(t *testing.T) {
 	}
 }
 
+func TestUserAddRefusesABadShareName(t *testing.T) {
+	t.Parallel()
+	state := stateWithUsers(t)
+	cmd := testUserAdd()
+	cmd.hash = func(io.Reader, io.Reader) (string, error) {
+		t.Error("the password was read before the refusal")
+		return testHash, nil
+	}
+
+	got := addUser(t, cmd, "pw\n", "--state", state, "--share", "Media", "alice")
+
+	if got.status == cli.ExitOK || got.stdout != "" || !strings.Contains(got.stderr, `share "Media"`) {
+		t.Errorf("got %+v, want a refusal that names the share", got)
+	}
+	if files, err := os.ReadDir(app.UsersDir(state)); err != nil || len(files) != 0 {
+		t.Errorf("users folder after the refusal: %d files, %v", len(files), err)
+	}
+}
+
+func TestUserAddTakesEveryShare(t *testing.T) {
+	t.Parallel()
+	state := stateWithUsers(t)
+
+	got := addUser(t, testUserAdd(), "pw\n", "--state", state, "--share", auth.AllShares, "alice")
+
+	if got.status != cli.ExitOK {
+		t.Fatalf("got %+v, want success", got)
+	}
+}
+
 var errTestChown = errors.New("operation not permitted")
 
 // idTaken makes a file where the id that user add will make belongs, so that writing it fails

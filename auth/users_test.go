@@ -808,3 +808,17 @@ func TestMarshalUserRefuses(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckShare(t *testing.T) {
+	t.Parallel()
+	for _, share := range []string{"media", "a.b-c_d", AllShares} {
+		if err := CheckShare(share); err != nil {
+			t.Errorf("CheckShare(%q) = %v, want nil", share, err)
+		}
+	}
+	for _, share := range []string{"", "Media", "../x", ".hidden", "**"} {
+		if err := CheckShare(share); err == nil || !strings.Contains(err.Error(), share) {
+			t.Errorf("CheckShare(%q) = %v, want an error that names it", share, err)
+		}
+	}
+}

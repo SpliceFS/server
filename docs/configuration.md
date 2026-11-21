@@ -227,7 +227,8 @@ disabled: false     # true: the user cannot log in, and loses access within 30 s
 ```
 
 To add a user, run `splicefsdctl user add --share media alice`. It reads the password as one line from standard
-input, writes the file and prints the user's id. Typed input is shown on the screen; to avoid that, pipe the
+input, writes the file and prints the user's id. When the server's state folder is not the default one, give it with
+`--state <folder>`. Typed input is shown on the screen; to avoid that, pipe the
 password in from a file. To change a user, edit their file; to remove one, delete it.
 
 No restart is needed. A new, changed or removed file takes effect within 30 seconds. If a user's file cannot be

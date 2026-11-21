@@ -18,6 +18,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/SpliceFS/common/api"
+	"github.com/SpliceFS/server/config"
 	"github.com/SpliceFS/server/internal/datadir"
 	"github.com/SpliceFS/server/internal/uuid7"
 )
@@ -39,9 +40,6 @@ var (
 	errUserWrongType     = errors.New("a value of the wrong type for its key")
 	errUserOtherProblem  = errors.New("a key or value that cannot be used")
 )
-
-// maxNameLength is the longest accepted user name.
-const maxNameLength = 64
 
 // RecheckInterval is how long what the server knows of a user is used before the file of the
 // user is checked again. A changed share list, a disabled user or a removed file takes effect
@@ -117,7 +115,7 @@ func NewUsers(dir string, now func() time.Time, log *slog.Logger) *Users {
 // and its last good content stays in use. Of two files with the same name, the file that sorts
 // first by name is used. The result does not share memory with the cache.
 func (u *Users) Lookup(name string) (User, bool) {
-	if !validName(name) {
+	if !config.ValidName(name) {
 		return User{}, false
 	}
 	u.mu.Lock()
@@ -272,13 +270,24 @@ func MarshalUser(user User) ([]byte, error) {
 	return data, nil
 }
 
+// AllShares in a user's share list allows every share. It is the wildcard of common's api.
+const AllShares = "*"
+
+// CheckShare returns why share cannot be in a user's share list, or nil when it can.
+func CheckShare(share string) error {
+	if share == AllShares || config.ValidName(share) {
+		return nil
+	}
+	return fmt.Errorf("share %q: %w", share, errBadName)
+}
+
 // CheckName returns why name cannot be the name of a user, or nil when it can. This is the
 // rule of the user file too, so a name that passes is one the server reads.
 func CheckName(name string) error {
 	switch {
 	case name == "":
 		return errEmptyName
-	case !validName(name):
+	case !config.ValidName(name):
 		return errBadName
 	}
 	return nil
@@ -367,30 +376,4 @@ func atLine(problem error, line int) error {
 		return problem
 	}
 	return fmt.Errorf("line %d: %w", line, problem)
-}
-
-// validName reports whether name matches ^[a-z0-9][a-z0-9._-]{0,63}$, the form of a user name.
-func validName(name string) bool {
-	if name == "" || len(name) > maxNameLength {
-		return false
-	}
-	for i := range len(name) {
-		if !validNameByte(name[i], i == 0) {
-			return false
-		}
-	}
-	return true
-}
-
-// validNameByte reports whether c may appear in a user name. The separators may not start
-// one, so a name cannot be "." or "..".
-func validNameByte(c byte, first bool) bool {
-	switch {
-	case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
-		return true
-	case c == '.' || c == '_' || c == '-':
-		return !first
-	default:
-		return false
-	}
 }

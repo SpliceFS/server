@@ -13,6 +13,7 @@ import (
 
 	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/common/wire"
+	"github.com/SpliceFS/server/config"
 )
 
 // fuzzTokens returns Tokens for the node under test, with one other node listed whose private
@@ -215,7 +216,7 @@ func FuzzUserName(f *testing.F) {
 func checkUserName(t *testing.T, users *Users, name string) {
 	t.Helper()
 	user, found := users.Lookup(name)
-	if !validName(name) {
+	if !config.ValidName(name) {
 		// An invalid name is refused before any file is touched.
 		if found {
 			t.Fatalf("Lookup(%q) found %+v", name, user)
@@ -224,7 +225,7 @@ func checkUserName(t *testing.T, users *Users, name string) {
 	}
 	// A valid name has no separator or dot segment, so it names no file at all.
 	if strings.ContainsAny(name, "/\\\x00") || name == "." || name == ".." {
-		t.Fatalf("validName(%q) is true", name)
+		t.Fatalf("config.ValidName(%q) is true", name)
 	}
 	// Only the user whose file exists may be found, so no name reaches another file.
 	if found != (name == "alice") || (found && user.Name != name) {
@@ -252,7 +253,7 @@ func FuzzUserFile(f *testing.F) {
 		}
 		// A user without a password hash would be a user anyone could be, or no one; a name
 		// that is not valid would not be found at login.
-		if user.PasswordHash == "" || !validName(user.Name) || user.ID != aliceID {
+		if user.PasswordHash == "" || !config.ValidName(user.Name) || user.ID != aliceID {
 			t.Fatalf("file %q gave %+v", content, user)
 		}
 	})

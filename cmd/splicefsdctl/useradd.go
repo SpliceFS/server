@@ -90,6 +90,9 @@ func parseUserAdd(job call) (userAddOptions, int, bool) {
 	flags := job.self.FlagSet()
 	flags.StringVar(&opts.state, "state", "", "")
 	flags.Func("share", "", func(share string) error {
+		if err := auth.CheckShare(share); err != nil {
+			return err //nolint:wrapcheck // the flag package names the flag that failed
+		}
 		opts.shares = append(opts.shares, share)
 		return nil
 	})
