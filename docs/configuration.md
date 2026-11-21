@@ -176,7 +176,6 @@ folders it needs. It must be able to write to the state folder.
     digests/<share>/<path>.splicefs_state
   shared/                   may be synced between servers
     users/<name>.yaml
-    keys/<node-id>.yaml
     nodes/<node-id>.yaml
 ```
 
@@ -187,7 +186,6 @@ folders it needs. It must be able to write to the state folder.
 | `local/tls/cert.pem`, `key.pem` | the server, once   | the certificate the server made for itself |
 | `local/digests/`             | the server            | the digests of each file read, one small file per file |
 | `shared/users/<name>.yaml`   | you                   | one user                                |
-| `shared/keys/<node-id>.yaml` | that server only      | token signing keys                      |
 | `shared/nodes/<node-id>.yaml`| that server only      | name, address, id and public keys of that server |
 
 ### local/
@@ -240,21 +238,6 @@ To add a user:
 No restart is needed. The file is read at each login, so a new, changed or removed file takes
 effect at once. If a user's file cannot be parsed, logins for that user fail until you fix it.
 
-**keys/** holds the keys that sign and verify login tokens. The server makes its own file on
-the first start with one key, named `<node-id>-1`, with a random secret. You do not write
-these files.
-
-```yaml
-# <state>/shared/keys/<node-id>.yaml
-keys:
-  - id: "<node-id>-1"
-    secret: "<base64, at least 32 random bytes>"
-```
-
-The first key in a server's own file signs. Every key in every file of the folder verifies.
-When the sync tool has delivered another server's file, a token from that server is accepted
-here. An existing file is never replaced.
-
 **nodes/** holds the node list that clients ask for. When `cluster.url` is set, the server
 writes `nodes/<node-id>.yaml` with its `cluster.node` name and its `cluster.url`. When
 `cluster.url` is empty, the server removes that file and is not announced.
@@ -273,10 +256,13 @@ id: the node id. sign_key and encrypt_key: the node's public keys, base64. A nod
 The node list that a server gives to clients is every file in `nodes/`, so it is empty when
 no server has a `cluster.url`. The cluster name comes from `cluster.name` in the settings.
 
-Changes in `users/`, `keys/` and `nodes/` are picked up without a restart. A keys or nodes
+Changes in `users/` and `nodes/` are picked up without a restart. A keys or nodes
 file that cannot be parsed is ignored with a warning in the log, and the last good content of
 that file stays in use. Changes to `conf.d/` and `shares.d/` take effect when you reload the
 server, see "Applying changes".
+
+Earlier versions kept token keys in `shared/keys/`. A server of this version removes its own file there on
+start, and the folder once it is empty.
 
 ## Applying changes
 
@@ -370,7 +356,7 @@ To run several servers as one cluster:
 5. Keep the clocks in step with NTP.
 
 Each server keeps its own `conf.d/` and `shares.d/`. Users are written once and reach the
-other servers through the sync of `shared/`. Each server writes only its own `keys/` and
+other servers through the sync of `shared/`. Each server writes only its own
 `nodes/` files.
 
 The configuration of the client is described in the
