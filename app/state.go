@@ -84,29 +84,50 @@ func ClusterDir(stateDir string) string {
 	return layout(stateDir).clusterDir
 }
 
+// MakeFolders makes the folders of the state inside stateDir that are missing, the way the
+// server does at start, and returns the paths it made, parents first, also when it fails
+// partway. A tool that runs before the server ever did uses it, so that the layout is the
+// server's own and is stated once, and gives what it made to the owner of the state folder.
+func MakeFolders(stateDir string) ([]string, error) {
+	data := layout(stateDir)
+	return data.createFolders()
+}
+
 // makeFolders creates the folders that are missing. A folder that exists keeps its mode,
 // because the operator or the package may have set it on purpose.
 func (d *dataPaths) makeFolders() error {
-	for _, spec := range d.folders {
-		if err := makeFolder(spec); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err := d.createFolders()
+	return err
 }
 
-// makeFolder creates one folder with exactly its mode, not the mode that the umask leaves.
-// A folder that exists is left alone, but a file in its place is an error here, because
-// otherwise the failure would only show up later, far from its cause.
-func makeFolder(spec folder) error {
+// createFolders is makeFolders that also returns the paths of the folders it made.
+func (d *dataPaths) createFolders() ([]string, error) {
+	var made []string
+	for _, spec := range d.folders {
+		created, err := makeFolder(spec)
+		if created {
+			made = append(made, spec.path)
+		}
+		if err != nil {
+			return made, err
+		}
+	}
+	return made, nil
+}
+
+// makeFolder creates one folder with exactly its mode, not the mode that the umask leaves, and
+// reports whether it made the folder. A folder that exists is left alone, but a file in its
+// place is an error here, because otherwise the failure would only show up later, far from its
+// cause. A folder whose mode cannot be set is made and is reported as made, with the error.
+func makeFolder(spec folder) (bool, error) {
 	err := os.Mkdir(spec.path, spec.mode)
 	if errors.Is(err, fs.ErrExist) {
-		return checkFolder(spec.path)
+		return false, checkFolder(spec.path)
 	}
 	if err != nil {
-		return wrap(err, "create folder")
+		return false, wrap(err, "create folder")
 	}
-	return wrap(os.Chmod(spec.path, spec.mode), "create folder")
+	return true, wrap(os.Chmod(spec.path, spec.mode), "create folder")
 }
 
 // checkFolder fails if path is not a folder.

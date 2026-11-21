@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -27,12 +28,12 @@ func testClusterKey() clusterKey {
 	return clusterKey{stateTool: testStateTool(strings.NewReader(clusterSeed + testIDBytes))}
 }
 
-// stateWithClusterFolder makes a state folder with the cluster folder in it, as a server that
-// has started once leaves it, and returns the state folder.
+// stateWithClusterFolder makes a state folder with every folder in it that a server makes at
+// start, as a server that has started once leaves it, and returns the state folder.
 func stateWithClusterFolder(t *testing.T) string {
 	t.Helper()
 	state := t.TempDir()
-	if err := os.MkdirAll(app.ClusterDir(state), 0o750); err != nil {
+	if _, err := app.MakeFolders(state); err != nil {
 		t.Fatal(err)
 	}
 	return state
@@ -238,13 +239,12 @@ func TestClusterCommandHelp(t *testing.T) {
 // What init refuses, it refuses before it makes the key, and it leaves nothing behind.
 func TestClusterInitRefusals(t *testing.T) {
 	t.Parallel()
-	notAFolder := func(folder string) string { return "cluster folder " + folder + " is not a folder" }
+	notAFolder := func(folder string) string { return "create folder: " + folder + " exists and is not a folder" }
 	tests := []struct {
 		name  string
 		setup setup
 		want  func(folder string) string
 	}{
-		{"no cluster folder", noFolder, func(string) string { return "cluster folder: " }},
 		{"a file where the cluster folder belongs", fileForFolder, notAFolder},
 	}
 	for _, tt := range tests {
@@ -382,5 +382,95 @@ func TestClusterShowReportsAFailedWriteOfTheLine(t *testing.T) {
 	status := testClusterKey().runShow(job)
 	if want := "splicefsdctl: write the line: disk full\n"; status != cli.ExitError || errOut.String() != want {
 		t.Errorf("status %d stderr %q, want %q", status, errOut.String(), want)
+	}
+}
+
+// sameFoldersAsTheServer fails the test when a folder of the state that a server makes at start
+// is missing from state or has another mode than the server gives it.
+func sameFoldersAsTheServer(t *testing.T, state string) {
+	t.Helper()
+	reference := t.TempDir()
+	if _, err := app.MakeFolders(reference); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range foldersBelow(t, reference) {
+		rel, err := filepath.Rel(reference, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, wantErr := os.Stat(path)
+		got, gotErr := os.Stat(filepath.Join(state, rel))
+		if wantErr != nil || gotErr != nil || got.Mode().Perm() != want.Mode().Perm() {
+			t.Errorf("folder %q: got %v, %v, want mode %v, %v", rel, got, gotErr, want, wantErr)
+		}
+	}
+}
+
+// foldersBelow lists the folders in root, root itself not included.
+func foldersBelow(t *testing.T, root string) []string {
+	t.Helper()
+	var found []string
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err == nil && entry.IsDir() && path != root {
+			found = append(found, path)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return found
+}
+
+// A server that never started has no folders yet: cluster init makes them the way the server
+// does, and the key is where the server reads it when it starts.
+func TestClusterInitOnAServerThatNeverStarted(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+
+	got := clusterCommand(t, testClusterKey(), "cluster", "init", "--state", state)
+
+	if want := (outcome{stdout: clusterLine()}); got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	if _, found := cluster.NewKeyReader(app.ClusterDir(state), slog.New(slog.DiscardHandler)).Current(); !found {
+		t.Error("the key is not found in the cluster folder")
+	}
+	sameFoldersAsTheServer(t, state)
+}
+
+func TestClusterInitMakesAFolderThatWasRemoved(t *testing.T) {
+	t.Parallel()
+	state := stateWithClusterFolder(t)
+	if err := os.Remove(app.ClusterDir(state)); err != nil {
+		t.Fatal(err)
+	}
+
+	got := clusterCommand(t, testClusterKey(), "cluster", "init", "--state", state)
+
+	if want := (outcome{stdout: clusterLine()}); got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+// Run as root on a server that never started, every folder starts as root's and must end as
+// the state folder's, whoever that is: the server runs as that user and has to enter them.
+func TestClusterInitAsRootGivesTheNewFoldersToTheOwnerOfTheStateFolder(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() != 0 {
+		t.Skip("changing the owner of a file needs root")
+	}
+	const uid, gid = 4242, 4343
+	state := t.TempDir()
+	if err := os.Chown(state, uid, gid); err != nil {
+		t.Fatal(err)
+	}
+	if got := clusterCommand(t, testClusterKey(), "cluster", "init", "--state", state); got.status != cli.ExitOK {
+		t.Fatalf("got %+v", got)
+	}
+	for _, path := range append(foldersBelow(t, state), keyPath(state)) {
+		if st := statOf(t, path); st.Uid != uid || st.Gid != gid {
+			t.Errorf("%s: owner %d:%d, want %d:%d", path, st.Uid, st.Gid, uid, gid)
+		}
 	}
 }
