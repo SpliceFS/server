@@ -706,3 +706,105 @@ func TestUsersCurrentAndLookupTogether(t *testing.T) {
 	close(start)
 	done.Wait()
 }
+
+func TestCheckName(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		want  error
+	}{
+		{"plain", "alice", nil},
+		{"digits first", "1user", nil},
+		{"separators inside", "a.b_c-d", nil},
+		{"longest", strings.Repeat("a", 64), nil},
+		{"empty", "", errEmptyName},
+		{"capital letter", "Alice", errBadName},
+		{"separator first", ".alice", errBadName},
+		{"a space", "al ice", errBadName},
+		{"a slash", "a/b", errBadName},
+		{"too long", strings.Repeat("a", 65), errBadName},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := CheckName(tt.input); !errors.Is(got, tt.want) {
+				t.Errorf("CheckName(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// What MarshalUser writes is what the server reads: the user comes back from the folder the
+// way it went in.
+func TestMarshalUserIsReadBackByUsers(t *testing.T) {
+	t.Parallel()
+	const hash = "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHQ$aGFzaGhhc2g"
+	tests := []struct {
+		name string
+		user User
+	}{
+		{"shares", User{ID: aliceID, Name: "alice", PasswordHash: hash, Shares: []string{"media", "docs"}}},
+		{"every share", User{ID: bobID, Name: "bob", PasswordHash: hash, Shares: []string{"*"}}},
+		{"no share", User{ID: carolID, Name: "carol.x", PasswordHash: hash}},
+		{"disabled", User{ID: daveID, Name: "dave", PasswordHash: hash, Shares: []string{"a"}, Disabled: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			data, err := MarshalUser(tt.user)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			writeUser(t, dir, tt.user.ID, string(data))
+			got, found := newTestUsers(dir).Lookup(tt.user.Name)
+			if !found || !reflect.DeepEqual(got, withoutNilShares(tt.user)) {
+				t.Errorf("read back %+v, %v, want %+v", got, found, tt.user)
+			}
+		})
+	}
+}
+
+// withoutNilShares returns user with an empty share list where it has none, which is how a
+// user file with no shares reads back.
+func withoutNilShares(user User) User {
+	if user.Shares == nil {
+		user.Shares = []string{}
+	}
+	return user
+}
+
+func TestMarshalUserLayout(t *testing.T) {
+	t.Parallel()
+	data, err := MarshalUser(User{Name: "alice", PasswordHash: "$argon2id$x", Shares: []string{"media"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "name: alice\npassword_hash: $argon2id$x\nshares: [media]\ndisabled: false\n"
+	if string(data) != want {
+		t.Errorf("MarshalUser = %q, want %q", data, want)
+	}
+}
+
+func TestMarshalUserRefuses(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		user User
+		want error
+	}{
+		{"no name", User{PasswordHash: "h"}, errEmptyName},
+		{"bad name", User{Name: "Alice", PasswordHash: "h"}, errBadName},
+		{"no hash", User{Name: "alice"}, errEmptyPasswordHash},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			data, err := MarshalUser(tt.user)
+			if !errors.Is(err, tt.want) || data != nil {
+				t.Errorf("MarshalUser = %q, %v, want %v", data, err, tt.want)
+			}
+		})
+	}
+}

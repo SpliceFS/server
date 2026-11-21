@@ -68,11 +68,12 @@ func (u User) Allows(share string) bool {
 	return api.SharesAllow(u.Shares, share)
 }
 
-// userFile is the YAML layout of one user file.
+// userFile is the YAML layout of one user file. The flow style of the share list only changes
+// how MarshalUser writes it; the decoder reads both styles.
 type userFile struct {
 	Name         string   `yaml:"name"`
 	PasswordHash string   `yaml:"password_hash"`
-	Shares       []string `yaml:"shares"`
+	Shares       []string `yaml:"shares,flow"`
 	Disabled     bool     `yaml:"disabled"`
 }
 
@@ -249,18 +250,49 @@ func parseUser(file string, data []byte) (User, error) {
 	if err := dec.Decode(&parsed); err != nil {
 		return User{}, describeUserFileError(err)
 	}
-	switch {
-	case parsed.Name == "":
-		return User{}, errEmptyName
-	case !validName(parsed.Name):
-		return User{}, errBadName
-	case parsed.PasswordHash == "":
-		return User{}, errEmptyPasswordHash
+	if err := checkFields(parsed.Name, parsed.PasswordHash); err != nil {
+		return User{}, err
 	}
 	return User{
 		ID: id, Name: parsed.Name, PasswordHash: parsed.PasswordHash,
 		Shares: parsed.Shares, Disabled: parsed.Disabled,
 	}, nil
+}
+
+// MarshalUser returns the content of the user file of user, the layout that the server reads
+// back. The id is not in it: the name of the file is the id. A user that the server would
+// refuse to read is refused here, so that no file is written that would only be skipped.
+func MarshalUser(user User) ([]byte, error) {
+	if err := checkFields(user.Name, user.PasswordHash); err != nil {
+		return nil, err
+	}
+	data, _ := yaml.Marshal(userFile{ //nolint:errcheck // cannot fail for strings, a list of strings and a bool
+		Name: user.Name, PasswordHash: user.PasswordHash, Shares: user.Shares, Disabled: user.Disabled,
+	})
+	return data, nil
+}
+
+// CheckName returns why name cannot be the name of a user, or nil when it can. This is the
+// rule of the user file too, so a name that passes is one the server reads.
+func CheckName(name string) error {
+	switch {
+	case name == "":
+		return errEmptyName
+	case !validName(name):
+		return errBadName
+	}
+	return nil
+}
+
+// checkFields returns why a user with this name and password hash cannot be read, or nil.
+func checkFields(name, passwordHash string) error {
+	if err := CheckName(name); err != nil {
+		return err
+	}
+	if passwordHash == "" {
+		return errEmptyPasswordHash
+	}
+	return nil
 }
 
 // describeUserFileError says where in a user file the decoder found a problem and what kind
