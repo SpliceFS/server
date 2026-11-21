@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.10.0] - 2026-11-21
+
+- New: `splicefsdctl cluster init` and `cluster show`; with a cluster key, each server signs and
+  renews its own certificate, so clients can trust the cluster by its public key.
+
 ## [0.9.0] - 2026-11-21
 
 - Changed (action needed): user files are named by the user's id. Make each user again with
