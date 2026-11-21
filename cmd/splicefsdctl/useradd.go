@@ -1,20 +1,14 @@
 package main
 
 import (
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"os"
-	"path/filepath"
-	"syscall"
-	"time"
 
 	"github.com/SpliceFS/server/app"
 	"github.com/SpliceFS/server/auth"
-	"github.com/SpliceFS/server/config"
 	"github.com/SpliceFS/server/internal/cli"
 	"github.com/SpliceFS/server/internal/datadir"
 	"github.com/SpliceFS/server/internal/uuid7"
@@ -25,31 +19,23 @@ import (
 const userFileMode os.FileMode = 0o640
 
 var (
-	errUserAddName   = errors.New("user add takes one name")
-	errUserExists    = errors.New("already exists")
-	errNotAFolder    = errors.New("is not a folder")
-	errNoFolderOwner = errors.New("cannot read the owner of the users folder")
+	errUserAddName = errors.New("user add takes one name")
+	errUserExists  = errors.New("already exists")
 )
 
 // userAdd is the user add command, with the parts of the system it uses as fields so that a
 // test can replace them.
 type userAdd struct {
-	// defaultState finds the state folder when the command line names none.
-	defaultState func() (string, error)
+	stateTool
+
 	// hash reads a password from its first argument and returns its hash.
-	hash   func(in, random io.Reader) (string, error)
-	now    func() time.Time
-	random io.Reader
-	chown  func(path string, uid, gid int) error
+	hash func(in, random io.Reader) (string, error)
 }
 
-// systemUserAdd returns user add as it runs on the machine: the default state folder of the
-// build, the hash that hash-password makes, the clock and the system's randomness.
+// systemUserAdd returns user add as it runs on the machine: the state tool of the machine and
+// the hash that hash-password makes.
 func systemUserAdd() userAdd {
-	return userAdd{
-		defaultState: config.DefaultStateDir, hash: passwordHash, now: time.Now, random: rand.Reader,
-		chown: os.Chown,
-	}
+	return userAdd{stateTool: systemStateTool(), hash: passwordHash}
 }
 
 // command is the entry of user add in the list of commands.
@@ -107,25 +93,13 @@ func parseUserAdd(job call) (userAddOptions, int, bool) {
 	return opts, cli.ExitOK, false
 }
 
-// owner is the user and the group that own a file.
-type owner struct {
-	uid, gid int
-}
-
-// usersFolder is the folder of the user files and who owns it.
-type usersFolder struct {
-	owner
-
-	path string
-}
-
 // add makes the user file and returns the id of the user. Everything that can be refused is
 // refused before the password is read, so a typo in the name costs no typing.
 func (c userAdd) add(opts userAddOptions, stdin io.Reader) (string, error) {
 	if err := auth.CheckName(opts.name); err != nil {
 		return "", err //nolint:wrapcheck // printed to the user as it is
 	}
-	folder, err := c.findUsersFolder(opts.state)
+	folder, err := c.findFolder(opts.state, "users", app.UsersDir)
 	if err != nil {
 		return "", err
 	}
@@ -141,29 +115,8 @@ func (c userAdd) add(opts userAddOptions, stdin io.Reader) (string, error) {
 	return c.write(folder, auth.User{Name: opts.name, PasswordHash: hash, Shares: opts.shares})
 }
 
-// findUsersFolder finds the folder of the user files in the given state folder, or the default
-// one, as the server does, and reads who owns it.
-func (c userAdd) findUsersFolder(state string) (usersFolder, error) {
-	stateDir, err := config.GivenOrDefault(state, c.defaultState)
-	if err != nil {
-		return usersFolder{}, err //nolint:wrapcheck // printed to the user as it is
-	}
-	path := app.UsersDir(stateDir)
-	info, err := os.Stat(path)
-	if err != nil {
-		return usersFolder{}, fmt.Errorf("users folder: %w", err)
-	}
-	if !info.IsDir() {
-		return usersFolder{}, fmt.Errorf("users folder %s %w", path, errNotAFolder)
-	}
-	who, err := ownerOf(info)
-	return usersFolder{path: path, owner: who}, err
-}
-
-// write makes the file of user under a new id, owned by the owner of the folder. A file that
-// cannot be given to that owner is removed: left behind, it would be a user the server cannot
-// read.
-func (c userAdd) write(folder usersFolder, user auth.User) (string, error) {
+// write makes the file of user under a new id and returns the id.
+func (c userAdd) write(folder ownedFolder, user auth.User) (string, error) {
 	data, err := auth.MarshalUser(user)
 	if err != nil {
 		return "", err //nolint:wrapcheck // printed to the user as it is
@@ -172,22 +125,9 @@ func (c userAdd) write(folder usersFolder, user auth.User) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("make the user id: %w", err)
 	}
-	path := filepath.Join(folder.path, datadir.IDFile(id))
-	if err := datadir.WriteOnce(path, data, userFileMode); err != nil {
-		return "", fmt.Errorf("write user file: %w", err)
-	}
-	if err := c.chown(path, folder.uid, folder.gid); err != nil {
-		err = fmt.Errorf("give the user file to the owner of the users folder: %w", err)
-		return "", errors.Join(err, os.Remove(path))
+	file := newFile{what: "user file", name: datadir.IDFile(id), data: data, mode: userFileMode}
+	if err := c.writeOnce(folder, file); err != nil {
+		return "", err
 	}
 	return id, nil
-}
-
-// ownerOf returns the owner of the file that info describes.
-func ownerOf(info fs.FileInfo) (owner, error) {
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return owner{}, errNoFolderOwner
-	}
-	return owner{uid: int(st.Uid), gid: int(st.Gid)}, nil
 }

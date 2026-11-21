@@ -790,3 +790,16 @@ func TestSweepFailureIsLogged(t *testing.T) {
 		t.Errorf("log %q does not report the failed sweep", got)
 	}
 }
+
+// A reload makes the cluster folder again, as a start does, so the cluster key of a server whose
+// folder was removed while it ran can be made again.
+func TestReloadMakesTheClusterFolderAgain(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t)
+	reloader := startReloading(t, fix)
+	mustRemoveAll(t, fix.data.clusterDir)
+	reloader.apply(t, fix.cfg)
+	if info, err := os.Stat(fix.data.clusterDir); err != nil || !info.IsDir() {
+		t.Errorf("cluster folder after the reload = %v, %v", info, err)
+	}
+}

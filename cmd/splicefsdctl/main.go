@@ -51,9 +51,12 @@ type command struct {
 
 // commands lists every command of the tool. A new command is one more entry here.
 func commands() []command {
+	key := systemClusterKey()
 	return []command{
 		{name: "hash-password", run: runHashPassword},
 		systemUserAdd().command(),
+		key.initCommand(),
+		key.showCommand(),
 	}
 }
 

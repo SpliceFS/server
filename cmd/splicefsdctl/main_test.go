@@ -60,6 +60,8 @@ func TestVersion(t *testing.T) {
 // line prints.
 const fullUsage = "usage: splicefsdctl hash-password\n" +
 	"       splicefsdctl user add [--state <folder>] [--share <share>]... <name>\n" +
+	"       splicefsdctl cluster init [--state <folder>]\n" +
+	"       splicefsdctl cluster show [--state <folder>]\n" +
 	"       splicefsdctl --version\n"
 
 func TestHelp(t *testing.T) {
@@ -71,6 +73,9 @@ func TestHelp(t *testing.T) {
 	}
 }
 
+// noCommandWant is what a command line without a command says, with the names of all the commands.
+const noCommandWant = "a command is needed, one of: hash-password, user add, cluster init, cluster show"
+
 func TestBadUsage(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -79,8 +84,8 @@ func TestBadUsage(t *testing.T) {
 		want string
 	}{
 		{"unknown flag", []string{"--bogus"}, "flag provided but not defined: -bogus"},
-		{"no command", nil, "a command is needed, one of: hash-password, user add"},
-		{"flags only", []string{"--version=false"}, "a command is needed, one of: hash-password, user add"},
+		{"no command", nil, noCommandWant},
+		{"flags only", []string{"--version=false"}, noCommandWant},
 		{"unknown command", []string{"serve"}, `unknown command "serve"`},
 		{"a command that is only the start of one", []string{"user"}, `unknown command "user"`},
 		{"a command that is not the end of one", []string{"user", "remove"}, `unknown command "user"`},
