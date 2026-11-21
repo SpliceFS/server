@@ -504,3 +504,16 @@ func TestRemoveEmptyFolder(t *testing.T) {
 		t.Error("removeEmptyFolder of a name that is too long = nil, want an error")
 	}
 }
+
+// UsersDir is where the server reads the user files, so that a tool that writes one finds the
+// same folder.
+func TestUsersDirIsWhereTheServerReadsUsers(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	if got, want := UsersDir(state), layout(state).usersDir; got != want {
+		t.Errorf("UsersDir = %q, want %q", got, want)
+	}
+	if got, want := UsersDir("/state"), filepath.Join("/state", "shared", "users"); got != want {
+		t.Errorf("UsersDir = %q, want %q", got, want)
+	}
+}
