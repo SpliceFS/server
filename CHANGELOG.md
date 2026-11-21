@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.6.0] - 2026-11-21
+
+- New: each node makes its own signing and encryption key pairs on its first start and keeps them in
+  local/node-keys.yaml.
+
 ## [0.5.47] - 2026-11-19
 
 - Internal: the server's pull requests no longer run the cross-repo integration jobs.

@@ -34,6 +34,24 @@ func WriteAtomic(path string, data []byte, mode os.FileMode) error {
 	return err
 }
 
+// WriteOnce writes the file at path with data and mode, and never replaces a file that is
+// there: an existing path gives an error that is fs.ErrExist and the file is untouched. The
+// data goes to a temporary file first, which is then linked to path. A link fails when the
+// name exists and the check and the write are one step of the file system, so two writers
+// can never both succeed, and a reader never sees half of the file. The folder must exist.
+func WriteOnce(path string, data []byte, mode os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), tempPrefix+"*")
+	if err != nil {
+		return fmt.Errorf("create temporary file: %w", err)
+	}
+	err = writeTemp(tmp, data, mode)
+	if err == nil {
+		err = os.Link(tmp.Name(), path)
+	}
+	// The temporary name is removed whatever happened: after a link the file has two names.
+	return errors.Join(err, os.Remove(tmp.Name()))
+}
+
 // writeTemp fills and closes the temporary file. The mode is set explicitly because
 // CreateTemp always uses 0600 and the umask would change a mode given at creation.
 func writeTemp(f *os.File, data []byte, mode os.FileMode) error {

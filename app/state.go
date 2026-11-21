@@ -12,7 +12,6 @@ import (
 
 	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/common/wire"
-	"github.com/SpliceFS/server/internal/datadir"
 	"github.com/SpliceFS/server/internal/uuid7"
 )
 
@@ -20,7 +19,7 @@ import (
 // "local" is for this machine only; "shared" may be copied between servers by any sync tool,
 // which is why every file in it has exactly one writer.
 type dataPaths struct {
-	nodeIDFile, digestsDir, usersDir, keysDir, nodesDir string
+	nodeIDFile, nodeKeysFile, digestsDir, usersDir, keysDir, nodesDir string
 	// folders lists every folder the server makes, parents first, with its mode. The digest
 	// folder is not one of them: the digest store makes it.
 	folders []folder
@@ -48,11 +47,12 @@ func layout(stateDir string) dataPaths {
 	local := filepath.Join(stateDir, localDirName)
 	shared := filepath.Join(stateDir, "shared")
 	paths := dataPaths{
-		nodeIDFile: filepath.Join(local, "node-id"),
-		digestsDir: filepath.Join(local, "digests"),
-		usersDir:   filepath.Join(shared, "users"),
-		keysDir:    filepath.Join(shared, "keys"),
-		nodesDir:   filepath.Join(shared, "nodes"),
+		nodeIDFile:   filepath.Join(local, "node-id"),
+		nodeKeysFile: filepath.Join(local, "node-keys.yaml"),
+		digestsDir:   filepath.Join(local, "digests"),
+		usersDir:     filepath.Join(shared, "users"),
+		keysDir:      filepath.Join(shared, "keys"),
+		nodesDir:     filepath.Join(shared, "nodes"),
 	}
 	paths.folders = []folder{
 		{stateDir, 0o750},
@@ -106,28 +106,23 @@ func checkFolder(path string) error {
 // is saved but malformed is an error and is never replaced: the id names this node's files
 // in the shared folder, and a new one would orphan them.
 func (d *dataPaths) nodeID(now func() time.Time, random io.Reader) (string, error) {
-	data, err := os.ReadFile(d.nodeIDFile)
-	if errors.Is(err, fs.ErrNotExist) {
-		return d.createNodeID(now(), random)
-	}
-	if err != nil {
-		return "", fmt.Errorf("read node id file: %w", err)
-	}
-	id := strings.TrimSpace(string(data))
-	if !uuid7.Valid(id) {
-		return "", fmt.Errorf("node id file %s %w", d.nodeIDFile, ErrMalformedNodeID)
-	}
-	return id, nil
+	return localValue[string]{
+		what:  "node id",
+		path:  d.nodeIDFile,
+		mode:  nodeIDMode,
+		parse: parseNodeID,
+		create: func() ([]byte, error) {
+			id, err := uuid7.New(now(), random)
+			return []byte(id + "\n"), err
+		},
+	}.load()
 }
 
-// createNodeID makes a new id and saves it.
-func (d *dataPaths) createNodeID(now time.Time, random io.Reader) (string, error) {
-	id, err := uuid7.New(now, random)
-	if err != nil {
-		return "", fmt.Errorf("make node id: %w", err)
-	}
-	if err := datadir.WriteAtomic(d.nodeIDFile, []byte(id+"\n"), nodeIDMode); err != nil {
-		return "", fmt.Errorf("write node id file %s: %w", d.nodeIDFile, err)
+// parseNodeID returns the id that the content of a node id file holds.
+func parseNodeID(data []byte) (string, error) {
+	id := strings.TrimSpace(string(data))
+	if !uuid7.Valid(id) {
+		return "", ErrMalformedNodeID
 	}
 	return id, nil
 }
