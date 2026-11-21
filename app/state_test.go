@@ -36,13 +36,15 @@ func prepareFolderPath(t *testing.T, setup folderSetup) string {
 func TestMakeFolderLeavesAFolder(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name  string
-		setup folderSetup
-		mode  os.FileMode
+		name    string
+		setup   folderSetup
+		mode    os.FileMode
+		created bool
 	}{
 		{
-			name: "missing folder is made with exactly its mode",
-			mode: folderMode,
+			name:    "missing folder is made with exactly its mode",
+			mode:    folderMode,
+			created: true,
 		},
 		{
 			name: "existing folder keeps its mode",
@@ -73,8 +75,9 @@ func TestMakeFolderLeavesAFolder(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			path := prepareFolderPath(t, tt.setup)
-			if err := makeFolder(folder{path, folderMode}); err != nil {
-				t.Fatal(err)
+			created, err := makeFolder(folder{path, folderMode})
+			if err != nil || created != tt.created {
+				t.Fatalf("makeFolder = %v, %v, want created = %v", created, err, tt.created)
 			}
 			info, err := os.Stat(path)
 			if err != nil || !info.IsDir() || info.Mode().Perm() != tt.mode {
@@ -114,13 +117,79 @@ func TestMakeFolderRefusesWhatIsNotAFolder(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			path := prepareFolderPath(t, tt.setup)
-			err := makeFolder(folder{path, folderMode})
-			if err == nil || !strings.Contains(err.Error(), tt.want) ||
+			created, err := makeFolder(folder{path, folderMode})
+			if created || err == nil || !strings.Contains(err.Error(), tt.want) ||
 				!strings.Contains(err.Error(), path) {
 				t.Fatalf("makeFolder = %v, want an error naming %s and containing %q",
 					err, path, tt.want)
 			}
 		})
+	}
+}
+
+// stateFolders are the folders of the state inside stateDir that a server makes at start, in the
+// order it makes them, with the mode of each.
+func stateFolders(stateDir string) []folder {
+	return layout(stateDir).folders
+}
+
+// The tool that runs before the server ever did makes the layout of the server, and says which
+// folders are new so that it can give them to the owner of the state folder.
+func TestMakeFoldersMakesTheLayoutOfAServerThatNeverStarted(t *testing.T) {
+	t.Parallel()
+	state := filepath.Join(t.TempDir(), "state")
+	want := stateFolders(state)
+
+	made, err := MakeFolders(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(made) != len(want) {
+		t.Fatalf("made %q, want %d folders", made, len(want))
+	}
+	for i, spec := range want {
+		info, statErr := os.Stat(spec.path)
+		if made[i] != spec.path || statErr != nil || info.Mode().Perm() != spec.mode {
+			t.Errorf("folder %d: made %q, stat %v, %v, want %q with mode %v", i, made[i], info, statErr, spec.path, spec.mode)
+		}
+	}
+	// What the server does at start finds everything made and has nothing to add.
+	if again, err := MakeFolders(state); err != nil || len(again) != 0 {
+		t.Errorf("second MakeFolders = %q, %v, want nothing made", again, err)
+	}
+}
+
+func TestMakeFoldersMakesOnlyWhatIsMissing(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	if _, err := MakeFolders(state); err != nil {
+		t.Fatal(err)
+	}
+	cluster := ClusterDir(state)
+	if err := os.Remove(cluster); err != nil {
+		t.Fatal(err)
+	}
+	made, err := MakeFolders(state)
+	if err != nil || !reflect.DeepEqual(made, []string{cluster}) {
+		t.Errorf("MakeFolders = %q, %v, want only %q", made, err, cluster)
+	}
+}
+
+// A failure reports what was made before it, so that the caller can still give those folders to
+// the owner of the state folder.
+func TestMakeFoldersReportsWhatItMadeBeforeAFailure(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	shared := filepath.Join(state, "shared")
+	write(t, state, "shared", "a file")
+
+	made, err := MakeFolders(state)
+
+	if err == nil || !strings.Contains(err.Error(), shared) || !strings.Contains(err.Error(), "is not a folder") {
+		t.Errorf("MakeFolders error = %v, want one naming %s that is not a folder", err, shared)
+	}
+	if want := []string{filepath.Join(state, "local")}; !reflect.DeepEqual(made, want) {
+		t.Errorf("made %q, want %q", made, want)
 	}
 }
 

@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.10.1] - 2026-11-21
+
+- Fixed: `splicefsdctl cluster init` and `user add` work on a server that has not started yet.
+- Fixed: a running server signs its certificate with a new cluster key at once, without a restart.
+
 ## [0.10.0] - 2026-11-21
 
 - New: `splicefsdctl cluster init` and `cluster show`; with a cluster key, each server signs and

@@ -104,7 +104,7 @@ func clientLine(key cluster.Key) string {
 // makeKey makes the key of the cluster and returns it. A cluster has one key for good: when the
 // file is there, whatever it holds, it stays as it is.
 func (c clusterKey) makeKey(given string) (cluster.Key, error) {
-	folder, err := c.findFolder(given, "cluster", app.ClusterDir)
+	folder, err := c.readyFolder(given, "cluster", app.ClusterDir)
 	if err != nil {
 		return cluster.Key{}, err
 	}

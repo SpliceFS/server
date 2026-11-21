@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -44,17 +45,39 @@ var (
 // nodeCert is the certificate of the listeners that name no certificate files. With a cluster
 // key it is issued by that key for the names of this node, to the node key in key.pem, and
 // made again when it is about to end or the key or the names change. Without one it is the
-// self-signed certificate. Only the goroutine that serves calls refresh and renew; get is
-// called by every handshake.
+// self-signed certificate. A handshake that finds a cluster key the served certificate was not
+// made under issues the new one before it answers; the daily check and a reload make it for
+// the names and the time. One goroutine at a time makes a certificate, under mu.
 type nodeCert struct {
 	dir    string
 	src    certSource
 	key    func() (cluster.Key, bool)
 	logger *slog.Logger
-	// wanted is what the last configuration asks of the certificate. The daily check makes
-	// the certificate for it again, so it needs no configuration.
+	// mu serializes everything that makes or changes a certificate, so that handshakes that
+	// find a new key together issue one certificate, and a reload cannot change wanted or the
+	// files of the node while a handshake issues.
+	mu sync.Mutex
+	// wanted is what the last configuration asks of the certificate. The daily check and a
+	// handshake that finds a new key make the certificate for it again, so they need no
+	// configuration. It is read and written under mu.
 	wanted  wanted
-	current atomic.Pointer[tls.Certificate]
+	current atomic.Pointer[served]
+}
+
+// served is the certificate that new connections get, and the cluster key it is settled for.
+type served struct {
+	cert *tls.Certificate
+	// settledFor is the cluster key the certificate was issued under, nil for the self-signed
+	// certificate. After a handshake failed to issue under a key it is that key all the same,
+	// so that the handshakes after it do not try again at every connection: the daily check
+	// does, and a key that changes is tried at once.
+	settledFor *cluster.Key
+}
+
+// settled reports whether a handshake that finds the cluster key (key, found) needs nothing new.
+// A node keeps the certificate it serves when the cluster key goes away.
+func (s *served) settled(key cluster.Key, found bool) bool {
+	return !found || (s.settledFor != nil && s.settledFor.Equal(key))
 }
 
 // wanted is what a configuration says about the certificate: whether any listener uses it,
@@ -64,19 +87,64 @@ type wanted struct {
 	names  []string
 }
 
+// wantedBy is what cfg asks of the certificate.
+func wantedBy(cfg *config.Config) wanted {
+	return wanted{
+		needed: slices.ContainsFunc(cfg.Listen, usesGeneratedCert),
+		names:  certNamesFor(cfg, ""),
+	}
+}
+
 // newNodeCert returns the certificate of this node, kept in dir. The cluster key is read
-// through key each time the certificate is checked.
+// through key each time the certificate is checked, and at every handshake.
 func newNodeCert(dir string, src certSource, key func() (cluster.Key, bool), logger *slog.Logger) *nodeCert {
 	return &nodeCert{dir: dir, src: src, key: key, logger: logger}
 }
 
 // get is the certificate for a new connection, so a certificate that was made since the last
-// connection is served at once.
+// connection is served at once. The cluster key is read at every connection: when it appeared
+// or changed since the certificate was made, the certificate for it is issued first.
 func (n *nodeCert) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
-	if cert := n.current.Load(); cert != nil {
-		return cert, nil
+	key, found := n.key()
+	if cur := n.current.Load(); cur != nil && cur.settled(key, found) {
+		return cur.cert, nil
+	}
+	return n.pickUp(key)
+}
+
+// pickUp issues the certificate for key, the cluster key a handshake found, and serves it. A
+// handshake that waits for the lock finds the certificate made and gets it too. When it cannot
+// issue, the certificate that is served stays; with none to serve, the handshake fails.
+func (n *nodeCert) pickUp(key cluster.Key) (*tls.Certificate, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if cur := n.current.Load(); cur != nil && cur.settled(key, true) {
+		return cur.cert, nil
+	}
+	ready, err := n.prepareFor(n.wanted)
+	if err == nil {
+		err = n.commitLocked(ready)
+	}
+	if err != nil {
+		return n.keepServing(key, err)
+	}
+	if cur := n.current.Load(); cur != nil {
+		return cur.cert, nil
 	}
 	return nil, errNoNodeCert
+}
+
+// keepServing is the answer of a handshake that could not issue the certificate for key: the
+// certificate that is served, which is then settled for key, or the error when there is none.
+func (n *nodeCert) keepServing(key cluster.Key, cause error) (*tls.Certificate, error) {
+	cur := n.current.Load()
+	if cur == nil {
+		return nil, cause
+	}
+	n.logger.Warn("cannot issue the node certificate for the cluster key, keeping the one served",
+		slog.Any("error", cause))
+	n.current.Store(&served{cert: cur.cert, settledFor: &key})
+	return cur.cert, nil
 }
 
 // renewal is a certificate that is ready to serve, and what it was made for. Making it changes
@@ -85,6 +153,8 @@ type renewal struct {
 	wanted wanted
 	// cert is the certificate to serve, nil when what is served stays.
 	cert *tls.Certificate
+	// under is the cluster key that cert is issued under, nil for the self-signed certificate.
+	under *cluster.Key
 	// save is the content of cert.pem for a certificate that was issued for this renewal, nil
 	// when the certificate is one that already exists. It is written by commit, not before, so
 	// a refused reload leaves the file as it was.
@@ -95,27 +165,35 @@ type renewal struct {
 
 // refresh makes the certificate right for cfg and serves it at once.
 func (n *nodeCert) refresh(cfg *config.Config) error {
-	ready, err := n.prepare(cfg)
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	ready, err := n.prepareFor(wantedBy(cfg))
 	if err != nil {
 		return err
 	}
-	return n.commit(ready)
+	return n.commitLocked(ready)
 }
 
 // prepare makes the certificate right for cfg, without serving it: a reload can still be
 // refused after this, and then the node must go on with what it has. A configuration without a
 // listener that uses the generated certificate needs none, and makes none.
 func (n *nodeCert) prepare(cfg *config.Config) (renewal, error) {
-	return n.prepareFor(wanted{
-		needed: slices.ContainsFunc(cfg.Listen, usesGeneratedCert),
-		names:  certNamesFor(cfg, ""),
-	})
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.prepareFor(wantedBy(cfg))
 }
 
 // commit saves a certificate that prepare issued and serves it, from the next connection on,
 // and remembers what it was made for. When it cannot save the certificate it serves the old
 // one, and the next check tries again.
 func (n *nodeCert) commit(ready renewal) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.commitLocked(ready)
+}
+
+// commitLocked is commit for a caller that holds mu.
+func (n *nodeCert) commitLocked(ready renewal) error {
 	n.wanted = ready.wanted
 	if ready.cert == nil {
 		return nil
@@ -126,18 +204,20 @@ func (n *nodeCert) commit(ready renewal) error {
 		}
 		n.logger.Info("node certificate issued", slog.Time("expires", ready.expires))
 	}
-	n.current.Store(ready.cert)
+	n.current.Store(&served{cert: ready.cert, settledFor: ready.under})
 	return nil
 }
 
 // renew is the daily check: it makes the certificate right for the last configuration, and
 // serves it. It changes nothing when the certificate already is right.
 func (n *nodeCert) renew() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	ready, err := n.prepareFor(n.wanted)
 	if err != nil {
 		return err
 	}
-	return n.commit(ready)
+	return n.commitLocked(ready)
 }
 
 // prepareFor makes the certificate that want asks for.
@@ -170,6 +250,7 @@ func (n *nodeCert) selfSigned(ready renewal) (renewal, error) {
 // issueUnder is the renewal with the saved certificate when it is still right, and otherwise
 // one issued under clusterKey, for the same node key.
 func (n *nodeCert) issueUnder(clusterKey cluster.Key, ready renewal) (renewal, error) {
+	ready.under = &clusterKey
 	host, err := n.src.hostname()
 	if err != nil {
 		return renewal{}, fmt.Errorf("host name: %w", err)

@@ -99,7 +99,7 @@ func (c userAdd) add(opts userAddOptions, stdin io.Reader) (string, error) {
 	if err := auth.CheckName(opts.name); err != nil {
 		return "", err //nolint:wrapcheck // printed to the user as it is
 	}
-	folder, err := c.findFolder(opts.state, "users", app.UsersDir)
+	folder, err := c.readyFolder(opts.state, "users", app.UsersDir)
 	if err != nil {
 		return "", err
 	}

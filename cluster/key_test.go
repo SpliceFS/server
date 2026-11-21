@@ -187,3 +187,35 @@ func TestParseKeyRefusesASpellingOfAKeyThatMarshalKeyDoesNotWrite(t *testing.T) 
 		t.Errorf("ParseKey = %v, want %v", err, errKeyForm)
 	}
 }
+
+func TestKeyEqual(t *testing.T) {
+	t.Parallel()
+	first, err := NewKey(testNow, bytes.NewReader(append(testSeed(), testIDBytes...)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := bytes.NewReader(append(bytes.Repeat([]byte{9}, ed25519.SeedSize), testIDBytes...))
+	second, err := NewKey(testNow, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameKeyOtherID := Key{ID: "0193f5c2-7d1e-7b2a-9c4d-5e6f7a8b9c0d", Private: first.Private}
+	tests := []struct {
+		name  string
+		other Key
+		want  bool
+	}{
+		{"the same key", Key{ID: first.ID, Private: bytes.Clone(first.Private)}, true},
+		{"another key", second, false},
+		{"the same key under another id", sameKeyOtherID, false},
+		{"no key", Key{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := first.Equal(tt.other); got != tt.want {
+				t.Errorf("Equal = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/SpliceFS/server/cluster"
 	"github.com/SpliceFS/server/config"
+	"github.com/SpliceFS/server/internal/datadir"
 )
 
 // A client of a cluster trusts a server whose certificate the cluster key signed and that is
@@ -69,7 +70,7 @@ func (c *ticker) clock() clock {
 }
 
 // clusterServer is a server with a cluster key and a listener that uses the generated
-// certificate.
+// certificate; the key is in the cluster folder unless the server was started before it.
 type clusterServer struct {
 	*reloading
 
@@ -83,6 +84,20 @@ func startClusterServer(t *testing.T) clusterServer {
 	fix := newFixture(t)
 	key := testClusterKey(t)
 	write(t, fix.data.clusterDir, cluster.KeyFile, string(cluster.MarshalKey(key)))
+	return runClusterServer(t, fix, key)
+}
+
+// startServerBeforeItsKey starts a cluster server whose cluster key is made but not written yet,
+// so the test decides when the server can find it.
+func startServerBeforeItsKey(t *testing.T) clusterServer {
+	t.Helper()
+	return runClusterServer(t, newFixture(t), testClusterKey(t))
+}
+
+// runClusterServer starts the server of fix with a listener that uses the generated
+// certificate, for the cluster key key.
+func runClusterServer(t *testing.T, fix *fixture, key cluster.Key) clusterServer {
+	t.Helper()
 	fix.cfg.Listen = []config.Endpoint{configEndpoint(nil, false)}
 	clk := newTicker(time.Now().Truncate(time.Second))
 	reloader := newReloading()
@@ -298,5 +313,45 @@ func replaceWithFolder(t *testing.T, path string) {
 	}
 	if err := os.MkdirAll(filepath.Join(path, "inside"), 0o700); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The cluster key is written after the server started, as splicefsdctl cluster init does on a
+// running server: the next handshake of a real client is served a certificate that the key
+// signed, with no restart, no reload, no daily check and no waiting.
+func TestServerPicksUpAClusterKeyThatAppearsWhileItRuns(t *testing.T) {
+	t.Parallel()
+	server := startServerBeforeItsKey(t)
+	if _, err := server.connect(t, server.trust()); err == nil {
+		t.Fatal("a client with the cluster key trusts the server before it has the key")
+	}
+
+	write(t, server.fix.data.clusterDir, cluster.KeyFile, string(cluster.MarshalKey(server.key)))
+
+	leaf, err := server.connect(t, server.trust())
+	if err != nil {
+		t.Fatalf("a client with the cluster key does not trust the server after the key was written: %v", err)
+	}
+	if !signedBy(leaf, server.key) {
+		t.Error("the served certificate is not signed by the cluster key")
+	}
+}
+
+// A cluster key that is replaced while the server runs is picked up as well.
+func TestServerPicksUpAClusterKeyThatChangesWhileItRuns(t *testing.T) {
+	t.Parallel()
+	server := startClusterServer(t)
+	changed := testClusterKey(t)
+	// Renamed over the old file, as the writers of the server do, so the change is one the
+	// reader sees whatever the clock of the file system does.
+	path := filepath.Join(server.fix.data.clusterDir, cluster.KeyFile)
+	if err := datadir.WriteAtomic(path, cluster.MarshalKey(changed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	trust := clusterTrustingConfig(ed25519.PublicKey(changed.Private[ed25519.SeedSize:]), server.clock.read)
+	leaf, err := server.connect(t, trust)
+	if err != nil || !signedBy(leaf, changed) {
+		t.Errorf("the changed key was not picked up (error %v)", err)
 	}
 }

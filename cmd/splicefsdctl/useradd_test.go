@@ -69,18 +69,19 @@ func testUserAdd() userAdd {
 func testStateTool(random io.Reader) stateTool {
 	return stateTool{
 		defaultState: func() (string, error) { return "", errNoState },
+		makeFolders:  app.MakeFolders,
 		now:          func() time.Time { return testNow },
 		random:       random,
 		chown:        os.Chown,
 	}
 }
 
-// stateWithUsers makes a state folder with the folder of the users in it and returns the state
-// folder. The folder of the users is app.UsersDir of it.
+// stateWithUsers makes a state folder with every folder in it that a server makes at start, and
+// returns the state folder. The folder of the users is app.UsersDir of it.
 func stateWithUsers(t *testing.T) string {
 	t.Helper()
 	state := t.TempDir()
-	if err := os.MkdirAll(app.UsersDir(state), 0o750); err != nil {
+	if _, err := app.MakeFolders(state); err != nil {
 		t.Fatal(err)
 	}
 	return state
@@ -317,7 +318,6 @@ func TestUserAddRefusals(t *testing.T) {
 		{"capital letters", nil, "Alice", "name must match ^[a-z0-9][a-z0-9._-]{0,63}$"},
 		{"a path", nil, "../x", "name must match"},
 		{"name of another user", existingUser, "alice", `user "alice" already exists`},
-		{"no users folder", noFolder, "alice", "users folder: "},
 		{"a file where the users folder belongs", fileForFolder, "alice", "is not a folder"},
 	}
 	for _, tt := range tests {
@@ -473,5 +473,37 @@ func TestUserAddReportsAFailedWriteOfTheId(t *testing.T) {
 	status := testUserAdd().run(job)
 	if want := "splicefsdctl: write id: disk full\n"; status != cli.ExitError || errOut.String() != want {
 		t.Errorf("status %d stderr %q, want %q", status, errOut.String(), want)
+	}
+}
+
+// A server that never started has no folders yet: user add makes them the way the server does,
+// and the user can log in once the server starts.
+func TestUserAddOnAServerThatNeverStarted(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	id := testID(t)
+
+	got := addUser(t, testUserAdd(), "pw\n", "--state", state, "alice")
+
+	if want := (outcome{stdout: id + "\n"}); got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	if _, found := readBack(app.UsersDir(state), "alice"); !found {
+		t.Error("the user is not found in the folder of the users")
+	}
+	sameFoldersAsTheServer(t, state)
+}
+
+func TestUserAddMakesAFolderThatWasRemoved(t *testing.T) {
+	t.Parallel()
+	state := stateWithUsers(t)
+	if err := os.Remove(app.UsersDir(state)); err != nil {
+		t.Fatal(err)
+	}
+
+	got := addUser(t, testUserAdd(), "pw\n", "--state", state, "alice")
+
+	if want := (outcome{stdout: testID(t) + "\n"}); got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
 	}
 }

@@ -58,6 +58,11 @@ func NewKey(now time.Time, random io.Reader) (Key, error) {
 	return Key{ID: id, Private: ed25519.NewKeyFromSeed(seed)}, nil
 }
 
+// Equal reports whether other is the same key: the same id and the same private key.
+func (k Key) Equal(other Key) bool {
+	return k.ID == other.ID && k.Private.Equal(other.Private)
+}
+
 // PublicText returns the public key as text: the base64 that the file and a client's
 // configuration hold.
 func (k Key) PublicText() string {
