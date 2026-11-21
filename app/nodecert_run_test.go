@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
@@ -220,19 +221,23 @@ func TestReloadWithChangedNamesServesANewCertificate(t *testing.T) {
 	}
 }
 
-// A reload whose certificate cannot be made is not applied.
-func TestReloadThatCannotMakeTheCertificateIsRefused(t *testing.T) {
+// A reload whose new certificate cannot be saved is applied, because by then it cannot be taken
+// back; the certificate that is served stays, and the log says so.
+func TestReloadThatCannotSaveTheCertificateKeepsTheOldOne(t *testing.T) {
 	t.Parallel()
 	server := startClusterServer(t)
+	before, err := server.connect(t, server.trust())
+	if err != nil {
+		t.Fatal(err)
+	}
 	replaceWithFolder(t, filepath.Join(server.fix.data.tlsDir, certFileName))
 	cfg := *server.fix.cfg
 	cfg.Cluster.Node = "north"
-	if err := server.refuse(t, loaded{cfg: &cfg}); err == nil {
-		t.Error("no refusal")
-	}
-	leaf, err := server.connect(t, server.trust())
-	if err != nil || containsName(leaf, "north") {
-		t.Errorf("the server changed although the reload was refused (error %v)", err)
+	server.apply(t, &cfg)
+	server.logs.waitFor(t, "cannot serve the new node certificate", 1)
+	after, err := server.connect(t, server.trust())
+	if err != nil || before.SerialNumber.Cmp(after.SerialNumber) != 0 || containsName(after, "north") {
+		t.Errorf("the served certificate changed although it could not be saved (error %v)", err)
 	}
 }
 
@@ -245,6 +250,11 @@ func TestRefusedReloadKeepsTheCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	certPath := filepath.Join(server.fix.data.tlsDir, certFileName)
+	fileBefore, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg := *server.fix.cfg
 	cfg.Cluster.Node = "north"
 	cfg.Shares = map[string]config.Share{"zzz": {Path: filepath.Join(t.TempDir(), "missing")}}
@@ -254,6 +264,10 @@ func TestRefusedReloadKeepsTheCertificate(t *testing.T) {
 	after, err := server.connect(t, server.trust())
 	if err != nil || before.SerialNumber.Cmp(after.SerialNumber) != 0 || containsName(after, "north") {
 		t.Errorf("the certificate changed although the reload was refused (error %v)", err)
+	}
+	fileAfter, err := os.ReadFile(certPath)
+	if err != nil || !bytes.Equal(fileBefore, fileAfter) {
+		t.Errorf("cert.pem changed although the reload was refused (error %v)", err)
 	}
 }
 

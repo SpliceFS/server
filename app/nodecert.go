@@ -85,8 +85,11 @@ type renewal struct {
 	wanted wanted
 	// cert is the certificate to serve, nil when what is served stays.
 	cert *tls.Certificate
-	// expires is when a certificate that was issued for this renewal ends, zero when the
-	// certificate is one that already existed.
+	// save is the content of cert.pem for a certificate that was issued for this renewal, nil
+	// when the certificate is one that already exists. It is written by commit, not before, so
+	// a refused reload leaves the file as it was.
+	save []byte
+	// expires is when the issued certificate ends.
 	expires time.Time
 }
 
@@ -96,8 +99,7 @@ func (n *nodeCert) refresh(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	n.commit(ready)
-	return nil
+	return n.commit(ready)
 }
 
 // prepare makes the certificate right for cfg, without serving it: a reload can still be
@@ -110,17 +112,22 @@ func (n *nodeCert) prepare(cfg *config.Config) (renewal, error) {
 	})
 }
 
-// commit serves a certificate that prepare made, from the next connection on, and remembers
-// what it was made for.
-func (n *nodeCert) commit(ready renewal) {
+// commit saves a certificate that prepare issued and serves it, from the next connection on,
+// and remembers what it was made for. When it cannot save the certificate it serves the old
+// one, and the next check tries again.
+func (n *nodeCert) commit(ready renewal) error {
 	n.wanted = ready.wanted
 	if ready.cert == nil {
-		return
+		return nil
 	}
-	n.current.Store(ready.cert)
-	if !ready.expires.IsZero() {
+	if ready.save != nil {
+		if err := datadir.WriteAtomic(filepath.Join(n.dir, certFileName), ready.save, certMode); err != nil {
+			return fmt.Errorf("save node certificate: %w", err)
+		}
 		n.logger.Info("node certificate issued", slog.Time("expires", ready.expires))
 	}
+	n.current.Store(ready.cert)
+	return nil
 }
 
 // renew is the daily check: it makes the certificate right for the last configuration, and
@@ -130,8 +137,7 @@ func (n *nodeCert) renew() error {
 	if err != nil {
 		return err
 	}
-	n.commit(ready)
-	return nil
+	return n.commit(ready)
 }
 
 // prepareFor makes the certificate that want asks for.
@@ -187,8 +193,8 @@ func (n *nodeCert) issueUnder(clusterKey cluster.Key, ready renewal) (renewal, e
 	return n.issue(clusterKey, nodeKey, nodeTemplate(names, serial, now), ready)
 }
 
-// issue signs template for nodeKey with the cluster key, saves the certificate and returns the
-// renewal that serves it.
+// issue signs template for nodeKey with the cluster key and returns the renewal that saves and
+// serves the certificate.
 func (n *nodeCert) issue(
 	clusterKey cluster.Key, nodeKey *ecdsa.PrivateKey, template *x509.Certificate, ready renewal,
 ) (renewal, error) {
@@ -197,10 +203,7 @@ func (n *nodeCert) issue(
 	if err != nil {
 		return renewal{}, fmt.Errorf("issue node certificate: %w", err)
 	}
-	if err = datadir.WriteAtomic(filepath.Join(n.dir, certFileName), encodeDER(der), certMode); err != nil {
-		return renewal{}, fmt.Errorf("save node certificate: %w", err)
-	}
-	ready.cert, ready.expires = servedCert(der, nodeKey), template.NotAfter
+	ready.cert, ready.save, ready.expires = servedCert(der, nodeKey), encodeDER(der), template.NotAfter
 	return ready, nil
 }
 

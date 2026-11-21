@@ -603,3 +603,20 @@ func TestEncodeKeyRefusesAKeyOfAnUnknownCurve(t *testing.T) {
 		t.Error("a key of an unknown curve was encoded")
 	}
 }
+
+func TestNodeCertRenewReportsWhatItCannotMake(t *testing.T) {
+	t.Parallel()
+	test := newNodeCertTest(t)
+	test.keys.set(testClusterKey(t))
+	if err := test.cert.refresh(standardConfig()); err != nil {
+		t.Fatal(err)
+	}
+	served := test.served(t)
+	test.cert.src.hostname = hostnameOf("", errors.New("injected"))
+	if err := test.cert.renew(); err == nil || !strings.Contains(err.Error(), "host name: injected") {
+		t.Errorf("err = %v", err)
+	}
+	if !bytes.Equal(served.Raw, test.served(t).Raw) {
+		t.Error("the served certificate changed when the check failed")
+	}
+}

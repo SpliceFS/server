@@ -74,6 +74,15 @@ func (r *runner) renewCertificate(ctx context.Context) {
 	}
 }
 
+// commitCertificate serves the node certificate that a reload prepared. It cannot refuse the
+// reload, which has gone too far by now, so a certificate that cannot be saved is logged and the
+// old one stays in use until the next daily check.
+func (r *runner) commitCertificate(ctx context.Context, ready renewal) {
+	if err := r.build.ownCert.commit(ready); err != nil {
+		r.logger.WarnContext(ctx, "cannot serve the new node certificate", slog.Any("error", err))
+	}
+}
+
 // start serves listener in the background. Every listener begins serving here, at startup
 // and on a reload, so this is the one place that tells the operator where it is reachable.
 // Binding is not serving: a reload binds while it plans and may throw the plan away.
@@ -145,7 +154,7 @@ func (r *runner) reload(ctx context.Context) {
 
 	// The sweep of the old configuration uses its shares, which close once it is replaced.
 	r.stopSweep()
-	r.build.ownCert.commit(certificate)
+	r.commitCertificate(ctx, certificate)
 	r.handlers.replace(next)
 	r.sweep(ctx, next)
 	for listener, tlsConfig := range changes.kept {
