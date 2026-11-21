@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -120,6 +122,121 @@ func TestWriteAtomicFailures(t *testing.T) {
 	}
 	if err := WriteAtomic(target, []byte("x"), 0o600); err == nil {
 		t.Error("rename over a folder succeeded")
+	}
+	if left := listDir(t, dir); len(left) != 1 {
+		t.Errorf("a failed write left a temporary file: %v", left)
+	}
+}
+
+func TestWriteOnceWritesWithItsMode(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := WriteOnce(path, []byte("first"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	info, statErr := os.Stat(path)
+	if err != nil || string(data) != "first" || statErr != nil || info.Mode().Perm() != 0o640 {
+		t.Fatalf("file = %q, %v, %v", data, info, err)
+	}
+	if left := listDir(t, dir); len(left) != 1 {
+		t.Errorf("a temporary file is left: %v", left)
+	}
+}
+
+func TestWriteOnceNeverReplaces(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := WriteOnce(path, []byte("first"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := WriteOnce(path, []byte("second"), 0o600)
+	if !errors.Is(err, fs.ErrExist) {
+		t.Errorf("second write = %v, want an error that is fs.ErrExist", err)
+	}
+	if data, readErr := os.ReadFile(path); readErr != nil || string(data) != "first" {
+		t.Errorf("file = %q, %v, want the first content", data, readErr)
+	}
+	if left := listDir(t, dir); len(left) != 1 {
+		t.Errorf("a refused write left a temporary file: %v", left)
+	}
+}
+
+// A temporary file that a crash left is not the final file and does not stop the write.
+func TestWriteOnceIgnoresAStaleTemporaryFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	put(t, dir, tempPrefix+"stale", "half a file", 0)
+	path := filepath.Join(dir, "f")
+	if err := WriteOnce(path, []byte("whole"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "whole" {
+		t.Errorf("file = %q, %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, tempPrefix+"stale")); err != nil {
+		t.Errorf("the stale file of another writer was removed: %v", err)
+	}
+}
+
+// Every writer gets the same start signal and none waits for another, so the writes overlap
+// as much as the machine lets them. Whatever the order, one write wins and the others see
+// that the file exists.
+func TestWriteOnceHasOneWinner(t *testing.T) {
+	t.Parallel()
+	const writers = 16
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	start := make(chan struct{})
+	errs := make([]error, writers)
+	var done sync.WaitGroup
+	for i := range writers {
+		done.Go(func() {
+			<-start
+			errs[i] = WriteOnce(path, []byte(strconv.Itoa(i)), 0o600)
+		})
+	}
+	close(start)
+	done.Wait()
+
+	winner := -1
+	for i, err := range errs {
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		if err != nil {
+			t.Errorf("writer %d: %v, want nil or fs.ErrExist", i, err)
+			continue
+		}
+		if winner >= 0 {
+			t.Errorf("writers %d and %d both succeeded", winner, i)
+		}
+		winner = i
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != strconv.Itoa(winner) {
+		t.Errorf("file = %q, %v, want the content of writer %d", data, err, winner)
+	}
+	if left := listDir(t, dir); len(left) != 1 {
+		t.Errorf("temporary files are left: %v", left)
+	}
+}
+
+// These failures do not depend on the user: a missing folder and a folder where the file
+// belongs fail for root as well.
+func TestWriteOnceFailures(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := WriteOnce(filepath.Join(dir, "missing", "f"), nil, 0o600); err == nil {
+		t.Error("write into a missing folder succeeded")
+	}
+	target := filepath.Join(dir, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteOnce(target, []byte("x"), 0o600); !errors.Is(err, fs.ErrExist) {
+		t.Errorf("write over a folder = %v, want fs.ErrExist", err)
 	}
 	if left := listDir(t, dir); len(left) != 1 {
 		t.Errorf("a failed write left a temporary file: %v", left)
