@@ -456,8 +456,10 @@ func TestRunFailsAtStart(t *testing.T) {
 		{"state folder is a file", func(fix *fixture) {
 			write(t, fix.state, "shared/nodes", "a file where a folder belongs")
 		}, "is not a folder"},
-		{"old keys folder is a file", func(fix *fixture) {
-			write(t, fix.state, "shared/keys", "a file where a folder belongs")
+		{"old keys file of this node cannot be removed", func(fix *fixture) {
+			// A folder that holds a file, where this node's old keys file belongs.
+			write(t, fix.state, "local/node-id", rfcNodeID+"\n")
+			write(t, filepath.Join(fix.state, "shared", "keys", datadir.NodeFile(rfcNodeID)), "inside", "x")
 		}, "remove old token keys"},
 		{"state folders cannot be made", func(fix *fixture) {
 			parent := write(t, t.TempDir(), "file", "a file where a folder belongs")

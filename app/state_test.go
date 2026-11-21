@@ -431,10 +431,23 @@ func TestRemoveOldKeysTwiceIsTheSameAsOnce(t *testing.T) {
 	}
 }
 
-func TestRemoveOldKeysFailsWhenTheFolderIsAFile(t *testing.T) {
+func TestRemoveOldKeysLeavesAFileAtTheFolderPathAlone(t *testing.T) {
 	t.Parallel()
 	data := layout(t.TempDir())
-	write(t, filepath.Dir(data.oldKeysDir), filepath.Base(data.oldKeysDir), "a file where a folder belongs")
+	path := write(t, filepath.Dir(data.oldKeysDir), filepath.Base(data.oldKeysDir), "not this server's")
+	if err := data.removeOldKeys(rfcNodeID); err != nil {
+		t.Errorf("removeOldKeys = %v, want nil: the path is not used any more", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "not this server's" {
+		t.Errorf("file at the folder path after removeOldKeys = %q, %v; want it unchanged", got, err)
+	}
+}
+
+func TestRemoveOldKeysFailsWhenItsOwnFileCannotBeRemoved(t *testing.T) {
+	t.Parallel()
+	data := layout(t.TempDir())
+	own := filepath.Join(data.oldKeysDir, datadir.NodeFile(rfcNodeID))
+	write(t, own, "inside", "a folder where the node's file belongs")
 	err := data.removeOldKeys(rfcNodeID)
 	if err == nil || !strings.Contains(err.Error(), "remove old token keys") {
 		t.Errorf("removeOldKeys = %v, want an error that says what was being removed", err)

@@ -126,11 +126,22 @@ func (d *dataPaths) nodeID(now func() time.Time, random io.Reader) (string, erro
 // folder of those files once it is empty. This server is the only writer of its own file; the
 // file of another node is left to that node, which removes it when it runs this version.
 func (d *dataPaths) removeOldKeys(nodeID string) error {
+	// Only a folder there is the one earlier versions made. Anything else at that path is not
+	// this server's, and this server no longer uses the path, so it is left alone.
+	if !isFolder(d.oldKeysDir) {
+		return nil
+	}
 	err := wrap(removeFile(filepath.Join(d.oldKeysDir, datadir.NodeFile(nodeID))), "remove old token keys")
 	if err != nil {
 		return err
 	}
 	return wrap(removeEmptyFolder(d.oldKeysDir), "remove old token keys folder")
+}
+
+// isFolder reports whether path is a folder itself, not a link to one.
+func isFolder(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.IsDir()
 }
 
 // removeFile removes the file at path. A file that is not there is what was wanted.

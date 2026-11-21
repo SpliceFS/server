@@ -9,7 +9,7 @@ The server uses two folders:
 | Folder        | Linux packages            | macOS build              | Holds                       |
 |---------------|---------------------------|--------------------------|-----------------------------|
 | Configuration | `/etc/splicefs/server`    | `~/.splicefs/server`     | what you write: settings, shares |
-| State         | `/var/lib/splicefs/server`| `~/.splicefs/var/server` | what the server keeps: users, keys, certificate |
+| State         | `/var/lib/splicefs/server`| `~/.splicefs/var/server` | what the server keeps: users, node keys, certificate |
 
 `--config DIR` and `--state DIR` override them:
 
@@ -256,7 +256,7 @@ id: the node id. sign_key and encrypt_key: the node's public keys, base64. A nod
 The node list that a server gives to clients is every file in `nodes/`, so it is empty when
 no server has a `cluster.url`. The cluster name comes from `cluster.name` in the settings.
 
-Changes in `users/` and `nodes/` are picked up without a restart. A keys or nodes
+Changes in `users/` and `nodes/` are picked up without a restart. A nodes
 file that cannot be parsed is ignored with a warning in the log, and the last good content of
 that file stays in use. Changes to `conf.d/` and `shares.d/` take effect when you reload the
 server, see "Applying changes".
@@ -289,7 +289,7 @@ Run `splicefsd config check` first. It finds mistakes in the files before the se
   listener starts accepting.
 - `log.level` follows the configuration. `log.format` is read only at start.
 - The node file in `shared/nodes/` follows `cluster.node` and `cluster.url`.
-- Users, keys and nodes under the state folder never need a reload. They are picked up as
+- Users and nodes under the state folder never need a reload. They are picked up as
   they change.
 
 A restart is needed in two cases. One is a change of `log.format`. The other is moving a

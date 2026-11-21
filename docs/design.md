@@ -236,14 +236,13 @@ The state folder holds what the server keeps:
     digests/<share>/<path>.splicefs_state
   shared/                   may be synced between nodes
     users/<name>.yaml
-    keys/<node-id>.yaml
     nodes/<node-id>.yaml
 ```
 
 `local/` holds the node id, a UUIDv7 made on the first start, and the generated
 certificate. `shared/` is safe to sync with any file sync tool because every file in it has
-exactly one writer: the administrator writes each user file, and each server writes its own key
-file and its own node file, named by its node id. Two servers never write the same file, so
+exactly one writer: the administrator writes each user file, and each server writes its own node
+file, named by its node id. Two servers never write the same file, so
 there are no conflicts to resolve.
 
 The node list is the union of the files in `shared/nodes/`. A server writes its own file when
@@ -256,8 +255,8 @@ The full reference is in the [server configuration](configuration.md).
 
 Each node makes two key pairs on its first start and keeps the private halves in local/node-keys.yaml, which never
 leaves the node. It publishes the public halves in its own node file in shared/nodes, so every node and every client
-that lists the nodes learns them. The signing key will sign the node's tokens and the encryption key will receive
-keys meant for this node only (later steps).
+that lists the nodes learns them. The signing key signs the node's tokens; the encryption key will receive
+keys meant for this node only (a later step).
 
 ### Reloading
 
@@ -265,7 +264,7 @@ keys meant for this node only (later steps).
 everything, loads certificates, opens new ports and opens shares first, and changes nothing if
 any of that fails. New requests use the new configuration; requests in progress finish on the
 one they started with. A listener that stays configured is never closed, so a new certificate
-takes effect for new connections. Users, keys and nodes are followed as the files change and
+takes effect for new connections. Users and nodes are followed as the files change and
 need no reload. See "Applying changes" in the [server configuration](configuration.md).
 
 ### Logins
@@ -327,7 +326,7 @@ That document covers discovery, the merged tree, reading, the cache and filesyst
 - **Tokens cannot be revoked.** A removed or disabled user keeps access until the token
   already issued expires (30 minutes by default).
 - **Keys travel by sync.** A token from one node is rejected by another until the sync tool
-  has delivered the first node's key file.
+  has delivered the first node's node file.
 - **Some changes need a restart.** A reload cannot change `log.format`, and it cannot move a
   listener to an overlapping address on the same port, for example from `0.0.0.0` to `::`,
   because the new address cannot be opened while the old one is open.
