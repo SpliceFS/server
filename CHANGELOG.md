@@ -6,6 +6,14 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.9.0] - 2026-11-21
+
+- Changed (action needed): user files are named by the user's id. Make each user again with
+  `splicefsdctl user add`; files named by the user name are skipped.
+- New: `splicefsdctl user add`.
+- Changed: a changed or disabled user takes effect within 30 seconds, also for tokens already
+  issued. Tokens last 5 minutes by default.
+
 ## [0.8.0] - 2026-11-21
 
 - Changed: login tokens are signed with each node's own Ed25519 key; the shared token key files are
