@@ -177,6 +177,7 @@ folders it needs. It must be able to write to the state folder.
   shared/                   may be synced between servers
     users/<user-id>.yaml
     nodes/<node-id>.yaml
+    cluster/key.yaml
 ```
 
 | File                         | Written by            | Content                                 |
@@ -187,6 +188,7 @@ folders it needs. It must be able to write to the state folder.
 | `local/digests/`             | the server            | the digests of each file read, one small file per file |
 | `shared/users/<user-id>.yaml`| you, through `splicefsdctl user add` | one user                   |
 | `shared/nodes/<node-id>.yaml`| that server only      | name, address, id and public keys of that server |
+| `shared/cluster/key.yaml`    | you, through `splicefsdctl cluster init` | the key of the cluster: its id and one Ed25519 key pair |
 
 ### local/
 
@@ -199,7 +201,9 @@ Never copy or sync `local/`. It belongs to this machine.
   the file; it never replaces an id it cannot read.
 - `tls/` holds a self-signed certificate (ECDSA P-256, valid for 10 years) made on the first
   start for the host name, `localhost`, `127.0.0.1` and `::1`. Files that exist are never
-  replaced. To use your own certificate, set `tls` on the listener instead.
+  replaced. To use your own certificate, set `tls` on the listener instead. When the cluster
+  has a key (see [Cluster key](#cluster-key)), the server signs its own certificate with the
+  cluster key instead, and renews it on its own.
 - `digests/` keeps the head and tail digests of every file a client has asked about, so a
   restart or a reload does not read the files again. Each entry is one small file: about one
   inode and one 4 KiB block per data file read, which is about 4 GB and a million inodes per
@@ -262,6 +266,20 @@ server, see "Applying changes".
 
 Earlier versions kept token keys in `shared/keys/`. A server of this version removes its own file there on
 start, and the folder once it is empty.
+
+## Cluster key
+
+A cluster key lets clients trust every server of the cluster without a certificate from a public authority.
+Run `splicefsdctl cluster init` once, on one server. It writes `shared/cluster/key.yaml`, which your sync tool
+delivers to the other servers, and prints the line a client needs:
+
+```
+cluster_key: <base64>
+```
+
+Each server then signs its own certificate with the cluster key and renews it on its own. Run
+`splicefsdctl cluster show` to print the line again. Keep `shared/cluster/key.yaml` as secret as the servers
+themselves: anyone who holds it can act as a server of the cluster.
 
 ## Applying changes
 

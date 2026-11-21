@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"io"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -60,10 +59,18 @@ func stubHash(in, random io.Reader) (string, error) {
 // has a fixed time and fixed random bytes.
 func testUserAdd() userAdd {
 	return userAdd{
+		stateTool: testStateTool(strings.NewReader(testSalt + testIDBytes)),
+		hash:      stubHash,
+	}
+}
+
+// testStateTool returns a state tool that knows no default state folder, has a fixed time and
+// reads the given random bytes.
+func testStateTool(random io.Reader) stateTool {
+	return stateTool{
 		defaultState: func() (string, error) { return "", errNoState },
-		hash:         stubHash,
 		now:          func() time.Time { return testNow },
-		random:       strings.NewReader(testSalt + testIDBytes),
+		random:       random,
 		chown:        os.Chown,
 	}
 }
@@ -264,7 +271,7 @@ func TestUserAddHelp(t *testing.T) {
 	}
 }
 
-// A setup prepares the state of a test of a refusal. It is given the folder of the users.
+// A setup prepares the state of a test of a refusal. It is given the folder that the command writes into.
 type setup func(t *testing.T, users string)
 
 // existingUser writes the file of a user named alice, as an earlier user add would.
@@ -280,18 +287,18 @@ func existingUser(t *testing.T, users string) {
 	}
 }
 
-// noUsersFolder removes the folder of the users.
-func noUsersFolder(t *testing.T, users string) {
+// noFolder removes the folder that a command writes into.
+func noFolder(t *testing.T, users string) {
 	t.Helper()
 	if err := os.Remove(users); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// fileForUsersFolder puts a file where the folder of the users belongs.
-func fileForUsersFolder(t *testing.T, users string) {
+// fileForFolder puts a file where the folder that a command writes into belongs.
+func fileForFolder(t *testing.T, users string) {
 	t.Helper()
-	noUsersFolder(t, users)
+	noFolder(t, users)
 	if err := os.WriteFile(users, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -310,8 +317,8 @@ func TestUserAddRefusals(t *testing.T) {
 		{"capital letters", nil, "Alice", "name must match ^[a-z0-9][a-z0-9._-]{0,63}$"},
 		{"a path", nil, "../x", "name must match"},
 		{"name of another user", existingUser, "alice", `user "alice" already exists`},
-		{"no users folder", noUsersFolder, "alice", "users folder: "},
-		{"a file where the users folder belongs", fileForUsersFolder, "alice", "is not a folder"},
+		{"no users folder", noFolder, "alice", "users folder: "},
+		{"a file where the users folder belongs", fileForFolder, "alice", "is not a folder"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -466,25 +473,5 @@ func TestUserAddReportsAFailedWriteOfTheId(t *testing.T) {
 	status := testUserAdd().run(job)
 	if want := "splicefsdctl: write id: disk full\n"; status != cli.ExitError || errOut.String() != want {
 		t.Errorf("status %d stderr %q, want %q", status, errOut.String(), want)
-	}
-}
-
-type fakeInfo struct{ fs.FileInfo }
-
-func (fakeInfo) Sys() any { return nil }
-
-func TestOwnerOf(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	info, err := os.Stat(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	st := statOf(t, dir)
-	if got, err := ownerOf(info); err != nil || got.uid != int(st.Uid) || got.gid != int(st.Gid) {
-		t.Errorf("ownerOf = %+v, %v, want %d:%d", got, err, st.Uid, st.Gid)
-	}
-	if _, err := ownerOf(fakeInfo{info}); !errors.Is(err, errNoFolderOwner) {
-		t.Errorf("ownerOf without owner = %v", err)
 	}
 }

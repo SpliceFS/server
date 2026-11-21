@@ -615,7 +615,10 @@ func TestReloadLogsARemovedListenerThatDoesNotCloseCleanly(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	reloader.build = builder{data: data, digests: digests, version: "test", logger: logger}
+	reloader.build = builder{
+		data: data, digests: digests, version: "test", logger: logger,
+		ownCert: newNodeCert(data.tlsDir, testCertSource(), (&keyHolder{}).current, logger),
+	}
 	reloader.handlers = newLive(&generation{handler: http.NotFoundHandler(), closer: failingCloser{}}, logger)
 	reloader.srv = newServer(reloader.handlers, logger)
 	const removedAddress = "127.0.0.1:1"
@@ -788,5 +791,18 @@ func TestSweepFailureIsLogged(t *testing.T) {
 	got := logs.String()
 	if !strings.Contains(got, "level=WARN") || !strings.Contains(got, "cannot sweep digest entries") {
 		t.Errorf("log %q does not report the failed sweep", got)
+	}
+}
+
+// A reload makes the cluster folder again, as a start does, so the cluster key of a server whose
+// folder was removed while it ran can be made again.
+func TestReloadMakesTheClusterFolderAgain(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t)
+	reloader := startReloading(t, fix)
+	mustRemoveAll(t, fix.data.clusterDir)
+	reloader.apply(t, fix.cfg)
+	if info, err := os.Stat(fix.data.clusterDir); err != nil || !info.IsDir() {
+		t.Errorf("cluster folder after the reload = %v, %v", info, err)
 	}
 }

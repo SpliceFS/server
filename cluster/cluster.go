@@ -176,16 +176,22 @@ func checkKeys(fileID string, node wire.Node) error {
 	return nil
 }
 
-// checkKey checks that text is the base64 of 32 bytes in the standard alphabet. Encoding the
-// bytes again must give text back: the decoder skips line breaks and ignores the unused bits
+// checkKey checks that text is the base64 of 32 bytes in the standard alphabet.
+func checkKey(text string) error {
+	_, err := decodeKey(text)
+	return err
+}
+
+// decodeKey returns the 32 bytes that text is the base64 of, in the standard alphabet. Encoding
+// the bytes again must give text back: the decoder skips line breaks and ignores the unused bits
 // of the last character, and a key with more than one spelling would look like two keys to a
 // client that compares them as text.
-func checkKey(text string) error {
+func decodeKey(text string) ([]byte, error) {
 	raw, err := base64.StdEncoding.DecodeString(text)
 	if err != nil || len(raw) != keySize || base64.StdEncoding.EncodeToString(raw) != text {
-		return errKeyForm
+		return nil, errKeyForm
 	}
-	return nil
+	return raw, nil
 }
 
 // cleanURL checks that raw is an absolute http or https URL with a host and no

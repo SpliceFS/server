@@ -21,7 +21,7 @@ import (
 // "local" is for this machine only; "shared" may be copied between servers by any sync tool,
 // which is why every file in it has exactly one writer.
 type dataPaths struct {
-	nodeIDFile, nodeKeysFile, digestsDir, usersDir, nodesDir string
+	nodeIDFile, nodeKeysFile, digestsDir, usersDir, nodesDir, clusterDir, tlsDir string
 	// oldKeysDir held the token keys of earlier versions. It is not one of the folders: nothing
 	// makes it any more, and removeOldKeys cleans it up.
 	oldKeysDir string
@@ -55,8 +55,10 @@ func layout(stateDir string) dataPaths {
 		nodeIDFile:   filepath.Join(local, "node-id"),
 		nodeKeysFile: filepath.Join(local, "node-keys.yaml"),
 		digestsDir:   filepath.Join(local, "digests"),
+		tlsDir:       filepath.Join(local, tlsDirName),
 		usersDir:     filepath.Join(shared, "users"),
 		nodesDir:     filepath.Join(shared, "nodes"),
+		clusterDir:   filepath.Join(shared, "cluster"),
 		oldKeysDir:   filepath.Join(shared, "keys"),
 	}
 	paths.folders = []folder{
@@ -65,6 +67,7 @@ func layout(stateDir string) dataPaths {
 		{shared, 0o750},
 		{paths.usersDir, 0o750},
 		{paths.nodesDir, 0o755},
+		{paths.clusterDir, 0o750},
 	}
 	return paths
 }
@@ -73,6 +76,12 @@ func layout(stateDir string) dataPaths {
 // tools that make user files write to it, so the path is stated once, in the layout.
 func UsersDir(stateDir string) string {
 	return layout(stateDir).usersDir
+}
+
+// ClusterDir returns the folder of the cluster key inside stateDir. The server reads it, and the
+// tool that makes the cluster key writes to it, so the path is stated once, in the layout.
+func ClusterDir(stateDir string) string {
+	return layout(stateDir).clusterDir
 }
 
 // makeFolders creates the folders that are missing. A folder that exists keeps its mode,

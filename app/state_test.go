@@ -517,3 +517,30 @@ func TestUsersDirIsWhereTheServerReadsUsers(t *testing.T) {
 		t.Errorf("UsersDir = %q, want %q", got, want)
 	}
 }
+
+// ClusterDir is where the server reads the cluster key, so that the tool that makes the key
+// writes to the same folder.
+func TestClusterDirIsWhereTheServerReadsTheClusterKey(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	if got, want := ClusterDir(state), layout(state).clusterDir; got != want {
+		t.Errorf("ClusterDir = %q, want %q", got, want)
+	}
+	if got, want := ClusterDir("/state"), "/state/shared/cluster"; got != want {
+		t.Errorf("ClusterDir = %q, want %q", got, want)
+	}
+}
+
+// The cluster folder is made with the others, so that the tool that makes the cluster key finds
+// it on a server that has started once.
+func TestMakeFoldersMakesTheClusterFolder(t *testing.T) {
+	t.Parallel()
+	data := layout(t.TempDir())
+	if err := data.makeFolders(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(data.clusterDir)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != folderMode {
+		t.Errorf("cluster folder = %v, %v, want a folder with mode %v", info, err, os.FileMode(folderMode))
+	}
+}

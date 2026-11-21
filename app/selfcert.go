@@ -47,13 +47,6 @@ type certSource struct {
 	random   io.Reader
 }
 
-// localCertificate returns the certificate of this server, making it on first use.
-func localCertificate(stateDir string) (tls.Certificate, error) {
-	dir := filepath.Join(stateDir, localDirName, tlsDirName)
-	src := certSource{now: time.Now, hostname: os.Hostname, random: rand.Reader}
-	return loadOrCreateCert(dir, src)
-}
-
 // loadOrCreateCert loads cert.pem and key.pem from dir. Only when neither can be found are
 // they made; files that exist are never replaced, even when they are unusable, because the
 // operator may have put them there on purpose.
@@ -116,12 +109,31 @@ func generateCert(src certSource) (pemPair, error) {
 	if err != nil {
 		return pemPair{}, fmt.Errorf("host name: %w", err)
 	}
-	key, keyErr := ecdsa.GenerateKey(elliptic.P256(), src.random)
-	serial, serialErr := rand.Int(src.random, new(big.Int).Lsh(big.NewInt(1), serialBits))
-	if err := errors.Join(keyErr, serialErr); err != nil {
+	key, serial, err := newKeyAndSerial(src.random)
+	if err != nil {
 		return pemPair{}, err
 	}
 	return encodeCert(src.random, certTemplate(certHost(host), serial, src.now()), key)
+}
+
+// newKeyAndSerial makes a node key and the serial number of its first certificate. They are
+// made together because both draw on random, which is what a failure of it is tested with.
+func newKeyAndSerial(random io.Reader) (*ecdsa.PrivateKey, *big.Int, error) {
+	key, keyErr := ecdsa.GenerateKey(elliptic.P256(), random)
+	serial, serialErr := newSerial(random)
+	if err := errors.Join(keyErr, serialErr); err != nil {
+		return nil, nil, err
+	}
+	return key, serial, nil
+}
+
+// newSerial returns a random certificate serial number.
+func newSerial(random io.Reader) (*big.Int, error) {
+	serial, err := rand.Int(random, new(big.Int).Lsh(big.NewInt(1), serialBits))
+	if err != nil {
+		return nil, fmt.Errorf("serial number: %w", err)
+	}
+	return serial, nil
 }
 
 // encodeCert signs template with key and returns the certificate and the key as PEM.
@@ -129,14 +141,25 @@ func encodeCert(
 	random io.Reader, template *x509.Certificate, key *ecdsa.PrivateKey,
 ) (pemPair, error) {
 	certDER, certErr := x509.CreateCertificate(random, template, template, &key.PublicKey, key)
-	keyDER, keyDERErr := x509.MarshalECPrivateKey(key)
-	if err := errors.Join(certErr, keyDERErr); err != nil {
+	keyPEM, keyErr := encodeKey(key)
+	if err := errors.Join(certErr, keyErr); err != nil {
 		return pemPair{}, err
 	}
-	return pemPair{
-		cert: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}),
-		key:  pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
-	}, nil
+	return pemPair{cert: encodeDER(certDER), key: keyPEM}, nil
+}
+
+// encodeDER returns a DER certificate as PEM.
+func encodeDER(der []byte) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// encodeKey returns the private key as PEM.
+func encodeKey(key *ecdsa.PrivateKey) ([]byte, error) {
+	der, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("encode node key: %w", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}), nil
 }
 
 // certHost returns host if it can be a name in a certificate, which holds only printable
