@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -153,6 +154,74 @@ func TestNodeIDIsMadeOnceAndKept(t *testing.T) {
 	again, err := paths.nodeID(func() time.Time { return time.Time{} }, iotest.ErrReader(errors.New("unused")))
 	if err != nil || again != rfcNodeID {
 		t.Errorf("second nodeID = %q, %v, want %q", again, err, rfcNodeID)
+	}
+}
+
+// rival is a random source that plays another process starting at the same time: when this
+// start asks for random bytes, the other start has just saved its own node id.
+type rival struct {
+	t    *testing.T
+	path string
+	id   string
+}
+
+func (r rival) Read(p []byte) (int, error) {
+	if err := os.WriteFile(r.path, []byte(r.id+"\n"), nodeIDMode); err != nil {
+		r.t.Error(err)
+	}
+	clear(p)
+	return len(p), nil
+}
+
+// The file is saved by whichever start gets there first, and the other start uses that id:
+// a second id would make this one node two.
+func TestNodeIDOfTheStartThatSavedFirstWins(t *testing.T) {
+	t.Parallel()
+	paths := layout(t.TempDir())
+	if err := paths.makeFolders(); err != nil {
+		t.Fatal(err)
+	}
+	const other = "00000000-0000-7000-8000-000000000001"
+	id, err := paths.nodeID(fixedNow, rival{t, paths.nodeIDFile, other})
+	if err != nil || id != other {
+		t.Errorf("nodeID = %q, %v, want %q", id, err, other)
+	}
+	if saved, readErr := os.ReadFile(paths.nodeIDFile); readErr != nil || string(saved) != other+"\n" {
+		t.Errorf("saved node id = %q, %v, want %q", saved, readErr, other+"\n")
+	}
+}
+
+// Starts that overlap each make an id of their own and one of them is saved: all of them
+// must return that one. The start signal releases them together.
+func TestNodeIDIsOneForStartsAtOnce(t *testing.T) {
+	t.Parallel()
+	const starts = 8
+	paths := layout(t.TempDir())
+	if err := paths.makeFolders(); err != nil {
+		t.Fatal(err)
+	}
+	begin := make(chan struct{})
+	ids := make([]string, starts)
+	errs := make([]error, starts)
+	var done sync.WaitGroup
+	for i := range starts {
+		done.Go(func() {
+			<-begin
+			random := bytes.NewReader(bytes.Repeat([]byte{byte(i + 1)}, 10))
+			ids[i], errs[i] = paths.nodeID(fixedNow, random)
+		})
+	}
+	close(begin)
+	done.Wait()
+
+	saved, err := os.ReadFile(paths.nodeIDFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range starts {
+		if errs[i] != nil || ids[i]+"\n" != string(saved) {
+			t.Errorf("start %d: %q, %v, want the saved id %q", i, ids[i], errs[i], saved)
+		}
 	}
 }
 
