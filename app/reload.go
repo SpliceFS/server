@@ -124,7 +124,7 @@ func (r *runner) reload(ctx context.Context) {
 		r.logger.ErrorContext(ctx, "configuration not applied", slog.Any("error", err))
 		return
 	}
-	err = r.build.prepare(cfg)
+	certificate, err := r.build.prepare(cfg)
 	if err != nil {
 		r.logger.ErrorContext(ctx, "configuration not applied", slog.Any("error", err))
 		return
@@ -145,6 +145,7 @@ func (r *runner) reload(ctx context.Context) {
 
 	// The sweep of the old configuration uses its shares, which close once it is replaced.
 	r.stopSweep()
+	r.build.ownCert.commit(certificate)
 	r.handlers.replace(next)
 	r.sweep(ctx, next)
 	for listener, tlsConfig := range changes.kept {

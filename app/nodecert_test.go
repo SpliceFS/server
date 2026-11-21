@@ -158,8 +158,10 @@ func TestNodeCertHasTheNamesAndTheValidity(t *testing.T) {
 	if got := certNamesOf(leaf); !slices.Equal(got, want) {
 		t.Errorf("names = %v, want %v", got, want)
 	}
-	if !leaf.NotBefore.Equal(certTime()) || !leaf.NotAfter.Equal(certTime().Add(90*24*time.Hour)) {
-		t.Errorf("valid %v to %v, want 90 days from %v", leaf.NotBefore, leaf.NotAfter, certTime())
+	// An hour before the issue time, so that a client whose clock is a little behind accepts a
+	// fresh certificate, and 90 days from the issue time.
+	if !leaf.NotBefore.Equal(certTime().Add(-time.Hour)) || !leaf.NotAfter.Equal(certTime().Add(90*24*time.Hour)) {
+		t.Errorf("valid %v to %v, want an hour before %v to 90 days after it", leaf.NotBefore, leaf.NotAfter, certTime())
 	}
 	if len(leaf.ExtKeyUsage) != 1 || leaf.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth {
 		t.Errorf("extended key usage = %v", leaf.ExtKeyUsage)

@@ -30,6 +30,10 @@ import (
 const (
 	nodeCertLifetime    = 90 * 24 * time.Hour
 	nodeCertRenewBefore = 30 * 24 * time.Hour
+	// nodeCertBackdate is how long before it is issued a certificate is already valid, so that a
+	// client whose clock is a little behind accepts a fresh one. The lifetime counts from the
+	// issue time.
+	nodeCertBackdate = time.Hour
 )
 
 var (
@@ -75,87 +79,134 @@ func (n *nodeCert) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 	return nil, errNoNodeCert
 }
 
-// refresh makes the certificate right for cfg. A configuration without a listener that uses
-// the generated certificate needs none, and makes none.
+// renewal is a certificate that is ready to serve, and what it was made for. Making it changes
+// nothing that a connection can see: commit does.
+type renewal struct {
+	wanted wanted
+	// cert is the certificate to serve, nil when what is served stays.
+	cert *tls.Certificate
+	// expires is when a certificate that was issued for this renewal ends, zero when the
+	// certificate is one that already existed.
+	expires time.Time
+}
+
+// refresh makes the certificate right for cfg and serves it at once.
 func (n *nodeCert) refresh(cfg *config.Config) error {
-	n.wanted = wanted{
-		needed: slices.ContainsFunc(cfg.Listen, usesGeneratedCert),
-		names:  certNamesFor(cfg, ""),
-	}
-	return n.renew()
-}
-
-// renew makes the certificate right for the last configuration. It changes nothing when the
-// certificate already is.
-func (n *nodeCert) renew() error {
-	if !n.wanted.needed {
-		return nil
-	}
-	clusterKey, ok := n.key()
-	if !ok {
-		return n.selfSigned()
-	}
-	return n.issueUnder(clusterKey)
-}
-
-// selfSigned serves the self-signed certificate, which it makes only when the node has none.
-// A node that has served a certificate keeps it when the cluster key goes away.
-func (n *nodeCert) selfSigned() error {
-	if n.current.Load() != nil {
-		return nil
-	}
-	cert, err := loadOrCreateCert(n.dir, n.src)
+	ready, err := n.prepare(cfg)
 	if err != nil {
 		return err
 	}
-	n.current.Store(&cert)
+	n.commit(ready)
 	return nil
 }
 
-// issueUnder serves the saved certificate when it is still right, and otherwise issues one
-// under clusterKey, for the same node key.
-func (n *nodeCert) issueUnder(clusterKey cluster.Key) error {
+// prepare makes the certificate right for cfg, without serving it: a reload can still be
+// refused after this, and then the node must go on with what it has. A configuration without a
+// listener that uses the generated certificate needs none, and makes none.
+func (n *nodeCert) prepare(cfg *config.Config) (renewal, error) {
+	return n.prepareFor(wanted{
+		needed: slices.ContainsFunc(cfg.Listen, usesGeneratedCert),
+		names:  certNamesFor(cfg, ""),
+	})
+}
+
+// commit serves a certificate that prepare made, from the next connection on, and remembers
+// what it was made for.
+func (n *nodeCert) commit(ready renewal) {
+	n.wanted = ready.wanted
+	if ready.cert == nil {
+		return
+	}
+	n.current.Store(ready.cert)
+	if !ready.expires.IsZero() {
+		n.logger.Info("node certificate issued", slog.Time("expires", ready.expires))
+	}
+}
+
+// renew is the daily check: it makes the certificate right for the last configuration, and
+// serves it. It changes nothing when the certificate already is right.
+func (n *nodeCert) renew() error {
+	ready, err := n.prepareFor(n.wanted)
+	if err != nil {
+		return err
+	}
+	n.commit(ready)
+	return nil
+}
+
+// prepareFor makes the certificate that want asks for.
+func (n *nodeCert) prepareFor(want wanted) (renewal, error) {
+	ready := renewal{wanted: want}
+	if !want.needed {
+		return ready, nil
+	}
+	clusterKey, ok := n.key()
+	if !ok {
+		return n.selfSigned(ready)
+	}
+	return n.issueUnder(clusterKey, ready)
+}
+
+// selfSigned is the renewal for the self-signed certificate, which it makes only when the node
+// has none. A node that has served a certificate keeps it when the cluster key goes away.
+func (n *nodeCert) selfSigned(ready renewal) (renewal, error) {
+	if n.current.Load() != nil {
+		return ready, nil
+	}
+	cert, err := loadOrCreateCert(n.dir, n.src)
+	if err != nil {
+		return renewal{}, err
+	}
+	ready.cert = &cert
+	return ready, nil
+}
+
+// issueUnder is the renewal with the saved certificate when it is still right, and otherwise
+// one issued under clusterKey, for the same node key.
+func (n *nodeCert) issueUnder(clusterKey cluster.Key, ready renewal) (renewal, error) {
 	host, err := n.src.hostname()
 	if err != nil {
-		return fmt.Errorf("host name: %w", err)
+		return renewal{}, fmt.Errorf("host name: %w", err)
 	}
-	names := joinNames(n.wanted.names, []string{host})
+	names := joinNames(ready.wanted.names, []string{host})
 	// The new key is the node key only when key.pem has none; making it here keeps the
 	// randomness of the certificate in one step.
 	fresh, serial, err := newKeyAndSerial(n.src.random)
 	if err != nil {
-		return err
+		return renewal{}, err
 	}
 	nodeKey, err := n.nodeKey(fresh)
 	if err != nil {
-		return err
+		return renewal{}, err
 	}
 	now := n.src.now()
 	if leaf, ok := n.saved(nodeKey); ok && stillRight(leaf, clusterKey, names, now) {
-		n.serve(leaf.Raw, nodeKey)
-		return nil
+		ready.cert = servedCert(leaf.Raw, nodeKey)
+		return ready, nil
 	}
-	return n.issue(clusterKey, nodeKey, nodeTemplate(names, serial, now))
+	return n.issue(clusterKey, nodeKey, nodeTemplate(names, serial, now), ready)
 }
 
-// issue signs template for nodeKey with the cluster key, saves the certificate and serves it.
-func (n *nodeCert) issue(clusterKey cluster.Key, nodeKey *ecdsa.PrivateKey, template *x509.Certificate) error {
+// issue signs template for nodeKey with the cluster key, saves the certificate and returns the
+// renewal that serves it.
+func (n *nodeCert) issue(
+	clusterKey cluster.Key, nodeKey *ecdsa.PrivateKey, template *x509.Certificate, ready renewal,
+) (renewal, error) {
 	der, err := x509.CreateCertificate(n.src.random, template, clusterIssuer(clusterKey),
 		&nodeKey.PublicKey, clusterKey.Private)
 	if err != nil {
-		return fmt.Errorf("issue node certificate: %w", err)
+		return renewal{}, fmt.Errorf("issue node certificate: %w", err)
 	}
 	if err = datadir.WriteAtomic(filepath.Join(n.dir, certFileName), encodeDER(der), certMode); err != nil {
-		return fmt.Errorf("save node certificate: %w", err)
+		return renewal{}, fmt.Errorf("save node certificate: %w", err)
 	}
-	n.serve(der, nodeKey)
-	n.logger.Info("node certificate issued", slog.Time("expires", template.NotAfter))
-	return nil
+	ready.cert, ready.expires = servedCert(der, nodeKey), template.NotAfter
+	return ready, nil
 }
 
-// serve makes the certificate der the one of new connections.
-func (n *nodeCert) serve(der []byte, nodeKey *ecdsa.PrivateKey) {
-	n.current.Store(&tls.Certificate{Certificate: [][]byte{der}, PrivateKey: nodeKey})
+// servedCert is the certificate der with its node key, in the form crypto/tls serves.
+func servedCert(der []byte, nodeKey *ecdsa.PrivateKey) *tls.Certificate {
+	return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: nodeKey}
 }
 
 // nodeKey returns the node key of key.pem. When there is no such file it saves fresh as the
@@ -228,12 +279,13 @@ func namesOf(leaf *x509.Certificate) []string {
 	return joinNames(names)
 }
 
-// nodeTemplate describes the certificate of a node, valid for nodeCertLifetime from now.
+// nodeTemplate describes the certificate of a node, valid for nodeCertLifetime from now, and
+// from nodeCertBackdate before.
 func nodeTemplate(names []string, serial *big.Int, now time.Time) *x509.Certificate {
 	template := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: "splicefs node"},
-		NotBefore:             now,
+		NotBefore:             now.Add(-nodeCertBackdate),
 		NotAfter:              now.Add(nodeCertLifetime),
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},

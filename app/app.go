@@ -154,12 +154,13 @@ type builder struct {
 }
 
 // prepare makes what a configuration needs before anything is changed for it: the folders of
-// the state, and the certificate of the listeners that have none of their own.
-func (b *builder) prepare(cfg *config.Config) error {
+// the state, and the certificate of the listeners that have none of their own, which is not
+// served until the caller commits it.
+func (b *builder) prepare(cfg *config.Config) (renewal, error) {
 	if err := b.heal(); err != nil {
-		return err
+		return renewal{}, err
 	}
-	return b.ownCert.refresh(cfg)
+	return b.ownCert.prepare(cfg)
 }
 
 // heal makes the state folders that were removed while the server ran, as the start made

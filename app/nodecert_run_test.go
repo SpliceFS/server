@@ -141,6 +141,17 @@ func TestClientWithAnotherKeyDoesNotTrustTheServer(t *testing.T) {
 	}
 }
 
+// A client whose clock is a little behind the server's still accepts a fresh certificate.
+func TestClientWithAClockABitBehindTrustsTheServer(t *testing.T) {
+	t.Parallel()
+	server := startClusterServer(t)
+	behind := func() time.Time { return server.clock.read().Add(-30 * time.Minute) }
+	trust := clusterTrustingConfig(ed25519.PublicKey(server.key.Private[ed25519.SeedSize:]), behind)
+	if _, err := server.connect(t, trust); err != nil {
+		t.Errorf("a client whose clock is 30 minutes behind refuses a fresh certificate: %v", err)
+	}
+}
+
 func TestClientDoesNotTrustAnExpiredCertificate(t *testing.T) {
 	t.Parallel()
 	server := startClusterServer(t)
@@ -166,7 +177,7 @@ func TestDailyCheckRenewsTheServedCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before.SerialNumber.Cmp(after.SerialNumber) == 0 || !after.NotBefore.Equal(server.clock.read()) {
+	if before.SerialNumber.Cmp(after.SerialNumber) == 0 || !after.NotBefore.Equal(server.clock.read().Add(-time.Hour)) {
 		t.Errorf("the new connection got the old certificate: serial %v, valid from %v",
 			after.SerialNumber, after.NotBefore)
 	}
@@ -222,6 +233,27 @@ func TestReloadThatCannotMakeTheCertificateIsRefused(t *testing.T) {
 	leaf, err := server.connect(t, server.trust())
 	if err != nil || containsName(leaf, "north") {
 		t.Errorf("the server changed although the reload was refused (error %v)", err)
+	}
+}
+
+// A reload that is refused for any reason leaves the certificate that is served and its names
+// as they were, also when the refusal comes after the certificate could have been made.
+func TestRefusedReloadKeepsTheCertificate(t *testing.T) {
+	t.Parallel()
+	server := startClusterServer(t)
+	before, err := server.connect(t, server.trust())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := *server.fix.cfg
+	cfg.Cluster.Node = "north"
+	cfg.Shares = map[string]config.Share{"zzz": {Path: filepath.Join(t.TempDir(), "missing")}}
+	if refusal := server.refuse(t, loaded{cfg: &cfg}); refusal == nil {
+		t.Fatal("no refusal")
+	}
+	after, err := server.connect(t, server.trust())
+	if err != nil || before.SerialNumber.Cmp(after.SerialNumber) != 0 || containsName(after, "north") {
+		t.Errorf("the certificate changed although the reload was refused (error %v)", err)
 	}
 }
 
