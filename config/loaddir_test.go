@@ -52,7 +52,7 @@ func defaultSettings() *Config {
 		BasePath: "/api",
 		Cluster:  Cluster{Name: "default", Node: "test-host"},
 		Auth: Auth{
-			TokenTTL:  units.Duration(30 * time.Minute),
+			TokenTTL:  units.Duration(5 * time.Minute),
 			LoginRate: Rate{Count: 10, Per: time.Minute},
 		},
 		MTimePrecision: units.Duration(time.Second),

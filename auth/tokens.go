@@ -34,13 +34,20 @@ type tokenHeader struct {
 	Kid string `json:"kid"`
 }
 
-// tokenPayload is the JWT payload. The times are pointers so that a missing claim can be
-// told from zero.
+// tokenPayload is the JWT payload. Sub is the id of the user: the name is a label that can
+// change, and what the user may do is read from the state of the user, so the token holds
+// neither. The times are pointers so that a missing claim can be told from zero.
 type tokenPayload struct {
-	Sub    string   `json:"sub"`
-	Shares []string `json:"shares"`
-	Iat    *int64   `json:"iat"`
-	Exp    *int64   `json:"exp"`
+	Sub string `json:"sub"`
+	Iat *int64 `json:"iat"`
+	Exp *int64 `json:"exp"`
+}
+
+// TokenClaims is what a genuine token states. It names the user by id, never by name, so
+// that an id is not taken for a name.
+type TokenClaims struct {
+	UserID  string
+	Expires time.Time
 }
 
 // Tokens issues and verifies tokens: compact JWTs signed with the Ed25519 key of the node
@@ -68,18 +75,15 @@ func NewTokens(
 	}
 }
 
-// Issue returns a token for user that allows shares, and its expiry (whole seconds).
-func (t *Tokens) Issue(user string, shares []string) (string, time.Time, error) {
+// Issue returns a token for the user with the given id, and its expiry (whole seconds).
+func (t *Tokens) Issue(userID string) (string, time.Time, error) {
 	now := t.now()
 	issuedSec, expiresSec := now.Unix(), now.Add(t.ttl).Unix()
-	if shares == nil {
-		shares = []string{}
-	}
 	header, err := t.segment(tokenHeader{Alg: tokenAlgorithm, Typ: tokenType, Kid: t.nodeID})
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	payload, err := t.segment(tokenPayload{Sub: user, Shares: shares, Iat: &issuedSec, Exp: &expiresSec})
+	payload, err := t.segment(tokenPayload{Sub: userID, Iat: &issuedSec, Exp: &expiresSec})
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -93,24 +97,24 @@ func (t *Tokens) Issue(user string, shares []string) (string, time.Time, error) 
 // is not known or has a bad signature, or was issued more than Leeway in the future, and
 // api.ErrExpiredToken for one that expired more than Leeway ago. The signature is checked
 // before any claim is used. A failure to read the node list is returned as it is.
-func (t *Tokens) Verify(token string) (api.Claims, error) {
+func (t *Tokens) Verify(token string) (TokenClaims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != tokenSegments {
-		return api.Claims{}, invalidToken("wrong number of segments")
+		return TokenClaims{}, invalidToken("wrong number of segments")
 	}
 	var header tokenHeader
 	if err := decodeSegment(parts[0], &header); err != nil {
-		return api.Claims{}, invalidToken("bad header")
+		return TokenClaims{}, invalidToken("bad header")
 	}
 	if header.Alg != tokenAlgorithm {
-		return api.Claims{}, invalidToken("unsupported algorithm")
+		return TokenClaims{}, invalidToken("unsupported algorithm")
 	}
 	if err := t.checkSignature(header.Kid, parts); err != nil {
-		return api.Claims{}, err
+		return TokenClaims{}, err
 	}
 	var payload tokenPayload
 	if err := decodeSegment(parts[1], &payload); err != nil {
-		return api.Claims{}, invalidToken("bad payload")
+		return TokenClaims{}, invalidToken("bad payload")
 	}
 	return t.claims(payload)
 }
@@ -162,20 +166,20 @@ func publicKey(text string) (ed25519.PublicKey, error) {
 	return raw, nil
 }
 
-// claims turns an authenticated payload into api.Claims, checking the claims and the time.
-func (t *Tokens) claims(payload tokenPayload) (api.Claims, error) {
+// claims turns an authenticated payload into TokenClaims, checking the claims and the time.
+func (t *Tokens) claims(payload tokenPayload) (TokenClaims, error) {
 	if payload.Sub == "" || payload.Iat == nil || payload.Exp == nil {
-		return api.Claims{}, invalidToken("missing claim")
+		return TokenClaims{}, invalidToken("missing claim")
 	}
 	now := t.now()
 	if time.Unix(*payload.Iat, 0).Sub(now) > Leeway {
-		return api.Claims{}, invalidToken("issued in the future")
+		return TokenClaims{}, invalidToken("issued in the future")
 	}
 	expires := time.Unix(*payload.Exp, 0)
 	if now.Sub(expires) > Leeway {
-		return api.Claims{}, api.ErrExpiredToken
+		return TokenClaims{}, api.ErrExpiredToken
 	}
-	return api.Claims{User: payload.Sub, Shares: payload.Shares, Expires: expires}, nil
+	return TokenClaims{UserID: payload.Sub, Expires: expires}, nil
 }
 
 // segment returns v as JSON in base64url.

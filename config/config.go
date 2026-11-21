@@ -24,7 +24,7 @@ import (
 // Defaults applied to keys that are absent.
 const (
 	defaultBasePath       = "/api"
-	defaultTokenTTL       = 30 * time.Minute
+	defaultTokenTTL       = 5 * time.Minute
 	defaultMTimePrecision = time.Second
 	defaultLogLevel       = "info"
 	defaultLogFormat      = "text"

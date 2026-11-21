@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -95,7 +94,7 @@ func TestTokensIssueAndVerify(t *testing.T) {
 	t.Parallel()
 	clock := newFakeClock()
 	tokens := newTestTokens(stubNodes{}, clock)
-	token, expires, err := tokens.Issue("alice", []string{"media", "docs"})
+	token, expires, err := tokens.Issue(aliceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,9 +106,8 @@ func TestTokensIssueAndVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claims.User != "alice" || !reflect.DeepEqual(claims.Shares, []string{"media", "docs"}) ||
-		!claims.Expires.Equal(wantExpires) {
-		t.Errorf("claims = %+v, want alice, [media docs], %v", claims, wantExpires)
+	if claims.UserID != aliceID || !claims.Expires.Equal(wantExpires) {
+		t.Errorf("claims = %+v, want the id of alice and %v", claims, wantExpires)
 	}
 }
 
@@ -117,7 +115,7 @@ func TestTokensIssueLayout(t *testing.T) {
 	t.Parallel()
 	clock := newFakeClock()
 	tokens := newTestTokens(stubNodes{}, clock)
-	token, _, err := tokens.Issue("alice", nil)
+	token, _, err := tokens.Issue(aliceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +135,7 @@ func TestTokensIssueLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	nowSec := clock.Now().Unix()
-	wantPayload := `{"sub":"alice","shares":[],"iat":` + strconv.FormatInt(nowSec, 10) +
+	wantPayload := `{"sub":"` + aliceID + `","iat":` + strconv.FormatInt(nowSec, 10) +
 		`,"exp":` + strconv.FormatInt(nowSec+1800, 10) + `}`
 	if string(payload) != wantPayload {
 		t.Errorf("payload = %s, want %s", payload, wantPayload)
@@ -156,7 +154,7 @@ func TestTokensVerifyOwnTokenBeforeTheNodeFileExists(t *testing.T) {
 	t.Parallel()
 	// The list fails when asked: a token of this node must not need it.
 	tokens := newTestTokens(stubNodes{err: errors.New("list failed")}, newFakeClock())
-	token, _, err := tokens.Issue("alice", []string{"media"})
+	token, _, err := tokens.Issue(aliceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +167,7 @@ func TestTokensVerifyTokenOfAnotherNode(t *testing.T) {
 	t.Parallel()
 	clock := newFakeClock()
 	other := NewTokens(otherNode, keyOf(2), stubNodes{}, 30*time.Minute, clock.Now)
-	token, _, err := other.Issue("bob", []string{"*"})
+	token, _, err := other.Issue(bobID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,8 +176,8 @@ func TestTokensVerifyTokenOfAnotherNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claims.User != "bob" || !claims.Allows("anything") {
-		t.Errorf("claims = %+v", claims)
+	if claims.UserID != bobID {
+		t.Errorf("claims = %+v, want the id of bob", claims)
 	}
 }
 
@@ -191,7 +189,7 @@ func TestTokensVerifyFollowsTheNodeFile(t *testing.T) {
 	dir := t.TempDir()
 	tokens := newTestTokens(cluster.NewLoader(dir, slog.New(slog.DiscardHandler)), clock)
 	other := NewTokens(otherNode, keyOf(2), stubNodes{}, 30*time.Minute, clock.Now)
-	token, _, err := other.Issue("bob", []string{"media"})
+	token, _, err := other.Issue(bobID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +233,7 @@ func TestTokensVerifyInvalid(t *testing.T) {
 	tokens := newTestTokens(nodes, clock)
 	nowSec := clock.Now().Unix()
 	goodHeader := headerOf(t, "EdDSA", testNode)
-	goodPayload := jsonSegment(t, obj{"sub": "alice", "shares": []string{"media"}, "iat": nowSec, "exp": nowSec + 60})
+	goodPayload := jsonSegment(t, obj{"sub": aliceID, "iat": nowSec, "exp": nowSec + 60})
 	notJSON := tokenEncoding().EncodeToString([]byte("not json"))
 	valid := forge(keyOf(1), goodHeader, goodPayload)
 	validParts := strings.Split(valid, ".")
@@ -244,7 +242,7 @@ func TestTokensVerifyInvalid(t *testing.T) {
 		swap = "B"
 	}
 	flipped := validParts[0] + "." + validParts[1] + "." + swap + validParts[2][1:]
-	alteredPayload := jsonSegment(t, obj{"sub": "root", "shares": []string{"*"}, "iat": nowSec, "exp": nowSec + 60})
+	alteredPayload := jsonSegment(t, obj{"sub": bobID, "iat": nowSec, "exp": nowSec + 60})
 	tests := []struct {
 		name  string
 		token string
@@ -298,7 +296,7 @@ func TestTokensVerifyInvalid(t *testing.T) {
 			if !errors.Is(err, api.ErrInvalidToken) {
 				t.Fatalf("err = %v, want api.ErrInvalidToken", err)
 			}
-			if !reflect.DeepEqual(claims, api.Claims{}) {
+			if claims != (TokenClaims{}) {
 				t.Errorf("claims = %+v, want zero", claims)
 			}
 			if tt.token != "" && strings.Contains(err.Error(), tt.token) {
@@ -345,7 +343,7 @@ func TestTokensVerifyExpiryFollowsClock(t *testing.T) {
 	t.Parallel()
 	clock := newFakeClock()
 	tokens := newTestTokens(stubNodes{}, clock)
-	token, _, err := tokens.Issue("alice", []string{"media"})
+	token, _, err := tokens.Issue(aliceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +370,7 @@ func TestTokensIssueEncodeFailure(t *testing.T) {
 			}
 			return json.Marshal(value)
 		}
-		if _, _, err := tokens.Issue("alice", nil); err == nil {
+		if _, _, err := tokens.Issue(aliceID); err == nil {
 			t.Errorf("failAt %d: want error", failAt)
 		}
 	}
@@ -384,7 +382,7 @@ func TestTokensConcurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 20 {
 		wg.Go(func() {
-			token, _, err := tokens.Issue("alice", []string{"media"})
+			token, _, err := tokens.Issue(aliceID)
 			if err != nil {
 				t.Error(err)
 				return

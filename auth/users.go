@@ -5,16 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 
 	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/server/internal/datadir"
+	"github.com/SpliceFS/server/internal/uuid7"
 )
 
 // Problems with a user file. They only reach the log. The text of one never contains the content
@@ -37,6 +42,11 @@ var (
 
 // maxNameLength is the longest accepted user name.
 const maxNameLength = 64
+
+// RecheckInterval is how long what the server knows of a user is used before the file of the
+// user is checked again. A changed share list, a disabled user or a removed file takes effect
+// this long after the change.
+const RecheckInterval = 30 * time.Second
 
 // User is one account read from the users directory.
 type User struct {
@@ -70,17 +80,34 @@ type userFile struct {
 // It is safe for concurrent use.
 type Users struct {
 	log *slog.Logger
+	dir string
+	now func() time.Time
+	// stat is os.Stat; a test replaces it to count the checks of a file and to fail them.
+	stat func(path string) (fs.FileInfo, error)
 
 	mu     sync.Mutex
 	files  *datadir.Dir[User]
 	byName map[string]User
+	byID   map[string]known
 	merged bool
 }
 
-// NewUsers returns a Users that reads "<dir>/<user id>.yaml". Problems with a file are logged
-// to log.
-func NewUsers(dir string, log *slog.Logger) *Users {
-	return &Users{log: log, files: datadir.NewDir(dir, parseUser, log)}
+// known is what is remembered of one user id: the user, if there is one, the stamp of the
+// file the user was read from, and when the file was last checked.
+type known struct {
+	user    User
+	found   bool
+	stamp   datadir.Stamp
+	checked time.Time
+}
+
+// NewUsers returns a Users that reads "<dir>/<user id>.yaml". now tells the time, which
+// decides when the file of a user is checked again. Problems with a file are logged to log.
+func NewUsers(dir string, now func() time.Time, log *slog.Logger) *Users {
+	return &Users{
+		log: log, dir: dir, now: now, stat: os.Stat,
+		files: datadir.NewDir(dir, parseUser, log), byID: map[string]known{},
+	}
 }
 
 // Lookup returns the user with the given name, and whether there is one. The directory is read
@@ -94,13 +121,102 @@ func (u *Users) Lookup(name string) (User, bool) {
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	u.refresh(u.now())
+	user, found := u.byName[name]
+	user.Shares = slices.Clone(user.Shares)
+	return user, found
+}
+
+// Current returns the user with the given id, and whether there is one, as the server last
+// knew it. The file of a user is checked with one stat when RecheckInterval has passed since
+// the last check, and read again only when its stamp changed, so a request costs no file
+// system call in between. A missing or unreadable file is a user that is gone. A stat that
+// fails for any other reason is returned as an error and nothing is remembered: the user is
+// neither let in nor refused on a guess. The result does not share memory with the cache.
+func (u *Users) Current(id string) (User, bool, error) {
+	if !uuid7.Valid(id) {
+		return User{}, false, nil
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	entry, err := u.entry(id, u.now())
+	if err != nil {
+		return User{}, false, err
+	}
+	user := entry.user
+	user.Shares = slices.Clone(user.Shares)
+	return user, entry.found, nil
+}
+
+// entry returns what is known of the user id, checking the file when the last check is old
+// enough or there is none.
+func (u *Users) entry(id string, now time.Time) (known, error) {
+	entry, seen := u.byID[id]
+	if !seen {
+		return u.reload(id, now), nil
+	}
+	if now.Sub(entry.checked) < RecheckInterval {
+		return entry, nil
+	}
+	same, err := u.unchanged(id, entry)
+	switch {
+	case err != nil:
+		return known{}, err
+	case !same:
+		return u.reload(id, now), nil
+	}
+	entry.checked = now
+	u.byID[id] = entry
+	return entry, nil
+}
+
+// unchanged reports whether the file of the user id is as it was when entry was made: still
+// missing, or still of the same stamp.
+func (u *Users) unchanged(id string, entry known) (bool, error) {
+	info, err := u.stat(filepath.Join(u.dir, datadir.IDFile(id)))
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return !entry.found, nil
+	case err != nil:
+		return false, fmt.Errorf("check user file: %w", err)
+	}
+	return entry.found && datadir.StampOf(info) == entry.stamp, nil
+}
+
+// reload reads the folder again and returns what is then known of the user id, which is
+// remembered as checked now even when there is no such user, so that a flood of requests with
+// the token of a removed user costs one check in the interval.
+func (u *Users) reload(id string, now time.Time) known {
+	u.refresh(now)
+	entry, found := u.byID[id]
+	if !found {
+		entry = known{checked: now}
+		u.byID[id] = entry
+	}
+	return entry
+}
+
+// refresh brings the users up to date with the folder. Reading the folder looks at every file,
+// so every user then counts as checked at now, with the stamp of the file as it was found.
+func (u *Users) refresh(now time.Time) {
 	entries, changed := u.files.Refresh()
 	if changed || !u.merged {
 		u.byName, u.merged = u.merge(entries), true
 	}
-	user, found := u.byName[name]
-	user.Shares = slices.Clone(user.Shares)
-	return user, found
+	u.byID = u.index(entries, now)
+}
+
+// index returns the users of the files by id, as checked at now. A file whose name another
+// file took first is not a user.
+func (u *Users) index(entries []datadir.Entry[User], now time.Time) map[string]known {
+	byID := make(map[string]known, len(entries))
+	for _, entry := range entries {
+		if u.byName[entry.Value.Name].ID != entry.Value.ID {
+			continue
+		}
+		byID[entry.Value.ID] = known{user: entry.Value, found: true, stamp: entry.Stamp, checked: now}
+	}
+	return byID
 }
 
 // merge indexes the users of the files, which are in file name order, by name.

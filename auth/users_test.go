@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // User ids of the tests. A later id sorts after an earlier one, as the ids of users made later do.
@@ -39,9 +42,14 @@ func logCapture() (*slog.Logger, *bytes.Buffer) {
 	return slog.New(slog.NewTextHandler(&buf, nil)), &buf
 }
 
-// newTestUsers returns Users over dir that discard their log.
+// newTestUsers returns Users over dir that discard their log, on a clock that does not move.
 func newTestUsers(dir string) *Users {
-	return NewUsers(dir, slog.New(slog.DiscardHandler))
+	return newUsersAt(dir, newFakeClock())
+}
+
+// newUsersAt returns Users over dir that discard their log and read the time from clock.
+func newUsersAt(dir string, clock *fakeClock) *Users {
+	return NewUsers(dir, clock.Now, slog.New(slog.DiscardHandler))
 }
 
 func TestUsersLookup(t *testing.T) {
@@ -190,7 +198,7 @@ func TestUsersLookupDuplicateNames(t *testing.T) {
 	log, logged := logCapture()
 	writeUser(t, dir, bobID, "name: alice\npassword_hash: second\n")
 	writeUser(t, dir, aliceID, "name: alice\npassword_hash: first\n")
-	users := NewUsers(dir, log)
+	users := NewUsers(dir, newFakeClock().Now, log)
 	for range 2 {
 		user, found := users.Lookup("alice")
 		if !found || user.ID != aliceID || user.PasswordHash != "first" {
@@ -214,7 +222,7 @@ func TestUsersSkipsFilesNotNamedByID(t *testing.T) {
 	log, logged := logCapture()
 	writeFile(t, dir, "alice.yaml", "name: alice\npassword_hash: h\n")
 	writeUser(t, dir, bobID, "name: bob\npassword_hash: h\n")
-	users := NewUsers(dir, log)
+	users := NewUsers(dir, newFakeClock().Now, log)
 	if _, found := users.Lookup("alice"); found {
 		t.Error("Lookup(alice) found a file named by the user name")
 	}
@@ -233,7 +241,7 @@ func TestUsersKeepLastGoodContentOfABrokenFile(t *testing.T) {
 	dir := t.TempDir()
 	log, logged := logCapture()
 	writeUser(t, dir, aliceID, "name: alice\npassword_hash: good\n")
-	users := NewUsers(dir, log)
+	users := NewUsers(dir, newFakeClock().Now, log)
 	if _, found := users.Lookup("alice"); !found {
 		t.Fatal("alice not found")
 	}
@@ -412,4 +420,289 @@ func TestUserAllows(t *testing.T) {
 			}
 		})
 	}
+}
+
+// currentFixture is Users over a temporary folder, on a clock the test moves, whose check of a
+// file is counted and can be made to fail.
+type currentFixture struct {
+	dir     string
+	clock   *fakeClock
+	users   *Users
+	stats   int
+	statErr error
+	logged  *bytes.Buffer
+}
+
+func newCurrentFixture(t *testing.T) *currentFixture {
+	t.Helper()
+	fixture := &currentFixture{dir: t.TempDir(), clock: newFakeClock()}
+	var log *slog.Logger
+	log, fixture.logged = logCapture()
+	fixture.users = NewUsers(fixture.dir, fixture.clock.Now, log)
+	fixture.users.stat = func(path string) (fs.FileInfo, error) {
+		fixture.stats++
+		if fixture.statErr != nil {
+			return nil, fixture.statErr
+		}
+		return os.Stat(path)
+	}
+	return fixture
+}
+
+// current asks for the user with the given id and fails the test on an error.
+func (fixture *currentFixture) current(t *testing.T, id string) (User, bool) {
+	t.Helper()
+	user, found, err := fixture.users.Current(id)
+	if err != nil {
+		t.Fatalf("Current(%s): %v", id, err)
+	}
+	return user, found
+}
+
+// wantStats fails the test when the checks of files since the start are not n.
+func (fixture *currentFixture) wantStats(t *testing.T, what string, n int) {
+	t.Helper()
+	if fixture.stats != n {
+		t.Errorf("%s: %d checks of the file, want %d", what, fixture.stats, n)
+	}
+}
+
+func TestUsersCurrent(t *testing.T) {
+	t.Parallel()
+	fixture := newCurrentFixture(t)
+	writeUser(t, fixture.dir, aliceID, "name: alice\npassword_hash: h\nshares: [media, docs]\ndisabled: true\n")
+	user, found := fixture.current(t, aliceID)
+	want := User{ID: aliceID, Name: "alice", PasswordHash: "h", Shares: []string{"media", "docs"}, Disabled: true}
+	if !found || !reflect.DeepEqual(user, want) {
+		t.Errorf("Current = %+v, %v, want %+v", user, found, want)
+	}
+	if _, found := fixture.current(t, bobID); found {
+		t.Error("found a user that has no file")
+	}
+	fixture.wantStats(t, "first use", 0)
+}
+
+func TestUsersCurrentNeedsAUserID(t *testing.T) {
+	t.Parallel()
+	fixture := newCurrentFixture(t)
+	writeUser(t, fixture.dir, aliceID, "name: alice\npassword_hash: h\n")
+	for _, id := range []string{
+		"", "alice", "../alice", strings.ToUpper(aliceID), aliceID + ".yaml", "0193f5c2-7d1e-4b2a-9c4d-5e6f7a8b9c0d",
+	} {
+		fixture.clock.Advance(RecheckInterval)
+		if _, found := fixture.current(t, id); found {
+			t.Errorf("Current(%q) found a user", id)
+		}
+	}
+	fixture.wantStats(t, "ids that are not user ids", 0)
+}
+
+func TestUsersCurrentUsesTheCacheUntilTheIntervalIsOver(t *testing.T) {
+	t.Parallel()
+	fixture := newCurrentFixture(t)
+	writeUser(t, fixture.dir, aliceID, "name: alice\npassword_hash: h\nshares: [media]\n")
+	fixture.current(t, aliceID)
+	writeUser(t, fixture.dir, aliceID, "name: alice\npassword_hash: h\nshares: [docs]\n")
+
+	fixture.clock.Advance(RecheckInterval - time.Nanosecond)
+	if user, _ := fixture.current(t, aliceID); !reflect.DeepEqual(user.Shares, []string{"media"}) {
+		t.Errorf("within the interval: shares = %v, want the cached [media]", user.Shares)
+	}
+	fixture.wantStats(t, "within the interval", 0)
+
+	fixture.clock.Advance(time.Nanosecond)
+	if user, _ := fixture.current(t, aliceID); !reflect.DeepEqual(user.Shares, []string{"docs"}) {
+		t.Errorf("at the interval: shares = %v, want [docs]", user.Shares)
+	}
+	fixture.wantStats(t, "at the interval", 1)
+}
+
+func TestUsersCurrentUnchangedFileIsNotReadAgainAndStartsANewInterval(t *testing.T) {
+	t.Parallel()
+	fixture := newCurrentFixture(t)
+	writeUser(t, fixture.dir, aliceID, "name: alice\npassword_hash: h\n")
+	fixture.current(t, aliceID)
+
+	fixture.clock.Advance(RecheckInterval)
+	if _, found := fixture.current(t, aliceID); !found {
+		t.Fatal("alice not found at the interval")
+	}
+	fixture.wantStats(t, "first check", 1)
+	fixture.clock.Advance(RecheckInterval - time.Second)
+	fixture.current(t, aliceID)
+	fixture.wantStats(t, "inside the new interval", 1)
+	fixture.clock.Advance(time.Second)
+	fixture.current(t, aliceID)
+	fixture.wantStats(t, "second check", 2)
+}
+
+func TestUsersCurrentSeesDisabledRemovedAndAddedUsers(t *testing.T) {
+	t.Parallel()
+	fixture := newCurrentFixture(t)
+	writeUser(t, fixture.dir, aliceID, "name: alice\npassword_hash: h\n")
+	writeUser(t, fixture.dir, bobID, "name: bob\npassword_hash: h\n")
+	fixture.current(t, aliceID)
+	fixture.current(t, bobID)
+	if _, found := fixture.current(t, carolID); found {
+		t.Fatal("carol has no file yet")
+	}
+	writeUser(t, fixture.dir, aliceID, "name: alice\npassword_hash: h\ndisabled: true\n")
+	if err := os.Remove(filepath.Join(fixture.dir, bobID+".yaml")); err != nil {
+		t.Fatal(err)
+	}
+	writeUser(t, fixture.dir, carolID, "name: carol\npassword_hash: h\n")
+	if _, found := fixture.current(t, carolID); found {
+		t.Error("within the interval: carol was found before the interval was over")
+	}
+
+	fixture.clock.Advance(RecheckInterval)
+	if user, found := fixture.current(t, aliceID); !found || !user.Disabled {
+		t.Errorf("alice = %+v, %v, want a disabled user", user, found)
+	}
+	if _, found := fixture.current(t, bobID); found {
+		t.Error("bob was removed but is still found")
+	}
+	if user, found := fixture.current(t, carolID); !found || user.Name != "carol" {
+		t.Errorf("carol = %+v, %v, want the added user", user, found)
+	}
+}
+
+func TestUsersCurrentRemembersThatAUserIsMissing(t *testing.T) {
+	t.Parallel()
+	fixture := newCurrentFixture(t)
+	writeUser(t, fixture.dir, aliceID, "name: alice\npassword_hash: h\n")
+	fixture.current(t, aliceID)
+	if err := os.Remove(filepath.Join(fixture.dir, aliceID+".yaml")); err != nil {
+		t.Fatal(err)
+	}
+	fixture.clock.Advance(RecheckInterval)
+	for range 3 {
+		if _, found := fixture.current(t, aliceID); found {
+			t.Fatal("alice was removed but is still found")
+		}
+	}
+	fixture.wantStats(t, "a missing user asked for three times", 1)
+	fixture.clock.Advance(RecheckInterval)
+	fixture.current(t, aliceID)
+	fixture.wantStats(t, "a missing user after the interval", 2)
+}
+
+func TestUsersCurrentAFolderIsNoUserFile(t *testing.T) {
+	t.Parallel()
+	fixture := newCurrentFixture(t)
+	if err := os.Mkdir(filepath.Join(fixture.dir, aliceID+".yaml"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fixture.current(t, aliceID)
+	fixture.clock.Advance(RecheckInterval)
+	if _, found := fixture.current(t, aliceID); found {
+		t.Error("a folder named like a user file made a user")
+	}
+}
+
+func TestUsersCurrentKeepsTheLastGoodContentOfABrokenFile(t *testing.T) {
+	t.Parallel()
+	fixture := newCurrentFixture(t)
+	writeUser(t, fixture.dir, aliceID, "name: alice\npassword_hash: good\n")
+	fixture.current(t, aliceID)
+	writeUser(t, fixture.dir, aliceID, "name: alice\npassword_hash: [\n")
+	for range 3 {
+		fixture.clock.Advance(RecheckInterval)
+		if user, found := fixture.current(t, aliceID); !found || user.PasswordHash != "good" {
+			t.Fatalf("Current = %+v, %v, want the last good content", user, found)
+		}
+	}
+	// The broken file is read once; checking it again finds the stamp it was read at.
+	if got := strings.Count(fixture.logged.String(), "keeping its last good content"); got != 1 {
+		t.Errorf("the broken file was warned about %d times, want once:\n%s", got, fixture.logged)
+	}
+	fixture.wantStats(t, "three intervals", 3)
+}
+
+func TestUsersCurrentFailsClosedWhenTheFileCannotBeChecked(t *testing.T) {
+	t.Parallel()
+	fixture := newCurrentFixture(t)
+	writeUser(t, fixture.dir, aliceID, "name: alice\npassword_hash: h\n")
+	fixture.current(t, aliceID)
+	fixture.clock.Advance(RecheckInterval)
+	fixture.statErr = &fs.PathError{Op: "stat", Path: aliceID, Err: fs.ErrPermission}
+	for range 2 {
+		user, found, err := fixture.users.Current(aliceID)
+		if !errors.Is(err, fs.ErrPermission) || found || !reflect.DeepEqual(user, User{}) {
+			t.Fatalf("Current = %+v, %v, %v, want no user and the cause of the failure", user, found, err)
+		}
+	}
+	// A failed check is no check: the next call tries again, whatever the interval.
+	fixture.wantStats(t, "two failed calls", 2)
+	fixture.statErr = nil
+	if _, found := fixture.current(t, aliceID); !found {
+		t.Error("alice not found once the file can be checked again")
+	}
+}
+
+func TestUsersLookupFillsTheCache(t *testing.T) {
+	t.Parallel()
+	fixture := newCurrentFixture(t)
+	writeUser(t, fixture.dir, aliceID, "name: alice\npassword_hash: h\nshares: [media]\n")
+	fixture.users.Lookup("alice")
+	writeUser(t, fixture.dir, aliceID, "name: alice\npassword_hash: h\nshares: [docs]\n")
+	fixture.clock.Advance(RecheckInterval - time.Second)
+	if user, _ := fixture.current(t, aliceID); !reflect.DeepEqual(user.Shares, []string{"media"}) {
+		t.Errorf("shares = %v, want the shares of the login", user.Shares)
+	}
+	// A login reads the folder again, so it also brings the cache up to date.
+	if user, found := fixture.users.Lookup("alice"); !found || !reflect.DeepEqual(user.Shares, []string{"docs"}) {
+		t.Fatalf("Lookup = %+v, %v", user, found)
+	}
+	if user, _ := fixture.current(t, aliceID); !reflect.DeepEqual(user.Shares, []string{"docs"}) {
+		t.Errorf("shares = %v after a login, want [docs]", user.Shares)
+	}
+	fixture.wantStats(t, "logins and requests inside the interval", 0)
+}
+
+func TestUsersCurrentOfTheLosingFileOfADuplicateName(t *testing.T) {
+	t.Parallel()
+	fixture := newCurrentFixture(t)
+	writeUser(t, fixture.dir, aliceID, "name: alice\npassword_hash: first\n")
+	writeUser(t, fixture.dir, bobID, "name: alice\npassword_hash: second\n")
+	if user, found := fixture.current(t, aliceID); !found || user.PasswordHash != "first" {
+		t.Errorf("first file: %+v, %v", user, found)
+	}
+	if _, found := fixture.current(t, bobID); found {
+		t.Error("the file that lost the name made a user")
+	}
+}
+
+func TestUsersCurrentResultIsACopy(t *testing.T) {
+	t.Parallel()
+	fixture := newCurrentFixture(t)
+	writeUser(t, fixture.dir, aliceID, "name: alice\npassword_hash: h\nshares: [media]\n")
+	first, _ := fixture.current(t, aliceID)
+	first.Shares[0] = "changed"
+	if again, _ := fixture.current(t, aliceID); again.Shares[0] != "media" {
+		t.Errorf("shares = %v, want the cache unchanged", again.Shares)
+	}
+}
+
+func TestUsersCurrentAndLookupTogether(t *testing.T) {
+	t.Parallel()
+	fixture := newCurrentFixture(t)
+	writeUser(t, fixture.dir, aliceID, "name: alice\npassword_hash: h\n")
+	start := make(chan struct{})
+	var done sync.WaitGroup
+	for i := range 16 {
+		done.Go(func() {
+			<-start
+			fixture.clock.Advance(RecheckInterval)
+			if i%2 == 0 {
+				fixture.users.Lookup("alice")
+				return
+			}
+			if _, _, err := fixture.users.Current(aliceID); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	close(start)
+	done.Wait()
 }

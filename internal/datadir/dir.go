@@ -18,18 +18,36 @@ type Entry[T any] struct {
 	// Name is the file name, with its extension.
 	Name  string
 	Value T
+	// Stamp is the stamp of the file as Dir last looked at it. It is the stamp of a file that
+	// failed to parse, whose Value is the last good one, so a reader that keeps the Value
+	// compares it with StampOf the file to know when to ask again.
+	Stamp Stamp
 }
 
-// stamp is what tells that a file changed. Size and modification time are not enough: the
+// Stamp is what tells that a file changed. Size and modification time are not enough: the
 // files of a directory (a password hash, a key, a node's announcement) have a fixed length,
 // the file system clock ticks coarsely, and a sync tool or a program sets the modification
 // time of a file it writes. A rewrite within one tick, or with the old time put back, would
 // then never be read. So the stamp also holds the file's identity: a file renamed over
 // another has another inode, and a file written in place has a later change time.
-type stamp struct {
+type Stamp struct {
 	size    int64
 	modTime time.Time
 	id      filestat.Identity
+}
+
+// StampOf returns the stamp of the file that info describes.
+func StampOf(info fs.FileInfo) Stamp {
+	return stampWith(info, filestat.Of)
+}
+
+// stampWith is StampOf with the identity read by identify, which a test replaces to set an
+// identity the clock cannot.
+func stampWith(info fs.FileInfo, identify func(fs.FileInfo) (filestat.Identity, bool)) Stamp {
+	// Stat on a real file always carries an identity. Where it did not, the zero identity
+	// leaves size and time as the whole stamp.
+	id, _ := identify(info)
+	return Stamp{size: info.Size(), modTime: info.ModTime(), id: id}
 }
 
 // Dir follows a directory of YAML files. Each use lists the directory, compares names and
@@ -48,7 +66,7 @@ type Dir[T any] struct {
 	read  func(path string) ([]byte, error)
 	// identify is filestat.Of; a test replaces it to set an identity the clock cannot.
 	identify func(fs.FileInfo) (filestat.Identity, bool)
-	stamps   map[string]stamp
+	stamps   map[string]Stamp
 	values   map[string]T
 }
 
@@ -59,7 +77,7 @@ func NewDir[T any](
 ) *Dir[T] {
 	return &Dir[T]{
 		dir: dir, parse: parse, log: log, read: os.ReadFile, identify: filestat.Of,
-		stamps: map[string]stamp{}, values: map[string]T{},
+		stamps: map[string]Stamp{}, values: map[string]T{},
 	}
 }
 
@@ -82,14 +100,14 @@ func (d *Dir[T]) Refresh() ([]Entry[T], bool) {
 
 // scan returns the stamps of the files now in the directory. It is not ok when the
 // directory cannot be listed, in which case what is loaded stays as it is.
-func (d *Dir[T]) scan() (map[string]stamp, bool) {
+func (d *Dir[T]) scan() (map[string]Stamp, bool) {
 	items, err := os.ReadDir(d.dir)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		d.log.Warn("cannot list directory, keeping what was loaded",
 			slog.String("dir", d.dir), slog.Any("error", err))
 		return nil, false
 	}
-	found := map[string]stamp{}
+	found := map[string]Stamp{}
 	for _, item := range items {
 		name := item.Name()
 		if !strings.HasSuffix(name, FileExt) || strings.HasPrefix(name, ".") {
@@ -101,16 +119,13 @@ func (d *Dir[T]) scan() (map[string]stamp, bool) {
 		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
-		// Stat on a real file always carries an identity. Where it did not, the zero
-		// identity leaves size and time as the whole stamp.
-		id, _ := d.identify(info)
-		found[name] = stamp{size: info.Size(), modTime: info.ModTime(), id: id}
+		found[name] = stampWith(info, d.identify)
 	}
 	return found, true
 }
 
 // drop forgets the files that are gone and reports whether any had a value.
-func (d *Dir[T]) drop(found map[string]stamp) bool {
+func (d *Dir[T]) drop(found map[string]Stamp) bool {
 	var changed bool
 	for name := range d.stamps {
 		if _, here := found[name]; here {
@@ -150,7 +165,7 @@ func (d *Dir[T]) sorted() []Entry[T] {
 	slices.Sort(names)
 	entries := make([]Entry[T], len(names))
 	for i, name := range names {
-		entries[i] = Entry[T]{Name: name, Value: d.values[name]}
+		entries[i] = Entry[T]{Name: name, Value: d.values[name], Stamp: d.stamps[name]}
 	}
 	return entries
 }

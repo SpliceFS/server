@@ -25,11 +25,11 @@ func fuzzTokens() *Tokens {
 
 func FuzzTokensVerify(f *testing.F) {
 	tokens := fuzzTokens()
-	issued, expires, err := tokens.Issue("alice", []string{"media"})
+	issued, expires, err := tokens.Issue(aliceID)
 	if err != nil {
 		f.Fatal(err)
 	}
-	want := api.Claims{User: "alice", Shares: []string{"media"}, Expires: expires}
+	want := TokenClaims{UserID: aliceID, Expires: expires}
 	header := tokenEncoding().EncodeToString([]byte(`{"alg":"EdDSA","typ":"JWT","kid":"` + testNode + `"}`))
 	otherHeader := tokenEncoding().EncodeToString([]byte(`{"alg":"EdDSA","typ":"JWT","kid":"` + otherNode + `"}`))
 	payload := tokenEncoding().EncodeToString(
@@ -53,14 +53,14 @@ func FuzzTokensVerify(f *testing.F) {
 			if !errors.Is(err, api.ErrInvalidToken) && !errors.Is(err, api.ErrExpiredToken) {
 				t.Fatalf("Verify(%q) failed with %v", token, err)
 			}
-			if claims.User != "" || claims.Shares != nil {
+			if claims != (TokenClaims{}) {
 				t.Fatalf("Verify(%q) failed but returned %+v", token, claims)
 			}
 			return
 		}
 		// A token that was not issued never verifies: the only claims the server ever
 		// signed are those of the one issued token, so any other result is a forgery.
-		if !reflect.DeepEqual(claims, want) {
+		if claims != want {
 			t.Fatalf("Verify(%q) = %+v, issued only %+v", token, claims, want)
 		}
 	})
@@ -93,7 +93,7 @@ func FuzzTokensVerifySigned(f *testing.F) {
 			return
 		}
 		// A token without a subject would be a login by nobody, so it must not verify.
-		if claims.User == "" {
+		if claims.UserID == "" {
 			t.Fatalf("payload %q verified with an empty user", payload)
 		}
 		// An accepted token is not expired beyond the leeway, so no stale token lives on.

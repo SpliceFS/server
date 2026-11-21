@@ -171,7 +171,7 @@ func newHandler(
 		Node:           cfg.Cluster.Node,
 		Version:        version,
 		Shares:         shares.byName,
-		Auth:           auth.New(auth.NewUsers(data.usersDir, logger), tokens, limiter, loginSlots),
+		Auth:           auth.New(auth.NewUsers(data.usersDir, time.Now, logger), tokens, limiter, loginSlots),
 		Nodes:          namedCluster{name: cfg.Cluster.Name, nodes: loader},
 		TrustedProxies: cfg.TrustedProxies,
 		Logger:         logger,

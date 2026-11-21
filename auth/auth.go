@@ -65,16 +65,32 @@ func (a *Authenticator) Login(
 	if !ok {
 		return "", time.Time{}, api.ErrBadCredentials
 	}
-	token, expires, err := a.tokens.Issue(account.Name, account.Shares)
+	token, expires, err := a.tokens.Issue(account.ID)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("login: user %q: %w", account.Name, err)
 	}
 	return token, expires, nil
 }
 
-// Verify checks a token and returns its claims; see Tokens.Verify.
+// Verify checks a token and returns its claims. The token only names the user: the name and
+// the shares are those of the state of the user, so that a changed share list or a disabled
+// user takes effect for tokens already issued. It returns the errors of Tokens.Verify, and
+// api.ErrInvalidToken for a token whose user is gone or disabled. A user file that cannot be
+// checked is returned wrapped and is neither token error, so the request fails and is not
+// let through.
 func (a *Authenticator) Verify(token string) (api.Claims, error) {
-	return a.tokens.Verify(token)
+	claims, err := a.tokens.Verify(token)
+	if err != nil {
+		return api.Claims{}, err
+	}
+	user, found, err := a.users.Current(claims.UserID)
+	if err != nil {
+		return api.Claims{}, fmt.Errorf("check user of token: %w", err)
+	}
+	if !found || user.Disabled {
+		return api.Claims{}, invalidToken("the user is gone or disabled")
+	}
+	return api.Claims{User: user.Name, Shares: user.Shares, Expires: claims.Expires}, nil
 }
 
 // acquire takes a verification slot. It returns false if ctx ends first.
