@@ -236,14 +236,13 @@ The state folder holds what the server keeps:
     digests/<share>/<path>.splicefs_state
   shared/                   may be synced between nodes
     users/<name>.yaml
-    keys/<node-id>.yaml
     nodes/<node-id>.yaml
 ```
 
 `local/` holds the node id, a UUIDv7 made on the first start, and the generated
 certificate. `shared/` is safe to sync with any file sync tool because every file in it has
-exactly one writer: the administrator writes each user file, and each server writes its own key
-file and its own node file, named by its node id. Two servers never write the same file, so
+exactly one writer: the administrator writes each user file, and each server writes its own node
+file, named by its node id. Two servers never write the same file, so
 there are no conflicts to resolve.
 
 The node list is the union of the files in `shared/nodes/`. A server writes its own file when
@@ -256,8 +255,8 @@ The full reference is in the [server configuration](configuration.md).
 
 Each node makes two key pairs on its first start and keeps the private halves in local/node-keys.yaml, which never
 leaves the node. It publishes the public halves in its own node file in shared/nodes, so every node and every client
-that lists the nodes learns them. The signing key will sign the node's tokens and the encryption key will receive
-keys meant for this node only (later steps).
+that lists the nodes learns them. The signing key signs the node's tokens; the encryption key will receive
+keys meant for this node only (a later step).
 
 ### Reloading
 
@@ -265,26 +264,19 @@ keys meant for this node only (later steps).
 everything, loads certificates, opens new ports and opens shares first, and changes nothing if
 any of that fails. New requests use the new configuration; requests in progress finish on the
 one they started with. A listener that stays configured is never closed, so a new certificate
-takes effect for new connections. Users, keys and nodes are followed as the files change and
+takes effect for new connections. Users and nodes are followed as the files change and
 need no reload. See "Applying changes" in the [server configuration](configuration.md).
 
 ### Logins
 
 - One file per user in `shared/users/`: a password hash (argon2id, PHC string format), the
   shares the user may read, and an optional `disabled` flag.
-- A token is a compact JWT signed with HMAC-SHA256. It carries the user name, the allowed
-  shares and an expiry. Its header names the key that signed it. Any node can check a token
-  whose key it has, with no communication between nodes.
-- Each node signs with its own key and verifies against every key in `shared/keys/`. A node
-  creates its file, `shared/keys/<node-id>.yaml`, on the first start and never replaces it.
-  The file holds a list of keys, each with an id and a base64 secret of at least 32 bytes. The
-  first key of a node's own file signs; every key of every file verifies. A token issued by
-  one node is accepted by the others once the sync tool has delivered that node's file. Key
-  ids must be unique across the folder: if two files use the same id, the file that sorts first
-  keeps it and the clash is logged.
-- Rotation is per node. On that node, add a new key with a new id as the first entry of its
-  file, leave the old key below it for one token lifetime, then remove the old key. Nobody
-  else edits that file.
+- A token is a compact JWT signed with the Ed25519 key of the node that issued it (EdDSA). It carries the user
+  name, the allowed shares and an expiry. Its header names that node by its id.
+- Any node checks a token against the issuing node's public signing key, which it reads from that node's file in
+  `shared/nodes/`, with no communication between nodes. A token from another node is accepted once the sync tool
+  has delivered that node's file. A node accepts its own tokens at once.
+- *Open:* replacing a node's key pair. Today a node keeps its keys for good.
 - Tokens are short-lived (default 30 minutes). Removing or disabling a user stops new
   tokens at once; tokens already issued run out on their own.
 - Expiry is checked with 30 seconds of leeway in both directions, so node clocks only need
@@ -334,7 +326,7 @@ That document covers discovery, the merged tree, reading, the cache and filesyst
 - **Tokens cannot be revoked.** A removed or disabled user keeps access until the token
   already issued expires (30 minutes by default).
 - **Keys travel by sync.** A token from one node is rejected by another until the sync tool
-  has delivered the first node's key file.
+  has delivered the first node's node file.
 - **Some changes need a restart.** A reload cannot change `log.format`, and it cannot move a
   listener to an overlapping address on the same port, for example from `0.0.0.0` to `::`,
   because the new address cannot be opened while the old one is open.

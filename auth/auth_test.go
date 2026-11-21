@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -19,7 +18,6 @@ type verifyCall struct{ encoded, password string }
 type authFixture struct {
 	auth     *Authenticator
 	usersDir string
-	keysPath string
 	clock    *fakeClock
 	calls    []verifyCall
 	result   bool
@@ -29,14 +27,11 @@ type authFixture struct {
 func newAuthFixture(t *testing.T, limit int) *authFixture {
 	t.Helper()
 	fixture := &authFixture{usersDir: t.TempDir(), clock: newFakeClock(), result: true}
-	keysDir := t.TempDir()
-	fixture.keysPath = filepath.Join(keysDir, testNode+".yaml")
-	writeFile(t, keysDir, testNode+".yaml", twoKeys())
 	writeFile(t, fixture.usersDir, "alice.yaml", "password_hash: alice-hash\nshares: [media]\n")
 	writeFile(t, fixture.usersDir, "dave.yaml", "password_hash: dave-hash\nshares: [media]\ndisabled: true\n")
 	fixture.auth = New(
 		NewUsers(fixture.usersDir),
-		NewTokens(keysDir, testNode, 30*time.Minute, fixture.clock.Now, discard()),
+		newTestTokens(stubNodes{}, fixture.clock),
 		NewLimiter(limit, time.Minute, fixture.clock.Now),
 		4,
 	)
@@ -177,10 +172,10 @@ func TestLoginOtherFailuresAreNotBadCredentials(t *testing.T) {
 			t.Errorf("err = %v, want it to wrap the cause and hide the password", err)
 		}
 	})
-	t.Run("broken keys file", func(t *testing.T) {
+	t.Run("token cannot be issued", func(t *testing.T) {
 		t.Parallel()
 		fixture := newAuthFixture(t, 10)
-		writeFile(t, filepath.Dir(fixture.keysPath), testNode+".yaml", "keys: []\n")
+		fixture.auth.tokens.marshal = func(any) ([]byte, error) { return nil, errors.New("marshal failed") }
 		_, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "alice", "pw")
 		if err == nil || errors.Is(err, api.ErrBadCredentials) {
 			t.Errorf("err = %v", err)

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/SpliceFS/common/wire"
+	"github.com/SpliceFS/server/internal/datadir"
 )
 
 // folderMode is the mode that the tests ask makeFolder for.
@@ -342,5 +344,155 @@ func TestNamedClusterWrapsTheErrorOfTheNodeList(t *testing.T) {
 	}
 	if nodes.Cluster != "example" {
 		t.Errorf("cluster = %q, want the configured name", nodes.Cluster)
+	}
+}
+
+// anotherNodeID is the id of a node other than rfcNodeID.
+const anotherNodeID = "017f22e2-79b0-7cc3-98c4-dc0c0c073990"
+
+// tooLong returns a path below dir whose last name is longer than any file system allows, so
+// that every call on it fails whoever runs the test, root included.
+func tooLong(dir string) string {
+	return filepath.Join(dir, strings.Repeat("k", 300))
+}
+
+func TestRemoveOldKeys(t *testing.T) {
+	t.Parallel()
+	own, other := datadir.NodeFile(rfcNodeID), datadir.NodeFile(anotherNodeID)
+	tests := []struct {
+		name string
+		// files are the files of the old keys folder; nil means that there is no folder.
+		files []string
+		// left are the files that stay; nil means that the folder is gone too.
+		left []string
+	}{
+		{name: "no folder"},
+		{name: "own file only", files: []string{own}},
+		{name: "empty folder", files: []string{}},
+		{name: "own file and the file of another node", files: []string{own, other}, left: []string{other}},
+		{name: "file of another node only", files: []string{other}, left: []string{other}},
+		{name: "own file and a stray file", files: []string{own, "notes.txt"}, left: []string{"notes.txt"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			data := layout(t.TempDir())
+			fillOldKeys(t, data, tt.files)
+			if err := data.removeOldKeys(rfcNodeID); err != nil {
+				t.Fatal(err)
+			}
+			names, exists := listed(t, data.oldKeysDir)
+			if exists != (tt.left != nil) || !reflect.DeepEqual(names, tt.left) {
+				t.Errorf("old keys folder holds %v (exists: %v), want %v", names, exists, tt.left)
+			}
+		})
+	}
+}
+
+// fillOldKeys makes the old keys folder with files in it; nil files make no folder.
+func fillOldKeys(t *testing.T, data dataPaths, files []string) {
+	t.Helper()
+	if files == nil {
+		return
+	}
+	if err := os.MkdirAll(data.oldKeysDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range files {
+		write(t, data.oldKeysDir, name, "keys: []\n")
+	}
+}
+
+// listed returns the names in dir, and false if there is no such folder.
+func listed(t *testing.T, dir string) ([]string, bool) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names, true
+}
+
+func TestRemoveOldKeysTwiceIsTheSameAsOnce(t *testing.T) {
+	t.Parallel()
+	data := layout(t.TempDir())
+	write(t, data.oldKeysDir, datadir.NodeFile(rfcNodeID), "keys: []\n")
+	for range 2 {
+		if err := data.removeOldKeys(rfcNodeID); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestRemoveOldKeysLeavesAFileAtTheFolderPathAlone(t *testing.T) {
+	t.Parallel()
+	data := layout(t.TempDir())
+	path := write(t, filepath.Dir(data.oldKeysDir), filepath.Base(data.oldKeysDir), "not this server's")
+	if err := data.removeOldKeys(rfcNodeID); err != nil {
+		t.Errorf("removeOldKeys = %v, want nil: the path is not used any more", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "not this server's" {
+		t.Errorf("file at the folder path after removeOldKeys = %q, %v; want it unchanged", got, err)
+	}
+}
+
+func TestRemoveOldKeysFailsWhenItsOwnFileCannotBeRemoved(t *testing.T) {
+	t.Parallel()
+	data := layout(t.TempDir())
+	own := filepath.Join(data.oldKeysDir, datadir.NodeFile(rfcNodeID))
+	write(t, own, "inside", "a folder where the node's file belongs")
+	err := data.removeOldKeys(rfcNodeID)
+	if err == nil || !strings.Contains(err.Error(), "remove old token keys") {
+		t.Errorf("removeOldKeys = %v, want an error that says what was being removed", err)
+	}
+}
+
+func TestRemoveFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := write(t, dir, "there", "x")
+	for range 2 {
+		if err := removeFile(path); err != nil {
+			t.Errorf("removeFile = %v", err)
+		}
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("file after removeFile: %v", err)
+	}
+	if err := removeFile(tooLong(dir)); err == nil {
+		t.Error("removeFile of a name that is too long = nil, want an error")
+	}
+}
+
+func TestRemoveEmptyFolder(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	empty, full := filepath.Join(dir, "empty"), filepath.Join(dir, "full")
+	for _, path := range []string{empty, full} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, full, "file", "x")
+	for _, path := range []string{empty, full, filepath.Join(dir, "absent")} {
+		if err := removeEmptyFolder(path); err != nil {
+			t.Errorf("removeEmptyFolder(%s) = %v", filepath.Base(path), err)
+		}
+	}
+	if _, err := os.Stat(empty); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("empty folder after removeEmptyFolder: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(full, "file")); err != nil {
+		t.Errorf("file in the full folder after removeEmptyFolder: %v", err)
+	}
+	if err := removeEmptyFolder(tooLong(dir)); err == nil {
+		t.Error("removeEmptyFolder of a name that is too long = nil, want an error")
 	}
 }

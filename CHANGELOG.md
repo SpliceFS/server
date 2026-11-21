@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.8.0] - 2026-11-21
+
+- Changed: login tokens are signed with each node's own Ed25519 key; the shared token key files are
+  no longer used, and each server removes its own on start.
+
 ## [0.7.0] - 2026-11-21
 
 - New: each node publishes its id and its public signing and encryption keys in its node file, and

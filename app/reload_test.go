@@ -16,6 +16,7 @@ import (
 	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/common/wire"
 	"github.com/SpliceFS/server/config"
+	"github.com/SpliceFS/server/internal/datadir"
 	"github.com/SpliceFS/server/internal/digestcache"
 	"github.com/SpliceFS/server/internal/filestat"
 	"github.com/SpliceFS/server/internal/porttest"
@@ -690,6 +691,29 @@ func TestReloadMakesTheDigestFolderAgain(t *testing.T) {
 	info, err := os.Stat(fix.data.digestsDir)
 	if err != nil || info.Mode().Perm() != 0o700 {
 		t.Errorf("digest folder = %v, %v, want mode 0700", info, err)
+	}
+}
+
+// A start and a reload remove the token keys file that earlier versions made for this node, and
+// the folder once it is empty. The file of another node stays, which is for that node to remove.
+func TestStartAndReloadRemoveTheOldTokenKeysOfThisNode(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t)
+	write(t, fix.state, "local/node-id", rfcNodeID+"\n")
+	own := write(t, fix.data.oldKeysDir, datadir.NodeFile(rfcNodeID), "keys: []\n")
+	other := write(t, fix.data.oldKeysDir, datadir.NodeFile(anotherNodeID), "keys: []\n")
+	reloader := startReloading(t, fix)
+	if _, err := os.Stat(own); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("own file after the start: %v", err)
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Errorf("file of another node after the start: %v", err)
+	}
+	mustRemoveAll(t, other)
+	write(t, fix.data.oldKeysDir, datadir.NodeFile(rfcNodeID), "keys: []\n")
+	reloader.apply(t, fix.cfg)
+	if _, err := os.Stat(fix.data.oldKeysDir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("old keys folder after the reload: %v", err)
 	}
 }
 

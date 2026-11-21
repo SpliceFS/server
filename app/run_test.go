@@ -445,10 +445,6 @@ func TestRunFailsAtStart(t *testing.T) {
 		{"node keys file is malformed", func(fix *fixture) {
 			write(t, fix.state, "local/node-keys.yaml", "sign: x\n")
 		}, "node keys file"},
-		{"signing key file is invalid", func(fix *fixture) {
-			write(t, fix.state, "local/node-id", rfcNodeID+"\n")
-			write(t, fix.state, "shared/keys/"+rfcNodeID+".yaml", "keys: []\n")
-		}, "signing key file"},
 		{"node file cannot be written", func(fix *fixture) {
 			// A folder where this node's file belongs cannot be replaced by the file.
 			write(t, fix.state, "local/node-id", rfcNodeID+"\n")
@@ -458,8 +454,13 @@ func TestRunFailsAtStart(t *testing.T) {
 			}
 		}, "write node file"},
 		{"state folder is a file", func(fix *fixture) {
-			write(t, fix.state, "shared/keys", "a file where a folder belongs")
+			write(t, fix.state, "shared/nodes", "a file where a folder belongs")
 		}, "is not a folder"},
+		{"old keys file of this node cannot be removed", func(fix *fixture) {
+			// A folder that holds a file, where this node's old keys file belongs.
+			write(t, fix.state, "local/node-id", rfcNodeID+"\n")
+			write(t, filepath.Join(fix.state, "shared", "keys", datadir.NodeFile(rfcNodeID)), "inside", "x")
+		}, "remove old token keys"},
 		{"state folders cannot be made", func(fix *fixture) {
 			parent := write(t, t.TempDir(), "file", "a file where a folder belongs")
 			fix.state = filepath.Join(parent, "state")
