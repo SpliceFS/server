@@ -170,6 +170,7 @@ folders it needs. It must be able to write to the state folder.
 <state>/
   local/                    this machine only
     node-id
+    node-keys.yaml
     tls/cert.pem
     tls/key.pem
     digests/<share>/<path>.splicefs_state
@@ -187,7 +188,7 @@ folders it needs. It must be able to write to the state folder.
 | `local/digests/`             | the server            | the digests of each file read, one small file per file |
 | `shared/users/<name>.yaml`   | you                   | one user                                |
 | `shared/keys/<node-id>.yaml` | that server only      | token signing keys                      |
-| `shared/nodes/<node-id>.yaml`| that server only      | name and address of that server         |
+| `shared/nodes/<node-id>.yaml`| that server only      | name, address, id and public keys of that server |
 
 ### local/
 

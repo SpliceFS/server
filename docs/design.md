@@ -41,7 +41,7 @@ and login need `Authorization: Bearer <token>`.
 |---|---|
 | `GET /v1/health` | `200` and `{"status":"ok","version":"..."}`. No login. For load balancers and DNS health checks. |
 | `POST /v1/login` | Body `{"user":"...","password":"..."}`. `200` and `{"token":"...","expires":"<RFC 3339>"}`, or `401`. |
-| `GET /v1/nodes` | `{"cluster":"...","nodes":[{"name":"...","url":"..."}]}` from the files in `shared/nodes/`. |
+| `GET /v1/nodes` | `{"cluster":"...","nodes":[{"name":"...","url":"...","id":"...","sign_key":"...","encrypt_key":"..."}]}` from the files in `shared/nodes/`. |
 | `GET /v1/tree/` | The shares this user may read, as directory entries. |
 | `GET /v1/tree/<share>/<dir>/` | `{"entries":[{"name":"...","dir":false,"size":123,"mtime":"<RFC 3339>","etag":"..."}]}`, sorted by name. `404` if the directory does not exist on this node. |
 | `GET`, `HEAD /v1/file/<share>/<path>` | The file. Supports `Range` (one range), `If-Range` and `If-Match`. Sends `ETag` and `Accept-Ranges: bytes`. `HEAD` also sends `X-SpliceFS-Head-Digest` and `X-SpliceFS-Tail-Digest` (see File identity). |
@@ -231,6 +231,7 @@ The state folder holds what the server keeps:
 <state>/
   local/                    this machine only, never synced
     node-id
+    node-keys.yaml
     tls/cert.pem, key.pem
     digests/<share>/<path>.splicefs_state
   shared/                   may be synced between nodes
