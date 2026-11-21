@@ -175,7 +175,7 @@ folders it needs. It must be able to write to the state folder.
     tls/key.pem
     digests/<share>/<path>.splicefs_state
   shared/                   may be synced between servers
-    users/<name>.yaml
+    users/<user-id>.yaml
     nodes/<node-id>.yaml
 ```
 
@@ -185,7 +185,7 @@ folders it needs. It must be able to write to the state folder.
 | `local/node-keys.yaml`       | the server, once      | The node's own key pairs: an Ed25519 key that signs and an X25519 key that encrypts. Made on the first start and never replaced; a new file would make a new node. Never copy it to another node. |
 | `local/tls/cert.pem`, `key.pem` | the server, once   | the certificate the server made for itself |
 | `local/digests/`             | the server            | the digests of each file read, one small file per file |
-| `shared/users/<name>.yaml`   | you                   | one user                                |
+| `shared/users/<user-id>.yaml`| you, through `splicefsdctl user add` | one user                   |
 | `shared/nodes/<node-id>.yaml`| that server only      | name, address, id and public keys of that server |
 
 ### local/

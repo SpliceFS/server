@@ -235,7 +235,7 @@ The state folder holds what the server keeps:
     tls/cert.pem, key.pem
     digests/<share>/<path>.splicefs_state
   shared/                   may be synced between nodes
-    users/<name>.yaml
+    users/<user-id>.yaml
     nodes/<node-id>.yaml
 ```
 

@@ -78,13 +78,10 @@ Add a share. The file name is the share name:
 path: /srv/media
 ```
 
-Add a user. Run `splicefsdctl hash-password`, type the password, and put the printed hash in one
-file:
+Add a user who may read the share. Type the password and press Enter:
 
 ```
-# /var/lib/splicefs/server/shared/users/alice.yaml
-password_hash: "<output of: splicefsdctl hash-password>"
-shares: [media]
+splicefsdctl user add --share media alice
 ```
 
 Apply the share without a restart:
