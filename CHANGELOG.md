@@ -6,6 +6,11 @@ the SpliceFS server, `splicefsd`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.7.0] - 2026-11-21
+
+- New: each node publishes its id and its public signing and encryption keys in its node file, and
+  /v1/nodes lists them.
+
 ## [0.6.0] - 2026-11-21
 
 - New: each node makes its own signing and encryption key pairs on its first start and keeps them in
