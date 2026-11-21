@@ -82,6 +82,7 @@ func Run(ctx context.Context, cfg *config.Config, stateDir string, opts Options)
 			ownCert: sync.OnceValues(func() (tls.Certificate, error) {
 				return localCertificate(stateDir)
 			}),
+			clusterKey: cluster.NewKeyReader(data.clusterDir, logger),
 		},
 		endpoints: make(map[string]*endpoint),
 		failures:  make(chan error, 1),
@@ -113,6 +114,10 @@ type builder struct {
 	logger  *slog.Logger
 	// ownCert is the certificate the server made for itself, created on first use.
 	ownCert certificateSource
+	// clusterKey reads the cluster key of the shared state as the file changes, one reader for
+	// the whole run so that a key that stops being readable is still the last good one after a
+	// reload.
+	clusterKey *cluster.KeyReader
 }
 
 // heal makes the state folders that were removed while the server ran, as the start made

@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -68,15 +69,11 @@ func TestClusterInitWritesTheKeyFileAndPrintsTheLine(t *testing.T) {
 	if err != nil || info.Mode() != 0o600 {
 		t.Errorf("file mode = %v, %v, want 0600", info.Mode(), err)
 	}
-	data, err := os.ReadFile(keyPath(state))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Read back with the reader of the server, which is how the file is proven to be in the
-	// layout that the server reads.
-	made, err := cluster.ParseKey(data)
-	if err != nil || !strings.HasSuffix(clusterLine(), made.PublicText()+"\n") {
-		t.Errorf("read back %+v, %v, want the key of the line %q", made, err, clusterLine())
+	// Read back with the reader of the server, which is how the file is proven to be where and
+	// in the layout that the server reads.
+	made, found := cluster.NewKeyReader(app.ClusterDir(state), slog.New(slog.DiscardHandler)).Current()
+	if !found || !strings.HasSuffix(clusterLine(), made.PublicText()+"\n") {
+		t.Errorf("read back %+v, %v, want the key of the line %q", made, found, clusterLine())
 	}
 	if want := testID(t); made.ID != want {
 		t.Errorf("id = %q, want %q", made.ID, want)

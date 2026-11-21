@@ -23,6 +23,7 @@ var (
 	errKeyFileForm = errors.New("must be YAML with the keys id, private_key and public_key, each set once")
 	errKeyID       = errors.New("id must be a UUIDv7 in lowercase")
 	errKeyMismatch = errors.New("public_key must be the public key of private_key")
+	errNotKeyFile  = errors.New("only " + KeyFile + " is the cluster key file")
 )
 
 // Key is the key pair of the cluster: one Ed25519 key that every node holds, so that what it
