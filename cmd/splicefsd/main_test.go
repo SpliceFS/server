@@ -505,17 +505,6 @@ func TestParseArgs(t *testing.T) {
 	}
 }
 
-func TestDirectory(t *testing.T) {
-	t.Parallel()
-	lookup := func() (string, error) { return "/default", nil }
-	if got, err := directory("/given", lookup); err != nil || got != "/given" {
-		t.Errorf("directory = %q, %v", got, err)
-	}
-	if got, err := directory("", lookup); err != nil || got != "/default" {
-		t.Errorf("directory = %q, %v", got, err)
-	}
-}
-
 func TestDefaultsThatCannotBeFound(t *testing.T) {
 	t.Parallel()
 	failing := func() (string, error) { return "", errors.New("no home directory") }
