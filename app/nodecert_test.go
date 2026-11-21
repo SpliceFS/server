@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/iotest"
@@ -618,5 +619,178 @@ func TestNodeCertRenewReportsWhatItCannotMake(t *testing.T) {
 	}
 	if !bytes.Equal(served.Raw, test.served(t).Raw) {
 		t.Error("the served certificate changed when the check failed")
+	}
+}
+
+// issuedCount is how many times the node says it issued a certificate.
+func (n *nodeCertTest) issuedCount() int {
+	return strings.Count(n.logs.String(), "node certificate issued")
+}
+
+// A handshake that finds a cluster key that the served certificate was not made under issues
+// the certificate before it answers: no reload and no daily check is needed.
+func TestNodeCertHandshakePicksUpAClusterKeyThatAppears(t *testing.T) {
+	t.Parallel()
+	test := newNodeCertTest(t)
+	if err := test.cert.refresh(standardConfig()); err != nil {
+		t.Fatal(err)
+	}
+	selfSignedCert := test.served(t)
+	key := testClusterKey(t)
+	test.keys.set(key)
+
+	leaf := test.served(t)
+
+	if !signedBy(leaf, key) || !publicKeyOf(leaf).Equal(publicKeyOf(selfSignedCert)) {
+		t.Error("the handshake did not serve a certificate under the cluster key for the same node key")
+	}
+	if want := []string{"192.0.2.7", "east", "east.example.com", "test-host"}; !slices.Equal(certNamesOf(leaf), want) {
+		t.Errorf("names = %v, want %v", certNamesOf(leaf), want)
+	}
+	if saved := readPEM(t, filepath.Join(test.cert.dir, certFileName)).Bytes; !bytes.Equal(saved, leaf.Raw) {
+		t.Error("cert.pem is not the certificate that is served")
+	}
+	// The next handshake finds the key it has already served.
+	if again := test.served(t); !bytes.Equal(again.Raw, leaf.Raw) || test.issuedCount() != 1 {
+		t.Errorf("the second handshake issued again: %d issued\n%s", test.issuedCount(), test.logs)
+	}
+}
+
+func TestNodeCertHandshakePicksUpAChangedClusterKey(t *testing.T) {
+	t.Parallel()
+	test := newNodeCertTest(t)
+	test.keys.set(testClusterKey(t))
+	if err := test.cert.refresh(standardConfig()); err != nil {
+		t.Fatal(err)
+	}
+	changed := testClusterKey(t)
+	test.keys.set(changed)
+
+	if leaf := test.served(t); !signedBy(leaf, changed) || test.issuedCount() != 2 {
+		t.Errorf("the handshake did not serve a certificate of the changed key: %d issued", test.issuedCount())
+	}
+}
+
+// A cluster key that goes leaves what is served, as the daily check does; and when it is back
+// as it was, nothing is issued.
+func TestNodeCertHandshakeKeepsTheCertificateWhenTheClusterKeyGoes(t *testing.T) {
+	t.Parallel()
+	test := newNodeCertTest(t)
+	key := testClusterKey(t)
+	test.keys.set(key)
+	if err := test.cert.refresh(standardConfig()); err != nil {
+		t.Fatal(err)
+	}
+	issued := test.served(t)
+	test.keys.clear()
+	if kept := test.served(t); !bytes.Equal(kept.Raw, issued.Raw) {
+		t.Error("the certificate changed when the key went")
+	}
+	test.keys.set(key)
+	if back := test.served(t); !bytes.Equal(back.Raw, issued.Raw) || test.issuedCount() != 1 {
+		t.Errorf("a key that came back as it was issued again: %d issued", test.issuedCount())
+	}
+}
+
+// Handshakes that arrive together while the key is new make one certificate: one issues, and
+// the others, which waited, get the same one. They all leave the starting gate at once.
+func TestNodeCertHandshakesAtOnceIssueOnce(t *testing.T) {
+	t.Parallel()
+	const handshakes = 16
+	test := newNodeCertTest(t)
+	if err := test.cert.refresh(standardConfig()); err != nil {
+		t.Fatal(err)
+	}
+	key := testClusterKey(t)
+	test.keys.set(key)
+	begin := make(chan struct{})
+	served := make([][]byte, handshakes)
+	var done sync.WaitGroup
+	for i := range handshakes {
+		done.Go(func() {
+			<-begin
+			cert, err := test.cert.get(nil)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			served[i] = cert.Certificate[0]
+		})
+	}
+	close(begin)
+	done.Wait()
+
+	for i, raw := range served {
+		if !bytes.Equal(raw, served[0]) {
+			t.Errorf("handshake %d got another certificate than handshake 0", i)
+		}
+	}
+	if leaf := test.served(t); !signedBy(leaf, key) || test.issuedCount() != 1 {
+		t.Errorf("%d certificates issued, want one under the cluster key", test.issuedCount())
+	}
+}
+
+// A handshake that waited for the lock finds the certificate made by the one before it, and
+// issues nothing. The state is made here directly, so that the test does not depend on which
+// handshake gets the lock first.
+func TestNodeCertHandshakeThatWaitedFindsTheCertificateMade(t *testing.T) {
+	t.Parallel()
+	test := newNodeCertTest(t)
+	key := testClusterKey(t)
+	test.keys.set(key)
+	if err := test.cert.refresh(standardConfig()); err != nil {
+		t.Fatal(err)
+	}
+	issued := test.served(t)
+
+	cert, err := test.cert.pickUp(key)
+
+	if err != nil || !bytes.Equal(cert.Certificate[0], issued.Raw) || test.issuedCount() != 1 {
+		t.Errorf("pickUp = %v, %d issued, want the certificate that was made and no new one", err, test.issuedCount())
+	}
+}
+
+// A handshake that cannot issue serves the certificate it has and says so; it does not try
+// again at every handshake, but the daily check does.
+func TestNodeCertHandshakeThatCannotIssueKeepsTheCertificate(t *testing.T) {
+	t.Parallel()
+	test := newNodeCertTest(t)
+	if err := test.cert.refresh(standardConfig()); err != nil {
+		t.Fatal(err)
+	}
+	selfSignedCert := test.served(t)
+	attempts := 0
+	test.cert.src.hostname = func() (string, error) {
+		attempts++
+		return "", errors.New("injected")
+	}
+	key := testClusterKey(t)
+	test.keys.set(key)
+
+	for range 3 {
+		if kept := test.served(t); !bytes.Equal(kept.Raw, selfSignedCert.Raw) {
+			t.Fatal("a certificate was served that was not the one the node had")
+		}
+	}
+
+	if attempts != 1 || strings.Count(test.logs.String(), "cannot issue the node certificate") != 1 {
+		t.Errorf("%d attempts, log:\n%s, want one attempt and one warning", attempts, test.logs)
+	}
+	test.cert.src.hostname = hostnameOf("test-host", nil)
+	if err := test.cert.renew(); err != nil || !signedBy(test.served(t), key) {
+		t.Errorf("the daily check did not issue under the cluster key (error %v)", err)
+	}
+}
+
+// With nothing served yet, a handshake that cannot issue has nothing to fall back on.
+func TestNodeCertHandshakeThatCannotIssueAndHasNothingFails(t *testing.T) {
+	t.Parallel()
+	test := newNodeCertTest(t)
+	test.cert.wanted = wanted{needed: true, names: []string{"east"}}
+	test.cert.src.hostname = hostnameOf("", errors.New("injected"))
+	test.keys.set(testClusterKey(t))
+
+	if _, err := test.cert.get(nil); err == nil || !strings.Contains(err.Error(), "injected") {
+		t.Errorf("get = %v, want the error of issuing", err)
 	}
 }
