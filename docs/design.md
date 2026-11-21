@@ -237,6 +237,7 @@ The state folder holds what the server keeps:
   shared/                   may be synced between nodes
     users/<user-id>.yaml
     nodes/<node-id>.yaml
+    cluster/key.yaml
 ```
 
 `local/` holds the node id, a UUIDv7 made on the first start, and the generated
@@ -257,6 +258,13 @@ Each node makes two key pairs on its first start and keeps the private halves in
 leaves the node. It publishes the public halves in its own node file in shared/nodes, so every node and every client
 that lists the nodes learns them. The signing key signs the node's tokens; the encryption key will receive
 keys meant for this node only (a later step).
+
+### Cluster key
+
+One Ed25519 key pair belongs to the cluster. `splicefsdctl cluster init` makes it in `shared/cluster/`, so every
+node holds the private key. Each node signs its own TLS certificate with it. A client given the cluster's public
+key trusts any node whose certificate that key signed; host names are not checked, since every holder of the key
+is the cluster. *Open:* replacing the cluster key.
 
 ### Reloading
 

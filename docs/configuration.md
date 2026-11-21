@@ -177,6 +177,7 @@ folders it needs. It must be able to write to the state folder.
   shared/                   may be synced between servers
     users/<user-id>.yaml
     nodes/<node-id>.yaml
+    cluster/key.yaml
 ```
 
 | File                         | Written by            | Content                                 |
@@ -187,6 +188,7 @@ folders it needs. It must be able to write to the state folder.
 | `local/digests/`             | the server            | the digests of each file read, one small file per file |
 | `shared/users/<user-id>.yaml`| you, through `splicefsdctl user add` | one user                   |
 | `shared/nodes/<node-id>.yaml`| that server only      | name, address, id and public keys of that server |
+| `shared/cluster/key.yaml`    | you, through `splicefsdctl cluster init` | the key of the cluster: its id and one Ed25519 key pair |
 
 ### local/
 
@@ -262,6 +264,20 @@ server, see "Applying changes".
 
 Earlier versions kept token keys in `shared/keys/`. A server of this version removes its own file there on
 start, and the folder once it is empty.
+
+## Cluster key
+
+A cluster key lets clients trust every server of the cluster without a certificate from a public authority.
+Run `splicefsdctl cluster init` once, on one server. It writes `shared/cluster/key.yaml`, which your sync tool
+delivers to the other servers, and prints the line a client needs:
+
+```
+cluster_key: <base64>
+```
+
+Each server then signs its own certificate with the cluster key and renews it on its own. Run
+`splicefsdctl cluster show` to print the line again. Keep `shared/cluster/key.yaml` as secret as the servers
+themselves: anyone who holds it can act as a server of the cluster.
 
 ## Applying changes
 
