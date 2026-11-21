@@ -62,7 +62,7 @@ cluster:
   url: ""                   # empty: this server is not announced to clients
 
 auth:
-  token_ttl: 30m
+  token_ttl: 5m
   login_rate: 10/m          # login attempts per client address
 
 mtime_precision: 1s         # modification times are compared at this precision
@@ -84,7 +84,7 @@ log:
 | `cluster.name`      | Name of the cluster this server is in    | `default`         | none                    |
 | `cluster.node`      | Name of this server in the node list     | the host name in lower case, other characters replaced by `-`, cut to 64 | lower-case letters, digits, `.`, `_`, `-`; starts with a letter or digit; at most 64 characters |
 | `cluster.url`       | Address clients use to reach this server | empty             | absolute `http` or `https` URL with a host, no `?` or `#`; a trailing `/` is dropped |
-| `auth.token_ttl`    | How long a login token is valid          | `30m`             | at least `1m`, not `unlimited` |
+| `auth.token_ttl`    | How long a login token is valid          | `5m`              | at least `1m`, not `unlimited` |
 | `auth.login_rate`   | Login attempts allowed per client address | `10/m`           | `<count>/<s\|m\|h>`, count at least 1 |
 | `mtime_precision`   | Precision for comparing modification times | `1s`            | at least `1s`, not `unlimited` |
 | `log.level`         | Log detail                               | `info`            | `debug`, `info`, `warn`, `error` |
@@ -215,28 +215,26 @@ You may sync `shared/` between servers with any file sync tool. Sync this one fo
 and nothing else. Every file in it has exactly one writer, so servers never overwrite each
 other.
 
-**users/** holds one file per user. You write these files. The file name without `.yaml` is
-the user name, with the same rules as a share name.
+**users/** holds one file per user, named by the user's id, a UUIDv7. The name the user logs in with is in the
+file.
 
 ```yaml
-# <state>/shared/users/alice.yaml
+# <state>/shared/users/0193f5c2-7d1e-7b2a-9c4d-5e6f7a8b9c0d.yaml
+name: alice
 password_hash: "$argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>"
 shares: [media]     # share names; ["*"] allows every share
-disabled: false     # true: the user cannot log in
+disabled: false     # true: the user cannot log in, and loses access within 30 seconds
 ```
 
-To add a user:
+To add a user, run `splicefsdctl user add --share media alice`. It reads the password as one line from standard
+input, writes the file and prints the user's id. Typed input is shown on the screen; to avoid that, pipe the
+password in from a file. To change a user, edit their file; to remove one, delete it.
 
-1. Run `splicefsdctl hash-password`. It reads one line from standard input, the password, and
-   prints the hash. Typed input is shown on the screen; to avoid that, pipe the password in
-   from a file.
-2. Create `<state>/shared/users/<name>.yaml` with the file content above. Paste the printed
-   hash as `password_hash` and list the shares the user may use. Only `password_hash` is
-   required; a user without `shares` can log in but cannot use any share.
-3. Make sure the user the server runs as can read the file.
+No restart is needed. A new, changed or removed file takes effect within 30 seconds. If a user's file cannot be
+parsed, the last good content stays in use and a warning is logged.
 
-No restart is needed. The file is read at each login, so a new, changed or removed file takes
-effect at once. If a user's file cannot be parsed, logins for that user fail until you fix it.
+Files named by the user name, as earlier versions had them, are skipped with a warning. Make each user again with
+`splicefsdctl user add`.
 
 **nodes/** holds the node list that clients ask for. When `cluster.url` is set, the server
 writes `nodes/<node-id>.yaml` with its `cluster.node` name and its `cluster.url`. When

@@ -269,16 +269,18 @@ need no reload. See "Applying changes" in the [server configuration](configurati
 
 ### Logins
 
-- One file per user in `shared/users/`: a password hash (argon2id, PHC string format), the
-  shares the user may read, and an optional `disabled` flag.
-- A token is a compact JWT signed with the Ed25519 key of the node that issued it (EdDSA). It carries the user
-  name, the allowed shares and an expiry. Its header names that node by its id.
+- One file per user in `shared/users/`, named by the user's id (a UUIDv7): the name the user logs in with, a
+  password hash (argon2id, PHC string format), the shares the user may read, and an optional `disabled` flag.
+- A token is a compact JWT signed with the Ed25519 key of the node that issued it (EdDSA). It carries the user's
+  id and an expiry. Its header names that node by its id.
 - Any node checks a token against the issuing node's public signing key, which it reads from that node's file in
   `shared/nodes/`, with no communication between nodes. A token from another node is accepted once the sync tool
   has delivered that node's file. A node accepts its own tokens at once.
 - *Open:* replacing a node's key pair. Today a node keeps its keys for good.
-- Tokens are short-lived (default 30 minutes). Removing or disabling a user stops new
-  tokens at once; tokens already issued run out on their own.
+- Tokens are short-lived (default 5 minutes).
+- Each request reads the user's shares and `disabled` flag from the user's file, kept in memory and checked again
+  with one stat when 30 seconds have passed. A changed share list or a disabled user takes effect within 30
+  seconds, also for tokens already issued.
 - Expiry is checked with 30 seconds of leeway in both directions, so node clocks only need
   to agree roughly. Run NTP or an equivalent on every node.
 - Login attempts are rate limited per client address. Behind a reverse proxy the address
@@ -323,8 +325,6 @@ That document covers discovery, the merged tree, reading, the cache and filesyst
 
 ## Known limitations
 
-- **Tokens cannot be revoked.** A removed or disabled user keeps access until the token
-  already issued expires (30 minutes by default).
 - **Keys travel by sync.** A token from one node is rejected by another until the sync tool
   has delivered the first node's node file.
 - **Some changes need a restart.** A reload cannot change `log.format`, and it cannot move a
