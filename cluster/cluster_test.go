@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"os"
@@ -26,6 +27,36 @@ func nodeFile(n int) string { return nodeID(n) + ".yaml" }
 
 // nodeContent is the content of a node file.
 func nodeContent(name, url string) string { return "name: " + name + "\nurl: " + url + "\n" }
+
+// key is a public key: the base64 of 32 bytes that all equal b.
+func key(b byte) string { return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{b}, 32)) }
+
+// The two public keys that the tests announce: key(0x51) and key(0xe1).
+const (
+	signKey    = "UVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVE="
+	encryptKey = "4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eE="
+)
+
+// keyed is a node as the server hands it to Announce: with its keys, and without its id, which
+// Announce takes from the node id.
+func keyed(name, url string) wire.Node {
+	return wire.Node{Name: name, URL: url, SignKey: signKey, EncryptKey: encryptKey}
+}
+
+// listed is the node as the loader returns it from the file that Announce wrote for node
+// number n.
+func listed(n int, name, url string) wire.Node {
+	node := keyed(name, url)
+	node.ID = nodeID(n)
+	return node
+}
+
+// announcedContent is the content of the node file that Announce writes for node number n
+// and the node self.
+func announcedContent(n int, self wire.Node) string {
+	return nodeContent(self.Name, self.URL) + "id: " + nodeID(n) + "\nsign_key: " + self.SignKey +
+		"\nencrypt_key: " + self.EncryptKey + "\n"
+}
 
 // put writes a node file with a modification time of epoch plus offset. The follower of the
 // directory tells a changed file by size, time and identity, and two writes in place in one
@@ -98,7 +129,7 @@ func checkNodes(t *testing.T, got, want []wire.Node) {
 func TestAnnounceWritesFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	self := wire.Node{Name: "east", URL: "https://east.example.com/api"}
+	self := keyed("east", "https://east.example.com/api")
 	if err := Announce(dir, nodeID(0xe1), self); err != nil {
 		t.Fatalf("Announce: %v", err)
 	}
@@ -107,7 +138,7 @@ func TestAnnounceWritesFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := nodeContent("east", "https://east.example.com/api"); string(got) != want {
+	if want := announcedContent(0xe1, self); string(got) != want {
 		t.Errorf("content = %q, want %q", got, want)
 	}
 	info, err := os.Stat(path)
@@ -125,30 +156,30 @@ func TestAnnounceWritesFile(t *testing.T) {
 
 func TestAnnounceRewritesOnlyWhenContentDiffers(t *testing.T) {
 	t.Parallel()
-	east := wire.Node{Name: "east", URL: "https://east.example.com"}
+	east := keyed("east", "https://east.example.com")
+	moved := keyed("east", "https://east.example.org")
+	renamed := keyed("west", "https://east.example.org")
+	newSign := renamed
+	newSign.SignKey = key(0x52)
+	newEncrypt := newSign
+	newEncrypt.EncryptKey = key(0xe2)
+	// The id comes from the node id, so what self says about it changes nothing.
+	otherID := newEncrypt
+	otherID.ID = nodeID(77)
 	tests := []struct {
 		name      string
 		self      wire.Node
 		want      string
 		rewritten bool
 	}{
-		{"first announcement", east, nodeContent("east", "https://east.example.com"), true},
-		{"same node again", east, nodeContent("east", "https://east.example.com"), false},
-		{
-			"new url",
-			wire.Node{Name: "east", URL: "https://east.example.org"},
-			nodeContent("east", "https://east.example.org"), true,
-		},
-		{
-			"new name",
-			wire.Node{Name: "west", URL: "https://east.example.org"},
-			nodeContent("west", "https://east.example.org"), true,
-		},
-		{
-			"same again after a change",
-			wire.Node{Name: "west", URL: "https://east.example.org"},
-			nodeContent("west", "https://east.example.org"), false,
-		},
+		{"first announcement", east, announcedContent(1, east), true},
+		{"same node again", east, announcedContent(1, east), false},
+		{"new url", moved, announcedContent(1, moved), true},
+		{"new name", renamed, announcedContent(1, renamed), true},
+		{"same again after a change", renamed, announcedContent(1, renamed), false},
+		{"new signing key", newSign, announcedContent(1, newSign), true},
+		{"new encryption key", newEncrypt, announcedContent(1, newEncrypt), true},
+		{"id of self is not used", otherID, announcedContent(1, newEncrypt), false},
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, nodeFile(1))
@@ -296,24 +327,20 @@ func TestLoaderSortsByNodeName(t *testing.T) {
 func TestAnnounceThenLoad(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	west := wire.Node{Name: "west", URL: "http://w/api/"}
-	east := wire.Node{Name: "east", URL: "https://e"}
-	if err := Announce(dir, nodeID(1), west); err != nil {
+	if err := Announce(dir, nodeID(1), keyed("west", "http://w/api/")); err != nil {
 		t.Fatal(err)
 	}
-	if err := Announce(dir, nodeID(2), east); err != nil {
+	if err := Announce(dir, nodeID(2), keyed("east", "https://e")); err != nil {
 		t.Fatal(err)
 	}
 	log, buf := testLog()
 	loader := NewLoader(dir, log)
-	checkNodes(t, load(t, loader), []wire.Node{
-		{Name: "east", URL: "https://e"}, {Name: "west", URL: "http://w/api"},
-	})
+	checkNodes(t, load(t, loader), []wire.Node{listed(2, "east", "https://e"), listed(1, "west", "http://w/api")})
 
 	if err := Announce(dir, nodeID(1), wire.Node{Name: "west"}); err != nil {
 		t.Fatal(err)
 	}
-	checkNodes(t, load(t, loader), []wire.Node{{Name: "east", URL: "https://e"}})
+	checkNodes(t, load(t, loader), []wire.Node{listed(2, "east", "https://e")})
 	if buf.Len() != 0 {
 		t.Errorf("unexpected log output: %s", buf)
 	}

@@ -41,10 +41,11 @@ var (
 // only what clients are told anyway.
 const announcementMode = 0o644
 
-// Announce writes the file of the node nodeID into the nodes directory dir: its name and its
-// public URL. The file is replaced only when its content differs, so that a restart does not
-// make a sync tool copy it again. A node with no URL is not announced, so its file is
-// removed. The directory must exist.
+// Announce writes the file of the node nodeID into the nodes directory dir: its name, its
+// public URL, its id and its public keys. The id is always nodeID, whatever self says, so that
+// the id in the file is the id in the file name. The file is replaced only when its content
+// differs, so that a restart does not make a sync tool copy it again. A node with no URL is
+// not announced, so its file is removed. The directory must exist.
 func Announce(dir, nodeID string, self wire.Node) error {
 	path := filepath.Join(dir, datadir.NodeFile(nodeID))
 	if self.URL == "" {
@@ -53,8 +54,9 @@ func Announce(dir, nodeID string, self wire.Node) error {
 		}
 		return nil
 	}
-	// A struct of two strings always encodes, so there is no error to handle.
-	data, _ := yaml.Marshal(self) //nolint:errcheck // cannot fail for a struct of two strings
+	self.ID = nodeID
+	// A struct of strings always encodes, so there is no error to handle.
+	data, _ := yaml.Marshal(self) //nolint:errcheck // cannot fail for a struct of strings
 	if current, err := os.ReadFile(path); err == nil && bytes.Equal(current, data) {
 		return nil
 	}
