@@ -251,6 +251,13 @@ The cluster name comes from the configuration, not from a file.
 
 The full reference is in the [server configuration](configuration.md).
 
+### Node keys
+
+Each node makes two key pairs on its first start and keeps the private halves in local/node-keys.yaml, which never
+leaves the node. It publishes the public halves in its own node file in shared/nodes, so every node and every client
+that lists the nodes learns them. The signing key will sign the node's tokens and the encryption key will receive
+keys meant for this node only (later steps).
+
 ### Reloading
 
 `SIGHUP` applies the configuration again without a restart. The server reads and checks
