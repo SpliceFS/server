@@ -1,5 +1,5 @@
 // Package auth implements logins for the SpliceFS server: argon2id password hashes, user
-// files, signed tokens with rotating keys, and a login rate limiter.
+// files, tokens signed with the Ed25519 key of the node, and a login rate limiter.
 package auth
 
 import (
@@ -40,8 +40,8 @@ func New(users *Users, tokens *Tokens, limiter *Limiter, slots int) *Authenticat
 
 // Login checks the password of user and issues a token. It returns api.ErrRateLimited when
 // clientAddr has used up its attempts, and api.ErrBadCredentials for an unknown user, a
-// disabled user or a wrong password. Any other failure, such as an unreadable user file or
-// keys file, is returned wrapped and is not api.ErrBadCredentials.
+// disabled user or a wrong password. Any other failure, such as an unreadable user file, is
+// returned wrapped and is not api.ErrBadCredentials.
 //
 // After the rate limit check, Login waits for a free verification slot. If ctx ends first
 // it returns ctx.Err() wrapped, so a client that gave up does not queue for memory.

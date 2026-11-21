@@ -445,10 +445,6 @@ func TestRunFailsAtStart(t *testing.T) {
 		{"node keys file is malformed", func(fix *fixture) {
 			write(t, fix.state, "local/node-keys.yaml", "sign: x\n")
 		}, "node keys file"},
-		{"signing key file is invalid", func(fix *fixture) {
-			write(t, fix.state, "local/node-id", rfcNodeID+"\n")
-			write(t, fix.state, "shared/keys/"+rfcNodeID+".yaml", "keys: []\n")
-		}, "signing key file"},
 		{"node file cannot be written", func(fix *fixture) {
 			// A folder where this node's file belongs cannot be replaced by the file.
 			write(t, fix.state, "local/node-id", rfcNodeID+"\n")

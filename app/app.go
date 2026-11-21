@@ -138,7 +138,7 @@ func (b *builder) generation(cfg *config.Config) (*generation, error) {
 }
 
 // newHandler builds the API handler. It refuses to start if it cannot make or read its own
-// key or announce itself.
+// keys or announce itself.
 func newHandler(
 	cfg *config.Config, data *dataPaths, version string, logger *slog.Logger, shares *shareSet,
 ) (http.Handler, error) {
@@ -151,10 +151,6 @@ func newHandler(
 	if err != nil {
 		return nil, err
 	}
-	tokens := auth.NewTokens(data.keysDir, nodeID, cfg.Auth.TokenTTL.Std(), time.Now, logger)
-	if err := tokens.EnsureOwnKey(); err != nil {
-		return nil, fmt.Errorf("make or read own key: %w", err)
-	}
 	public := keys.public()
 	self := wire.Node{
 		Name: cfg.Cluster.Node, URL: cfg.Cluster.URL, SignKey: public.sign, EncryptKey: public.encrypt,
@@ -162,7 +158,8 @@ func newHandler(
 	if err := cluster.Announce(data.nodesDir, nodeID, self); err != nil {
 		return nil, fmt.Errorf("announce node: %w", err)
 	}
-	nodes := namedCluster{name: cfg.Cluster.Name, nodes: cluster.NewLoader(data.nodesDir, logger)}
+	loader := cluster.NewLoader(data.nodesDir, logger)
+	tokens := auth.NewTokens(nodeID, keys.sign, loader, cfg.Auth.TokenTTL.Std(), time.Now)
 	limiter := auth.NewLimiter(cfg.Auth.LoginRate.Count, cfg.Auth.LoginRate.Per, time.Now)
 	return api.NewHandler(api.Options{
 		BasePath:       cfg.BasePath,
@@ -170,7 +167,7 @@ func newHandler(
 		Version:        version,
 		Shares:         shares.byName,
 		Auth:           auth.New(auth.NewUsers(data.usersDir), tokens, limiter, loginSlots),
-		Nodes:          nodes,
+		Nodes:          namedCluster{name: cfg.Cluster.Name, nodes: loader},
 		TrustedProxies: cfg.TrustedProxies,
 		Logger:         logger,
 	}), nil

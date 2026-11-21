@@ -112,9 +112,6 @@ type errWriter struct{}
 
 func (errWriter) Write([]byte) (int, error) { return 0, errDiskFull }
 
-// testNodeID is a valid node id, a UUIDv7.
-const testNodeID = "017f22e2-79b0-7cc3-98c4-dc0c0c07398f"
-
 func TestNewLogger(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -455,13 +452,6 @@ func TestServerFailures(t *testing.T) {
 			t.Helper()
 			writeFiles(t, stateDir, map[string]string{"local/node-id": "0123456789abcdef\n"})
 		}, "must hold a UUIDv7"},
-		{"signing key file is invalid", func(t *testing.T, _, stateDir string) {
-			t.Helper()
-			writeFiles(t, stateDir, map[string]string{
-				"local/node-id":                       testNodeID + "\n",
-				"shared/keys/" + testNodeID + ".yaml": "keys: []\n",
-			})
-		}, "signing key file"},
 		{"data folder is a file", func(t *testing.T, _, stateDir string) {
 			t.Helper()
 			writeFiles(t, stateDir, map[string]string{"shared/keys": "a file where a folder belongs"})

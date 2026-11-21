@@ -8,41 +8,40 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"golang.org/x/crypto/argon2"
 
 	"github.com/SpliceFS/common/api"
+	"github.com/SpliceFS/common/wire"
 )
 
-// fuzzTokens writes a keys file with one key and returns Tokens over it, with a clock
-// that never moves, so every result depends on the input alone.
-func fuzzTokens(f *testing.F) *Tokens {
-	f.Helper()
-	dir := f.TempDir()
-	content := keysYAML([2]string{"new", b64(secretA)})
-	if err := os.WriteFile(filepath.Join(dir, testNode+".yaml"), []byte(content), 0o600); err != nil {
-		f.Fatal(err)
-	}
-	return NewTokens(dir, testNode, 30*time.Minute, newFakeClock().Now, discard())
+// fuzzTokens returns Tokens for the node under test, with one other node listed whose private
+// key no seed holds, so that no token but the issued one verifies, and a clock that never
+// moves, so every result depends on the input alone.
+func fuzzTokens() *Tokens {
+	stranger := wire.Node{Name: "other", URL: "https://other.example.com", ID: otherNode, SignKey: publicText(keyOf(3))}
+	return newTestTokens(stubNodes{nodes: []wire.Node{stranger}}, newFakeClock())
 }
 
 func FuzzTokensVerify(f *testing.F) {
-	tokens := fuzzTokens(f)
+	tokens := fuzzTokens()
 	issued, expires, err := tokens.Issue("alice", []string{"media"})
 	if err != nil {
 		f.Fatal(err)
 	}
 	want := api.Claims{User: "alice", Shares: []string{"media"}, Expires: expires}
-	header := tokenEncoding().EncodeToString([]byte(`{"alg":"HS256","typ":"JWT","kid":"new"}`))
+	header := tokenEncoding().EncodeToString([]byte(`{"alg":"EdDSA","typ":"JWT","kid":"` + testNode + `"}`))
+	otherHeader := tokenEncoding().EncodeToString([]byte(`{"alg":"EdDSA","typ":"JWT","kid":"` + otherNode + `"}`))
 	payload := tokenEncoding().EncodeToString(
 		[]byte(`{"sub":"alice","shares":["*"],"iat":1,"exp":9999999999}`))
 	for _, seed := range []string{
 		issued, issued[:len(issued)-1], issued + "A", issued + ".", strings.ToUpper(issued),
 		"", ".", "..", "...", "a.b.c", "Bearer " + issued,
-		forge(secretB, header, payload), forge(secretA, "e30", payload),
-		header + "." + payload + ".", header + "." + payload + "." + strings.Repeat("A", 43),
-		forge(secretA, tokenEncoding().EncodeToString([]byte(`{"alg":"none","kid":"new"}`)), payload),
+		forge(keyOf(2), header, payload), forge(keyOf(1), "e30", payload), forge(keyOf(2), otherHeader, payload),
+		forgeHMAC(publicText(keyOf(1)), tokenEncoding().EncodeToString(
+			[]byte(`{"alg":"HS256","typ":"JWT","kid":"`+testNode+`"}`)), payload),
+		header + "." + payload + ".", header + "." + payload + "." + strings.Repeat("A", 86),
+		forge(keyOf(1), tokenEncoding().EncodeToString([]byte(`{"alg":"none","kid":"`+testNode+`"}`)), payload),
 		strings.Repeat("a", 1<<16),
 	} {
 		f.Add(seed)
@@ -68,7 +67,7 @@ func FuzzTokensVerify(f *testing.F) {
 }
 
 func FuzzTokensVerifySigned(f *testing.F) {
-	tokens := fuzzTokens(f)
+	tokens := fuzzTokens()
 	nowSec := newFakeClock().Now().Unix()
 	for _, seed := range []string{
 		fmt.Sprintf(`{"sub":"alice","shares":["media"],"iat":%d,"exp":%d}`, nowSec, nowSec+1800),
@@ -82,10 +81,10 @@ func FuzzTokensVerifySigned(f *testing.F) {
 	} {
 		f.Add([]byte(seed))
 	}
-	header := tokenEncoding().EncodeToString([]byte(`{"alg":"HS256","typ":"JWT","kid":"new"}`))
+	header := tokenEncoding().EncodeToString([]byte(`{"alg":"EdDSA","typ":"JWT","kid":"` + testNode + `"}`))
 	f.Fuzz(func(t *testing.T, payload []byte) {
 		// The signature is genuine here, so this exercises the claims checks alone.
-		token := forge(secretA, header, tokenEncoding().EncodeToString(payload))
+		token := forge(keyOf(1), header, tokenEncoding().EncodeToString(payload))
 		claims, err := tokens.Verify(token)
 		if err != nil {
 			if !errors.Is(err, api.ErrInvalidToken) && !errors.Is(err, api.ErrExpiredToken) {
@@ -276,45 +275,4 @@ func FuzzUserFile(f *testing.F) {
 			t.Fatalf("file %q gave %+v", content, user)
 		}
 	})
-}
-
-func FuzzParseKeys(f *testing.F) {
-	for _, seed := range []string{
-		twoKeys(), keysYAML([2]string{"a", b64(secretA)}), keysYAML([2]string{"", b64(secretA)}),
-		keysYAML([2]string{"a", b64(secretA)}, [2]string{"a", b64(secretB)}),
-		keysYAML([2]string{"a", "short"}), keysYAML([2]string{"a", "!!!"}),
-		keysYAML([2]string{"a", b64(secretA[:31])}), "keys: []\n", "", "keys:\n  - id: a\n    x: 1\n",
-		"keys: a\n", "{", "---\n---\n",
-	} {
-		f.Add([]byte(seed))
-	}
-	f.Fuzz(checkParseKeys)
-}
-
-// checkParseKeys is the property of parseKeys for one file: a refusal returns no keys and
-// leaks no secret, and an acceptance has only strong, named, unique keys.
-func checkParseKeys(t *testing.T, content []byte) {
-	t.Helper()
-	keys, err := parseKeys(content)
-	if err != nil {
-		if keys != nil {
-			t.Fatalf("parseKeys failed but returned %d keys", len(keys))
-		}
-		// The error is logged, so it must never repeat a secret from the file.
-		if strings.Contains(err.Error(), b64(secretA)) {
-			t.Fatalf("error contains a secret: %v", err)
-		}
-		return
-	}
-	// A weak, unnamed or duplicated key would make tokens forgeable or ambiguous.
-	seen := map[string]bool{}
-	for _, key := range keys {
-		if key.id == "" || seen[key.id] || len(key.secret) < minSecretSize {
-			t.Fatalf("file %q accepted key %q with %d secret bytes", content, key.id, len(key.secret))
-		}
-		seen[key.id] = true
-	}
-	if len(keys) == 0 {
-		t.Fatalf("file %q accepted with no keys", content)
-	}
 }
