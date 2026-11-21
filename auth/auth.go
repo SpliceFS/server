@@ -4,7 +4,6 @@ package auth
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -40,8 +39,8 @@ func New(users *Users, tokens *Tokens, limiter *Limiter, slots int) *Authenticat
 
 // Login checks the password of user and issues a token. It returns api.ErrRateLimited when
 // clientAddr has used up its attempts, and api.ErrBadCredentials for an unknown user, a
-// disabled user or a wrong password. Any other failure, such as an unreadable user file, is
-// returned wrapped and is not api.ErrBadCredentials.
+// disabled user or a wrong password. Any other failure is returned wrapped and is not
+// api.ErrBadCredentials.
 //
 // After the rate limit check, Login waits for a free verification slot. If ctx ends first
 // it returns ctx.Err() wrapped, so a client that gave up does not queue for memory.
@@ -55,14 +54,8 @@ func (a *Authenticator) Login(
 		return "", time.Time{}, fmt.Errorf("login: %w", ctx.Err())
 	}
 	defer a.release()
-	account, err := a.users.Lookup(user)
-	if errors.Is(err, ErrNoUser) {
-		return "", time.Time{}, a.reject(password)
-	}
-	if err != nil {
-		return "", time.Time{}, fmt.Errorf("login: %w", err)
-	}
-	if account.Disabled {
+	account, found := a.users.Lookup(user)
+	if !found || account.Disabled {
 		return "", time.Time{}, a.reject(password)
 	}
 	ok, err := a.verify(account.PasswordHash, password)

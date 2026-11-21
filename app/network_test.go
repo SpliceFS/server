@@ -209,8 +209,8 @@ func TestNetworkReloadKeepsAHeldToken(t *testing.T) {
 	fix := networkFixture(t, testSettings, "")
 	docs := filepath.Join(filepath.Dir(fix.shareDir), "docs")
 	write(t, docs, "readme.txt", "docs")
-	write(t, fix.data.usersDir, "alice.yaml",
-		"password_hash: \""+lowCostHash("right-password")+"\"\nshares: [media, docs]\n")
+	write(t, fix.data.usersDir, aliceFile,
+		"name: alice\npassword_hash: \""+lowCostHash("right-password")+"\"\nshares: [media, docs]\n")
 	reloader := startReloading(t, fix)
 	node := remoteNode(t, fix, reloader.running, nil)
 	token := remoteLogin(t, node)

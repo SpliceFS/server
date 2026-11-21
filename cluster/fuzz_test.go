@@ -164,7 +164,7 @@ func checkNodeKeys(t *testing.T, fileName string, node wire.Node, content []byte
 		}
 		return
 	}
-	if id, _ := datadir.NodeOfFile(fileName); node.ID != id {
+	if id, _ := datadir.IDOfFile(fileName); node.ID != id {
 		t.Fatalf("accepted id %q in %s: %q", node.ID, fileName, content)
 	}
 	checkKeyForm(t, node.SignKey)

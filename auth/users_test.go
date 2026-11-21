@@ -1,42 +1,69 @@
 package auth
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 )
 
-func writeFile(t *testing.T, dir, name, content string) {
-	t.Helper()
+// User ids of the tests. A later id sorts after an earlier one, as the ids of users made later do.
+const (
+	aliceID = "0193f5c2-7d1e-7b2a-9c4d-5e6f7a8b9c0d"
+	bobID   = "0193f5c2-7d1e-7b2a-9c4d-5e6f7a8b9c0e"
+	carolID = "0193f5c2-7d1e-7b2a-9c4d-5e6f7a8b9c0f"
+	daveID  = "0193f5c2-7d1e-7b2a-9c4d-5e6f7a8b9c10"
+)
+
+func writeFile(tb testing.TB, dir, name, content string) {
+	tb.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
+}
+
+// writeUser writes the file of the user with the given id.
+func writeUser(tb testing.TB, dir, id, content string) {
+	tb.Helper()
+	writeFile(tb, dir, id+".yaml", content)
+}
+
+// logCapture returns a logger that writes its lines to the returned buffer, and the buffer.
+func logCapture() (*slog.Logger, *bytes.Buffer) {
+	var buf bytes.Buffer
+	return slog.New(slog.NewTextHandler(&buf, nil)), &buf
+}
+
+// newTestUsers returns Users over dir that discard their log.
+func newTestUsers(dir string) *Users {
+	return NewUsers(dir, slog.New(slog.DiscardHandler))
 }
 
 func TestUsersLookup(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	writeFile(t, dir, "alice.yaml", "password_hash: \"$argon2id$x\"\nshares: [media, docs]\n")
-	writeFile(t, dir, "bob.yaml", "password_hash: h\nshares: [\"*\"]\ndisabled: true\n")
-	users := NewUsers(dir)
+	writeUser(t, dir, aliceID, "name: alice\npassword_hash: \"$argon2id$x\"\nshares: [media, docs]\n")
+	writeUser(t, dir, bobID, "name: bob\npassword_hash: h\nshares: [\"*\"]\ndisabled: true\n")
+	users := newTestUsers(dir)
 
-	alice, err := users.Lookup("alice")
-	if err != nil {
-		t.Fatal(err)
+	alice, found := users.Lookup("alice")
+	if !found {
+		t.Fatal("alice not found")
 	}
-	want := User{Name: "alice", PasswordHash: "$argon2id$x", Shares: []string{"media", "docs"}}
+	want := User{ID: aliceID, Name: "alice", PasswordHash: "$argon2id$x", Shares: []string{"media", "docs"}}
 	if !reflect.DeepEqual(alice, want) {
 		t.Errorf("alice = %+v, want %+v", alice, want)
 	}
-	bob, err := users.Lookup("bob")
-	if err != nil {
-		t.Fatal(err)
+	bob, found := users.Lookup("bob")
+	if !found {
+		t.Fatal("bob not found")
 	}
-	want = User{Name: "bob", PasswordHash: "h", Shares: []string{"*"}, Disabled: true}
+	want = User{ID: bobID, Name: "bob", PasswordHash: "h", Shares: []string{"*"}, Disabled: true}
 	if !reflect.DeepEqual(bob, want) {
 		t.Errorf("bob = %+v, want %+v", bob, want)
 	}
@@ -45,46 +72,63 @@ func TestUsersLookup(t *testing.T) {
 func TestUsersLookupSeesChangesAtOnce(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	users := NewUsers(dir)
-	if _, err := users.Lookup("carol"); !errors.Is(err, ErrNoUser) {
-		t.Fatalf("before add: err = %v, want ErrNoUser", err)
+	users := newTestUsers(dir)
+	if _, found := users.Lookup("carol"); found {
+		t.Fatal("before add: found the user")
 	}
-	writeFile(t, dir, "carol.yaml", "password_hash: h1\n")
-	user, err := users.Lookup("carol")
-	if err != nil || user.PasswordHash != "h1" {
-		t.Fatalf("after add: %+v, %v", user, err)
+	writeUser(t, dir, carolID, "name: carol\npassword_hash: h1\n")
+	user, found := users.Lookup("carol")
+	if !found || user.PasswordHash != "h1" {
+		t.Fatalf("after add: %+v, %v", user, found)
 	}
-	writeFile(t, dir, "carol.yaml", "password_hash: h2\n")
-	user, err = users.Lookup("carol")
-	if err != nil || user.PasswordHash != "h2" {
-		t.Errorf("after change: hash = %q, err = %v, want h2", user.PasswordHash, err)
+	writeUser(t, dir, carolID, "name: carol\npassword_hash: h2\n")
+	user, found = users.Lookup("carol")
+	if !found || user.PasswordHash != "h2" {
+		t.Errorf("after change: hash = %q, found = %v, want h2", user.PasswordHash, found)
 	}
-	if err := os.Remove(filepath.Join(dir, "carol.yaml")); err != nil {
+}
+
+func TestUsersLookupSeesRenameAndRemove(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	users := newTestUsers(dir)
+	writeUser(t, dir, carolID, "name: carol\npassword_hash: h\n")
+	if _, found := users.Lookup("carol"); !found {
+		t.Fatal("carol not found")
+	}
+	writeUser(t, dir, carolID, "name: caroline\npassword_hash: h\n")
+	if _, found := users.Lookup("carol"); found {
+		t.Error("after rename: still found carol")
+	}
+	if user, found := users.Lookup("caroline"); !found || user.ID != carolID {
+		t.Errorf("after rename: Lookup(caroline) = %+v, %v", user, found)
+	}
+	if err := os.Remove(filepath.Join(dir, carolID+".yaml")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := users.Lookup("carol"); !errors.Is(err, ErrNoUser) {
-		t.Errorf("after remove: err = %v, want ErrNoUser", err)
+	if _, found := users.Lookup("caroline"); found {
+		t.Error("after remove: still found caroline")
 	}
 }
 
 func TestUsersLookupNoUser(t *testing.T) {
 	t.Parallel()
-	// A decoy next to the users directory proves that bad names never reach the filesystem.
+	// A decoy next to the users directory proves that a name never reaches the file system.
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "users")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, parent, "outside.yaml", "password_hash: h\n")
-	writeFile(t, dir, ".hidden.yaml", "password_hash: h\n")
-	writeFile(t, dir, "Upper.yaml", "password_hash: h\n")
-	users := NewUsers(dir)
+	writeFile(t, parent, "outside.yaml", "name: outside\npassword_hash: h\n")
+	writeUser(t, dir, aliceID, "name: alice\npassword_hash: h\n")
+	users := newTestUsers(dir)
 	tests := []struct {
 		name string
 		user string
 	}{
 		{"missing", "nobody"},
 		{"empty", ""},
+		{"the id of a user", aliceID},
 		{"parent traversal", "../outside"},
 		{"absolute path", filepath.Join(parent, "outside")},
 		{"slash", "a/b"},
@@ -94,7 +138,7 @@ func TestUsersLookupNoUser(t *testing.T) {
 		{"leading dot", ".hidden"},
 		{"leading dash", "-x"},
 		{"leading underscore", "_x"},
-		{"uppercase", "Upper"},
+		{"uppercase", "Alice"},
 		{"space", "a b"},
 		{"nul byte", "a\x00b"},
 		{"non ASCII", "caf\u00e9"},
@@ -103,8 +147,8 @@ func TestUsersLookupNoUser(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := users.Lookup(tt.user); !errors.Is(err, ErrNoUser) {
-				t.Errorf("err = %v, want ErrNoUser", err)
+			if _, found := users.Lookup(tt.user); found {
+				t.Error("found a user, want none")
 			}
 		})
 	}
@@ -114,53 +158,150 @@ func TestUsersLookupNames(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	names := []string{"a", "0", "a.b", "a_b", "a-b", "user.name-1_x", strings.Repeat("a", 64)}
-	for _, name := range names {
-		writeFile(t, dir, name+".yaml", "password_hash: h\n")
+	for i, name := range names {
+		writeUser(t, dir, fmt.Sprintf("0193f5c2-7d1e-7b2a-9c4d-5e6f7a8b9c%02x", i), "name: "+name+"\npassword_hash: h\n")
 	}
-	users := NewUsers(dir)
+	users := newTestUsers(dir)
 	for _, name := range names {
-		if u, err := users.Lookup(name); err != nil || u.Name != name {
-			t.Errorf("Lookup(%q) = %+v, %v", name, u, err)
+		if u, found := users.Lookup(name); !found || u.Name != name {
+			t.Errorf("Lookup(%q) = %+v, %v", name, u, found)
 		}
 	}
 }
 
-func TestUsersLookupBrokenFile(t *testing.T) {
+func TestUsersLookupResultIsACopy(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(dir, "unreadable.yaml"), 0o700); err != nil {
-		t.Fatal(err)
+	writeUser(t, dir, aliceID, "name: alice\npassword_hash: h\nshares: [media]\n")
+	users := newTestUsers(dir)
+	first, found := users.Lookup("alice")
+	if !found {
+		t.Fatal("alice not found")
 	}
+	first.Shares[0] = "changed"
+	if again, found := users.Lookup("alice"); !found || again.Shares[0] != "media" {
+		t.Errorf("a second lookup = %+v, %v, want the shares unchanged", again, found)
+	}
+}
+
+func TestUsersLookupDuplicateNames(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	log, logged := logCapture()
+	writeUser(t, dir, bobID, "name: alice\npassword_hash: second\n")
+	writeUser(t, dir, aliceID, "name: alice\npassword_hash: first\n")
+	users := NewUsers(dir, log)
+	for range 2 {
+		user, found := users.Lookup("alice")
+		if !found || user.ID != aliceID || user.PasswordHash != "first" {
+			t.Fatalf("Lookup(alice) = %+v, %v, want the file that sorts first", user, found)
+		}
+	}
+	text := logged.String()
+	for _, want := range []string{"duplicate user name", "kept=" + aliceID + ".yaml", "ignored=" + bobID + ".yaml"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("log %q lacks %q", text, want)
+		}
+	}
+	if got := strings.Count(text, "duplicate user name"); got != 1 {
+		t.Errorf("the clash was logged %d times, want once for one change of the files", got)
+	}
+}
+
+func TestUsersSkipsFilesNotNamedByID(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	log, logged := logCapture()
+	writeFile(t, dir, "alice.yaml", "name: alice\npassword_hash: h\n")
+	writeUser(t, dir, bobID, "name: bob\npassword_hash: h\n")
+	users := NewUsers(dir, log)
+	if _, found := users.Lookup("alice"); found {
+		t.Error("Lookup(alice) found a file named by the user name")
+	}
+	if _, found := users.Lookup("bob"); !found {
+		t.Error("Lookup(bob) found nothing, want the user of the other file")
+	}
+	want := "users/alice.yaml: user files are named by the user id since this version; " +
+		"run splicefsdctl user add to make one"
+	if !strings.Contains(logged.String(), want) {
+		t.Errorf("log %q lacks the warning %q", logged.String(), want)
+	}
+}
+
+func TestUsersKeepLastGoodContentOfABrokenFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	log, logged := logCapture()
+	writeUser(t, dir, aliceID, "name: alice\npassword_hash: good\n")
+	users := NewUsers(dir, log)
+	if _, found := users.Lookup("alice"); !found {
+		t.Fatal("alice not found")
+	}
+	writeUser(t, dir, aliceID, "name: alice\npassword_hash: [\n")
+	user, found := users.Lookup("alice")
+	if !found || user.PasswordHash != "good" {
+		t.Errorf("Lookup(alice) = %+v, %v, want the last good content", user, found)
+	}
+	if !strings.Contains(logged.String(), "keeping its last good content") {
+		t.Errorf("log %q has no warning", logged.String())
+	}
+}
+
+func TestParseUserBrokenFile(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		content string
+		want    error
 	}{
-		{"empty file", ""},
-		{"not yaml", "password_hash: [\n"},
-		{"wrong type", "password_hash: h\ndisabled: sesame-open\n"},
-		{"unknown key", "password_hash: h\nadmin: true\n"},
-		{"no hash", "shares: [media]\n"},
-		{"empty hash", "password_hash: \"\"\n"},
+		{"empty file", "", errUserFileEmpty},
+		{"not yaml", "name: a\npassword_hash: [\n", errUserNotYAML},
+		{"wrong type", "name: a\npassword_hash: h\ndisabled: sesame-open\n", errUserWrongType},
+		{"unknown key", "name: a\npassword_hash: h\nadmin: true\n", errUserUnknownKey},
+		{"no name", "password_hash: h\n", errEmptyName},
+		{"empty name", "name: \"\"\npassword_hash: h\n", errEmptyName},
+		{"name with a capital", "name: Alice\npassword_hash: h\n", errBadName},
+		{"name with a slash", "name: a/b\npassword_hash: h\n", errBadName},
+		{"no hash", "name: a\nshares: [media]\n", errEmptyPasswordHash},
+		{"empty hash", "name: a\npassword_hash: \"\"\n", errEmptyPasswordHash},
 	}
-	for _, tt := range tests {
-		writeFile(t, dir, strings.ReplaceAll(tt.name, " ", "-")+".yaml", tt.content)
-	}
-	users := NewUsers(dir)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := users.Lookup(strings.ReplaceAll(tt.name, " ", "-"))
-			if err == nil || errors.Is(err, ErrNoUser) {
-				t.Errorf("err = %v, want an error other than ErrNoUser", err)
+			user, err := parseUser(aliceID+".yaml", []byte(tt.content))
+			if !errors.Is(err, tt.want) {
+				t.Errorf("err = %v, want %v", err, tt.want)
+			}
+			if !reflect.DeepEqual(user, User{}) {
+				t.Errorf("user = %+v, want no user, so that nobody can log in", user)
 			}
 		})
 	}
-	t.Run("unreadable", func(t *testing.T) {
-		t.Parallel()
-		if _, err := users.Lookup("unreadable"); err == nil || errors.Is(err, ErrNoUser) {
-			t.Errorf("err = %v, want an error other than ErrNoUser", err)
-		}
-	})
+}
+
+func TestParseUserFileNames(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		file string
+		ok   bool
+	}{
+		{"user id", aliceID + ".yaml", true},
+		{"user name", "alice.yaml", false},
+		{"id in capitals", strings.ToUpper(aliceID) + ".yaml", false},
+		{"id of another version", "0193f5c2-7d1e-4b2a-9c4d-5e6f7a8b9c0d.yaml", false},
+		{"no extension", aliceID, false},
+		{"other extension", aliceID + ".yml", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := parseUser(tt.file, []byte("name: a\npassword_hash: h\n"))
+			if (err == nil) != tt.ok || (err != nil && !errors.Is(err, errNotUserFile)) {
+				t.Errorf("parseUser(%q) error = %v, want ok = %v", tt.file, err, tt.ok)
+			}
+		})
+	}
 }
 
 // testHash stands in for a password hash that an administrator put in the wrong place.
@@ -180,7 +321,7 @@ func requireNoLeak(t *testing.T, err error, secret string) {
 	}
 }
 
-func TestUsersLookupBrokenFileDoesNotQuoteContent(t *testing.T) {
+func TestParseUserBrokenFileDoesNotQuoteContent(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
@@ -197,39 +338,21 @@ func TestUsersLookupBrokenFileDoesNotQuoteContent(t *testing.T) {
 		{"hash in an unclosed quote", "password_hash: '" + testHash + "\n", errUserNotYAML, "line "},
 		{"hash as an unknown alias", "password_hash: *" + testHash[len(testHash)-43:] + "\n", errUserNotYAML, ""},
 		{"two problems", "shares: " + testHash + "\ndisabled: " + testHash + "\n", errUserWrongType, "(and 1 more)"},
+		{"hash as the name", "name: " + testHash + "\npassword_hash: h\n", errBadName, ""},
 		{"empty file", "", errUserFileEmpty, ""},
 	}
-	dir := t.TempDir()
-	for _, tt := range tests {
-		writeFile(t, dir, strings.ReplaceAll(tt.name, " ", "-")+".yaml", tt.content)
-	}
-	users := NewUsers(dir)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			checkBrokenUserFile(t, users, strings.ReplaceAll(tt.name, " ", "-"), tt.want, tt.text)
+			_, err := parseUser(aliceID+".yaml", []byte(tt.content))
+			if err == nil {
+				t.Fatal("err = nil, want an error")
+			}
+			requireNoLeak(t, err, testHash)
+			if !errors.Is(err, tt.want) || !strings.Contains(err.Error(), tt.text) {
+				t.Errorf("err = %q, want %q containing %q", err, tt.want, tt.text)
+			}
 		})
-	}
-}
-
-// checkBrokenUserFile looks up a user whose file is broken and checks the error: it is not
-// ErrNoUser, no user is returned, no part of testHash is in it, it is of the kind want, and it
-// names the user and contains text.
-func checkBrokenUserFile(t *testing.T, users *Users, name string, want error, text string) {
-	t.Helper()
-	user, err := users.Lookup(name)
-	if err == nil || errors.Is(err, ErrNoUser) {
-		t.Fatalf("err = %v, want an error other than ErrNoUser", err)
-	}
-	if !reflect.DeepEqual(user, User{}) {
-		t.Errorf("user = %+v, want no user, so that nobody can log in", user)
-	}
-	requireNoLeak(t, err, testHash)
-	if !errors.Is(err, want) {
-		t.Errorf("err = %q, want %q", err, want)
-	}
-	if !strings.Contains(err.Error(), "parse user "+strconv.Quote(name)) || !strings.Contains(err.Error(), text) {
-		t.Errorf("err = %q, want it to name the user %q and contain %q", err, name, text)
 	}
 }
 

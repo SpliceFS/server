@@ -62,14 +62,14 @@ func writeTemp(f *os.File, data []byte, mode os.FileMode) error {
 // FileExt is the extension of the files that Dir reads.
 const FileExt = ".yaml"
 
-// NodeFile is the name of the file that the node with the given id writes in a shared
-// directory.
-func NodeFile(id string) string {
+// IDFile is the name of the file named by an id, a UUIDv7: the file that a node or a user has
+// in a shared directory.
+func IDFile(id string) string {
 	return id + FileExt
 }
 
-// NodeOfFile returns the node id, a UUIDv7, in a file name of the form "<node id>.yaml".
-func NodeOfFile(name string) (string, bool) {
+// IDOfFile returns the id, a UUIDv7, in a file name of the form "<id>.yaml".
+func IDOfFile(name string) (string, bool) {
 	id, ok := strings.CutSuffix(name, FileExt)
 	return id, ok && uuid7.Valid(id)
 }

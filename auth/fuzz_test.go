@@ -191,19 +191,13 @@ func FuzzVerifyPasswordRoundTrip(f *testing.F) {
 
 func FuzzUserName(f *testing.F) {
 	dir := f.TempDir()
-	users := NewUsers(filepath.Join(dir, "users"))
+	users := newTestUsers(filepath.Join(dir, "users"))
 	if err := os.Mkdir(filepath.Join(dir, "users"), 0o700); err != nil {
 		f.Fatal(err)
 	}
-	hash := "password_hash: x\n"
 	// A file next to the users directory is what a name with ".." would reach.
-	if err := os.WriteFile(filepath.Join(dir, "outside.yaml"), []byte(hash), 0o600); err != nil {
-		f.Fatal(err)
-	}
-	alice := filepath.Join(dir, "users", "alice.yaml")
-	if err := os.WriteFile(alice, []byte(hash), 0o600); err != nil {
-		f.Fatal(err)
-	}
+	writeFile(f, dir, "outside.yaml", "name: outside\npassword_hash: x\n")
+	writeUser(f, filepath.Join(dir, "users"), aliceID, "name: alice\npassword_hash: x\n")
 	for _, seed := range []string{
 		"alice", "bob", "a", "", ".", "..", "../outside", "..%2foutside", "a/b", `a\b`, "/etc/passwd",
 		"Alice", "-a", ".a", "a.b", "a_b-c", "a\x00b", "alice\x00", strings.Repeat("a", 64),
@@ -216,62 +210,49 @@ func FuzzUserName(f *testing.F) {
 	})
 }
 
-// checkUserName is the property of Lookup for one name: no name reaches a file outside the
-// users directory, and only the user whose file exists is found.
+// checkUserName is the property of Lookup for one name: only the user whose file exists is found,
+// and a name that is not a valid user name finds nothing.
 func checkUserName(t *testing.T, users *Users, name string) {
 	t.Helper()
-	user, err := users.Lookup(name)
+	user, found := users.Lookup(name)
 	if !validName(name) {
 		// An invalid name is refused before any file is touched.
-		if !errors.Is(err, ErrNoUser) {
-			t.Fatalf("Lookup(%q) = %v", name, err)
+		if found {
+			t.Fatalf("Lookup(%q) found %+v", name, user)
 		}
 		return
 	}
-	checkValidUserName(t, name, user, err)
-}
-
-// checkValidUserName is the property of Lookup for a name that validName accepts.
-func checkValidUserName(t *testing.T, name string, user User, err error) {
-	t.Helper()
-	// A valid name has no separator or dot segment, so its file stays in the directory.
+	// A valid name has no separator or dot segment, so it names no file at all.
 	if strings.ContainsAny(name, "/\\\x00") || name == "." || name == ".." {
 		t.Fatalf("validName(%q) is true", name)
 	}
 	// Only the user whose file exists may be found, so no name reaches another file.
-	if (err == nil) != (name == "alice") || (err != nil && !errors.Is(err, ErrNoUser)) {
-		t.Fatalf("Lookup(%q) = %v", name, err)
-	}
-	if err == nil && user.Name != name {
-		t.Fatalf("Lookup(%q) returned user %q", name, user.Name)
+	if found != (name == "alice") || (found && user.Name != name) {
+		t.Fatalf("Lookup(%q) = %+v, %v", name, user, found)
 	}
 }
 
 func FuzzUserFile(f *testing.F) {
-	dir := f.TempDir()
-	users := NewUsers(dir)
 	for _, seed := range []string{
-		"password_hash: x\n", "password_hash: x\nshares: [a, '*']\ndisabled: true\n",
-		"password_hash: ''\n", "", "---\n---\n", "shares: [a]\n", "password_hash: x\nextra: 1\n",
-		"password_hash: [x]\n", "password_hash: x\nshares: a\n", "password_hash: x\ndisabled: maybe\n",
-		"- a\n", "{", "&a [*a]", "a: &a [*a, *a]\n", "\x00", "password_hash: \"\\ud800\"\n",
+		"name: a\npassword_hash: x\n", "name: a\npassword_hash: x\nshares: [a, '*']\ndisabled: true\n",
+		"name: a\npassword_hash: ''\n", "", "---\n---\n", "shares: [a]\n", "name: a\npassword_hash: x\nextra: 1\n",
+		"name: a\npassword_hash: [x]\n", "name: a\npassword_hash: x\nshares: a\n", "password_hash: x\n",
+		"name: a\npassword_hash: x\ndisabled: maybe\n", "name: ../a\npassword_hash: x\n",
+		"- a\n", "{", "&a [*a]", "a: &a [*a, *a]\n", "\x00", "name: a\npassword_hash: \"\\ud800\"\n",
 	} {
 		f.Add([]byte(seed))
 	}
 	f.Fuzz(func(t *testing.T, content []byte) {
-		if err := os.WriteFile(filepath.Join(dir, "alice.yaml"), content, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		user, err := users.Lookup("alice")
+		user, err := parseUser(aliceID+".yaml", content)
 		if err != nil {
-			// A broken file is an operator mistake and must not look like a missing user.
-			if errors.Is(err, ErrNoUser) {
-				t.Fatalf("Lookup of file %q = ErrNoUser", content)
+			if !reflect.DeepEqual(user, User{}) {
+				t.Fatalf("file %q gave %+v with an error", content, user)
 			}
 			return
 		}
-		// A user without a password hash would be a user anyone could be, or no one.
-		if user.PasswordHash == "" || user.Name != "alice" {
+		// A user without a password hash would be a user anyone could be, or no one; a name
+		// that is not valid would not be found at login.
+		if user.PasswordHash == "" || !validName(user.Name) || user.ID != aliceID {
 			t.Fatalf("file %q gave %+v", content, user)
 		}
 	})

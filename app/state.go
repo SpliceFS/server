@@ -131,7 +131,7 @@ func (d *dataPaths) removeOldKeys(nodeID string) error {
 	if !isFolder(d.oldKeysDir) {
 		return nil
 	}
-	err := wrap(removeFile(filepath.Join(d.oldKeysDir, datadir.NodeFile(nodeID))), "remove old token keys")
+	err := wrap(removeFile(filepath.Join(d.oldKeysDir, datadir.IDFile(nodeID))), "remove old token keys")
 	if err != nil {
 		return err
 	}

@@ -234,7 +234,7 @@ func setUpServer(t *testing.T, port int) serverSetup {
 	})
 	writeFiles(t, filepath.Join(root, "media"), map[string]string{"hello.txt": "hello"})
 	writeFiles(t, stateDir, map[string]string{
-		"shared/users/alice.yaml": "password_hash: \"" + lowCostHash("secret") + "\"\n" +
+		"shared/users/" + aliceFile: "name: alice\npassword_hash: \"" + lowCostHash("secret") + "\"\n" +
 			"shares: [media]\n",
 	})
 	return serverSetup{configDir: configDir, stateDir: stateDir, port: port}
@@ -296,6 +296,9 @@ func startServer(
 // startLimit is how long a start may take before the test fails. It only turns a server that
 // never logs "listening" and never stops into a failure with a message; it orders nothing.
 const startLimit = 10 * time.Second
+
+// aliceFile is the file of the user alice, named by the id of the user.
+const aliceFile = "0193f5c2-7d1e-7b2a-9c4d-5e6f7a8b9c0d.yaml"
 
 // tryStartServer runs the server in the background and waits until it listens. It returns the
 // error of a server that stopped first, or of one that did neither within limit.

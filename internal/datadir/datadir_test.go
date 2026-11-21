@@ -246,18 +246,18 @@ func TestWriteOnceFailures(t *testing.T) {
 func TestNodeFile(t *testing.T) {
 	t.Parallel()
 	const id = "017f22e2-79b0-7cc3-98c4-dc0c0c07398f"
-	if got := NodeFile(id); got != id+".yaml" {
-		t.Errorf("NodeFile = %q", got)
+	if got := IDFile(id); got != id+".yaml" {
+		t.Errorf("IDFile = %q", got)
 	}
-	if got, ok := NodeOfFile(id + ".yaml"); !ok || got != id {
-		t.Errorf("NodeOfFile = %q, %v", got, ok)
+	if got, ok := IDOfFile(id + ".yaml"); !ok || got != id {
+		t.Errorf("IDOfFile = %q, %v", got, ok)
 	}
 	for _, name := range []string{
 		"x.yaml", id, id + ".yml", ".yaml", strings.ToUpper(id) + ".yaml",
 		"0123456789abcdef.yaml", // the id of the earlier form
 	} {
-		if _, ok := NodeOfFile(name); ok {
-			t.Errorf("NodeOfFile(%q) accepted", name)
+		if _, ok := IDOfFile(name); ok {
+			t.Errorf("IDOfFile(%q) accepted", name)
 		}
 	}
 }

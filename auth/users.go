@@ -5,34 +5,34 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"os"
-	"path/filepath"
+	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"go.yaml.in/yaml/v3"
 
 	"github.com/SpliceFS/common/api"
+	"github.com/SpliceFS/server/internal/datadir"
 )
 
-// ErrNoUser means that no user of that name exists.
-var ErrNoUser = errors.New("no such user")
-
-// errEmptyPasswordHash means that a user file has no password_hash.
-var errEmptyPasswordHash = errors.New("password_hash is empty")
-
-// Problems with a user file. The text of one never contains the content of the file, because
-// it is logged and a mistake in the file may put a password hash where a key or a value
+// Problems with a user file. They only reach the log. The text of one never contains the content
+// of the file, because a mistake in the file may put a password hash where a key or a value
 // belongs. The YAML decoder quotes values and key names in its errors, so none of its text is
 // passed on except the line number.
 var (
-	errUserFileEmpty    = errors.New("the file is empty")
-	errUserNotYAML      = errors.New("not valid YAML")
-	errUserUnknownKey   = errors.New("a key that is not known")
-	errUserDuplicateKey = errors.New("a key that is set twice")
-	errUserWrongType    = errors.New("a value of the wrong type for its key")
-	errUserOtherProblem = errors.New("a key or value that cannot be used")
+	errNotUserFile = errors.New(
+		"user files are named by the user id since this version; run splicefsdctl user add to make one")
+	errEmptyName         = errors.New("name is empty")
+	errBadName           = errors.New("name must match ^[a-z0-9][a-z0-9._-]{0,63}$")
+	errEmptyPasswordHash = errors.New("password_hash is empty")
+	errUserFileEmpty     = errors.New("the file is empty")
+	errUserNotYAML       = errors.New("not valid YAML")
+	errUserUnknownKey    = errors.New("a key that is not known")
+	errUserDuplicateKey  = errors.New("a key that is set twice")
+	errUserWrongType     = errors.New("a value of the wrong type for its key")
+	errUserOtherProblem  = errors.New("a key or value that cannot be used")
 )
 
 // maxNameLength is the longest accepted user name.
@@ -40,7 +40,10 @@ const maxNameLength = 64
 
 // User is one account read from the users directory.
 type User struct {
-	// Name is the user name, which is also the file name without ".yaml".
+	// ID is the id of the user, a UUIDv7, which is the file name without ".yaml". A token
+	// names its user by the id, so that the name can stay a label.
+	ID string
+	// Name is the name the user logs in with.
 	Name string
 	// PasswordHash is the argon2id PHC string.
 	PasswordHash string
@@ -57,47 +60,90 @@ func (u User) Allows(share string) bool {
 
 // userFile is the YAML layout of one user file.
 type userFile struct {
+	Name         string   `yaml:"name"`
 	PasswordHash string   `yaml:"password_hash"`
 	Shares       []string `yaml:"shares"`
 	Disabled     bool     `yaml:"disabled"`
 }
 
-// Users reads user files from a directory. Files are read on every lookup, so added,
-// changed and removed users take effect at once. It is safe for concurrent use.
+// Users reads the user files of a directory, one file for each user, named by the user id.
+// It is safe for concurrent use.
 type Users struct {
-	dir string
+	log *slog.Logger
+
+	mu     sync.Mutex
+	files  *datadir.Dir[User]
+	byName map[string]User
+	merged bool
 }
 
-// NewUsers returns a Users that reads "<dir>/<name>.yaml".
-func NewUsers(dir string) *Users {
-	return &Users{dir: dir}
+// NewUsers returns a Users that reads "<dir>/<user id>.yaml". Problems with a file are logged
+// to log.
+func NewUsers(dir string, log *slog.Logger) *Users {
+	return &Users{log: log, files: datadir.NewDir(dir, parseUser, log)}
 }
 
-// Lookup reads the named user. A name that is not a valid user name, or has no file,
-// returns ErrNoUser. A file that cannot be read or parsed, or has no password hash, is an
-// error other than ErrNoUser, because it is an operator mistake that must be visible.
-func (u *Users) Lookup(name string) (User, error) {
+// Lookup returns the user with the given name, and whether there is one. The directory is read
+// again first, so added, changed and removed users take effect at once. A name that is not a
+// valid user name has no user. A file that cannot be read or parsed is ignored with a warning,
+// and its last good content stays in use. Of two files with the same name, the file that sorts
+// first by name is used. The result does not share memory with the cache.
+func (u *Users) Lookup(name string) (User, bool) {
 	if !validName(name) {
-		return User{}, ErrNoUser
+		return User{}, false
 	}
-	data, err := os.ReadFile(filepath.Join(u.dir, name+".yaml"))
-	if errors.Is(err, fs.ErrNotExist) {
-		return User{}, ErrNoUser
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	entries, changed := u.files.Refresh()
+	if changed || !u.merged {
+		u.byName, u.merged = u.merge(entries), true
 	}
-	if err != nil {
-		return User{}, fmt.Errorf("read user %q: %w", name, err)
+	user, found := u.byName[name]
+	user.Shares = slices.Clone(user.Shares)
+	return user, found
+}
+
+// merge indexes the users of the files, which are in file name order, by name.
+func (u *Users) merge(entries []datadir.Entry[User]) map[string]User {
+	byName := make(map[string]User, len(entries))
+	owner := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		if first, taken := owner[entry.Value.Name]; taken {
+			u.log.Warn("duplicate user name, keeping the first file's user",
+				slog.String("name", entry.Value.Name), slog.String("kept", first),
+				slog.String("ignored", entry.Name))
+			continue
+		}
+		owner[entry.Value.Name] = entry.Name
+		byName[entry.Value.Name] = entry.Value
+	}
+	return byName
+}
+
+// parseUser validates one user file. The name of the file must be a user id, so that a file
+// made by an earlier version, which was named for the user, never makes a user.
+func parseUser(file string, data []byte) (User, error) {
+	id, ok := datadir.IDOfFile(file)
+	if !ok {
+		return User{}, fmt.Errorf("users/%s: %w", file, errNotUserFile)
 	}
 	var parsed userFile
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&parsed); err != nil {
-		return User{}, fmt.Errorf("parse user %q: %w", name, describeUserFileError(err))
+		return User{}, describeUserFileError(err)
 	}
-	if parsed.PasswordHash == "" {
-		return User{}, fmt.Errorf("user %q: %w", name, errEmptyPasswordHash)
+	switch {
+	case parsed.Name == "":
+		return User{}, errEmptyName
+	case !validName(parsed.Name):
+		return User{}, errBadName
+	case parsed.PasswordHash == "":
+		return User{}, errEmptyPasswordHash
 	}
 	return User{
-		Name: name, PasswordHash: parsed.PasswordHash, Shares: parsed.Shares, Disabled: parsed.Disabled,
+		ID: id, Name: parsed.Name, PasswordHash: parsed.PasswordHash,
+		Shares: parsed.Shares, Disabled: parsed.Disabled,
 	}, nil
 }
 
@@ -175,8 +221,7 @@ func atLine(problem error, line int) error {
 	return fmt.Errorf("line %d: %w", line, problem)
 }
 
-// validName reports whether name matches ^[a-z0-9][a-z0-9._-]{0,63}$. It is the guard
-// that keeps a name from escaping the users directory.
+// validName reports whether name matches ^[a-z0-9][a-z0-9._-]{0,63}$, the form of a user name.
 func validName(name string) bool {
 	if name == "" || len(name) > maxNameLength {
 		return false

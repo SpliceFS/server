@@ -134,6 +134,14 @@ func rfcRandom() io.Reader {
 
 const rfcNodeID = "017f22e2-79b0-7cc3-98c4-dc0c0c07398f"
 
+// Ids of the users of the tests, and the files that are named by them.
+const (
+	aliceID   = "0193f5c2-7d1e-7b2a-9c4d-5e6f7a8b9c0d"
+	carolID   = "0193f5c2-7d1e-7b2a-9c4d-5e6f7a8b9c0f"
+	aliceFile = aliceID + ".yaml"
+	carolFile = carolID + ".yaml"
+)
+
 func TestNodeIDIsMadeOnceAndKept(t *testing.T) {
 	t.Parallel()
 	paths := layout(t.TempDir())
@@ -358,7 +366,7 @@ func tooLong(dir string) string {
 
 func TestRemoveOldKeys(t *testing.T) {
 	t.Parallel()
-	own, other := datadir.NodeFile(rfcNodeID), datadir.NodeFile(anotherNodeID)
+	own, other := datadir.IDFile(rfcNodeID), datadir.IDFile(anotherNodeID)
 	tests := []struct {
 		name string
 		// files are the files of the old keys folder; nil means that there is no folder.
@@ -423,7 +431,7 @@ func listed(t *testing.T, dir string) ([]string, bool) {
 func TestRemoveOldKeysTwiceIsTheSameAsOnce(t *testing.T) {
 	t.Parallel()
 	data := layout(t.TempDir())
-	write(t, data.oldKeysDir, datadir.NodeFile(rfcNodeID), "keys: []\n")
+	write(t, data.oldKeysDir, datadir.IDFile(rfcNodeID), "keys: []\n")
 	for range 2 {
 		if err := data.removeOldKeys(rfcNodeID); err != nil {
 			t.Fatal(err)
@@ -446,7 +454,7 @@ func TestRemoveOldKeysLeavesAFileAtTheFolderPathAlone(t *testing.T) {
 func TestRemoveOldKeysFailsWhenItsOwnFileCannotBeRemoved(t *testing.T) {
 	t.Parallel()
 	data := layout(t.TempDir())
-	own := filepath.Join(data.oldKeysDir, datadir.NodeFile(rfcNodeID))
+	own := filepath.Join(data.oldKeysDir, datadir.IDFile(rfcNodeID))
 	write(t, own, "inside", "a folder where the node's file belongs")
 	err := data.removeOldKeys(rfcNodeID)
 	if err == nil || !strings.Contains(err.Error(), "remove old token keys") {

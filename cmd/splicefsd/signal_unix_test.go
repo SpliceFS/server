@@ -72,7 +72,7 @@ func startReloadServer(t *testing.T) reloadServer {
 	t.Helper()
 	setup, server := startServer(context.Background(), t, func(setup serverSetup) {
 		writeFiles(t, setup.stateDir, map[string]string{
-			"shared/users/alice.yaml": "password_hash: \"" + lowCostHash("secret") + "\"\nshares: [\"*\"]\n",
+			"shared/users/" + aliceFile: "name: alice\npassword_hash: \"" + lowCostHash("secret") + "\"\nshares: [\"*\"]\n",
 		})
 	})
 	return reloadServer{setup: setup, logs: server.logs}

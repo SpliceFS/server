@@ -27,10 +27,10 @@ type authFixture struct {
 func newAuthFixture(t *testing.T, limit int) *authFixture {
 	t.Helper()
 	fixture := &authFixture{usersDir: t.TempDir(), clock: newFakeClock(), result: true}
-	writeFile(t, fixture.usersDir, "alice.yaml", "password_hash: alice-hash\nshares: [media]\n")
-	writeFile(t, fixture.usersDir, "dave.yaml", "password_hash: dave-hash\nshares: [media]\ndisabled: true\n")
+	writeUser(t, fixture.usersDir, aliceID, "name: alice\npassword_hash: alice-hash\nshares: [media]\n")
+	writeUser(t, fixture.usersDir, daveID, "name: dave\npassword_hash: dave-hash\nshares: [media]\ndisabled: true\n")
 	fixture.auth = New(
-		NewUsers(fixture.usersDir),
+		newTestUsers(fixture.usersDir),
 		newTestTokens(stubNodes{}, fixture.clock),
 		NewLimiter(limit, time.Minute, fixture.clock.Now),
 		4,
@@ -149,17 +149,18 @@ func TestLoginCountsEveryAttempt(t *testing.T) {
 	}
 }
 
+func TestLoginBrokenUserFileIsNoUser(t *testing.T) {
+	t.Parallel()
+	fixture := newAuthFixture(t, 10)
+	writeUser(t, fixture.usersDir, carolID, "name: carol\npassword_hash: [\n")
+	fixture.wantLoginError(t, "carol", api.ErrBadCredentials)
+	if len(fixture.calls) != 1 || fixture.calls[0].encoded != dummyHash {
+		t.Errorf("verify calls = %v, want one against the dummy hash", fixture.calls)
+	}
+}
+
 func TestLoginOtherFailuresAreNotBadCredentials(t *testing.T) {
 	t.Parallel()
-	t.Run("broken user file", func(t *testing.T) {
-		t.Parallel()
-		fixture := newAuthFixture(t, 10)
-		writeFile(t, fixture.usersDir, "erin.yaml", "password_hash: [\n")
-		_, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "erin", "pw")
-		if err == nil || errors.Is(err, api.ErrBadCredentials) || errors.Is(err, ErrNoUser) {
-			t.Errorf("err = %v", err)
-		}
-	})
 	t.Run("verifier error", func(t *testing.T) {
 		t.Parallel()
 		fixture := newAuthFixture(t, 10)
@@ -201,7 +202,7 @@ func TestAuthenticatorVerify(t *testing.T) {
 
 func TestNewUsesRealVerifier(t *testing.T) {
 	t.Parallel()
-	a := New(NewUsers(t.TempDir()), nil, nil, 1)
+	a := New(newTestUsers(t.TempDir()), nil, nil, 1)
 	ok, err := a.verify(smallHash("pw"), "pw")
 	if err != nil || !ok {
 		t.Errorf("default verifier = %v, %v; want true, nil", ok, err)
@@ -212,7 +213,8 @@ func TestLoginWithRealPasswordHash(t *testing.T) {
 	t.Parallel()
 	fixture := newAuthFixture(t, 10)
 	fixture.auth.verify = VerifyPassword
-	writeFile(t, fixture.usersDir, "frank.yaml", "password_hash: \""+smallHash("right")+"\"\nshares: [\"*\"]\n")
+	writeUser(t, fixture.usersDir, carolID,
+		"name: frank\npassword_hash: \""+smallHash("right")+"\"\nshares: [\"*\"]\n")
 	if _, _, err := fixture.auth.Login(context.Background(), "192.0.2.1", "frank", "right"); err != nil {
 		t.Errorf("right password: %v", err)
 	}
