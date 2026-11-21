@@ -1,12 +1,16 @@
 package cluster
 
 import (
+	"encoding/base64"
 	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SpliceFS/common/wire"
+	"github.com/SpliceFS/server/internal/datadir"
 )
 
 // urlSeeds are the starting inputs of FuzzCleanURL: valid forms, and each way a URL can be
@@ -59,6 +63,44 @@ func FuzzCleanURL(f *testing.F) {
 	f.Fuzz(checkCleanURL)
 }
 
+// keySeeds are the starting inputs of FuzzPublicKey: a valid key and each way a key can be wrong.
+func keySeeds() []string {
+	return []string{
+		signKey, encryptKey, "", "=", "AAAA", key(0), strings.TrimSuffix(signKey, "E=") + "F=",
+		strings.TrimSuffix(signKey, "=") + "\n", signKey[:20] + "\r\n" + signKey[20:],
+		strings.TrimSuffix(signKey, "=") + "A", signKey + signKey, "\x00",
+		strings.ReplaceAll(strings.ReplaceAll(key(0xfb), "+", "-"), "/", "_"), key(0xfb), "A=======",
+	}
+}
+
+// checkKeyForm fails the test when text is not the standard base64 of 32 bytes in its only
+// spelling. A node publishes its keys to every client, which compares them as text, so a key
+// that two spellings reach would look like two keys.
+func checkKeyForm(t *testing.T, text string) {
+	t.Helper()
+	// Strict refuses the unused bits of the last character, and 44 characters leave no room
+	// for the line breaks that the decoder skips.
+	raw, err := base64.StdEncoding.Strict().DecodeString(text)
+	if err != nil || len(raw) != 32 || len(text) != 44 {
+		t.Fatalf("accepted key %q: %d bytes, %v", text, len(raw), err)
+	}
+}
+
+// checkAcceptedKey fails the test when checkKey accepts text that is not a key.
+func checkAcceptedKey(t *testing.T, text string) {
+	t.Helper()
+	if checkKey(text) == nil {
+		checkKeyForm(t, text)
+	}
+}
+
+func FuzzPublicKey(f *testing.F) {
+	for _, seed := range keySeeds() {
+		f.Add(seed)
+	}
+	f.Fuzz(checkAcceptedKey)
+}
+
 // nodeFileSeeds are the starting inputs of FuzzNodeFile: a valid file, and each way a node
 // file can be wrong.
 func nodeFileSeeds() []string {
@@ -70,6 +112,12 @@ func nodeFileSeeds() []string {
 		nodeContent("a", "https:///a"), nodeContent("''", "https://a"),
 		nodeContent(strings.Repeat("a", 65), "https://a"), nodeContent("a", "https://a///"),
 		nodeContent("a", "https://a") + "extra: 1\n",
+		nodeContent("a", "https://a") + keyLines(nodeID(1), signKey, encryptKey),
+		nodeContent("a", "https://a") + keyLines(nodeID(2), signKey, encryptKey),
+		nodeContent("a", "https://a") + keyLines(nodeID(1), signKey, ""),
+		nodeContent("a", "https://a") + keyLines("", signKey, encryptKey),
+		nodeContent("a", "https://a") + keyLines(nodeID(1), signKey, key(1)+"AAAA"),
+		nodeContent("a", "https://a") + keyLines(nodeID(1), strings.TrimSuffix(signKey, "E=")+"F=", encryptKey),
 		nodeContent("a", "https://a") + "---\n" + nodeContent("b", "https://b"),
 	}
 }
@@ -100,7 +148,27 @@ func checkNodeFile(t *testing.T, path string, content []byte) {
 		if again, err := cleanURL(node.URL); err != nil || again != node.URL {
 			t.Fatalf("accepted node URL %q: %v", node.URL, err)
 		}
+		checkNodeKeys(t, filepath.Base(path), node, content)
 	}
+}
+
+// checkNodeKeys fails the test when node, loaded from the file with the given name, has an id
+// that is not the id in the name, or has keys without an id, or an id without two valid keys.
+// Clients trust the keys of a listed node, so a file that does not hold all three or none must
+// never be listed.
+func checkNodeKeys(t *testing.T, fileName string, node wire.Node, content []byte) {
+	t.Helper()
+	if node.ID == "" {
+		if node.SignKey != "" || node.EncryptKey != "" {
+			t.Fatalf("keys without an id: %q", content)
+		}
+		return
+	}
+	if id, _ := datadir.NodeOfFile(fileName); node.ID != id {
+		t.Fatalf("accepted id %q in %s: %q", node.ID, fileName, content)
+	}
+	checkKeyForm(t, node.SignKey)
+	checkKeyForm(t, node.EncryptKey)
 }
 
 func FuzzNodeFile(f *testing.F) {

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -252,11 +253,11 @@ func TestNodes(t *testing.T) {
 	session := startSignedIn(t)
 	var nodes wire.Nodes
 	decode(t, session.request(t, http.MethodGet, "/v1/nodes", nil).body, &nodes)
-	if nodes.Cluster != "example" || len(nodes.Nodes) != 1 {
-		t.Fatalf("nodes = %+v", nodes)
+	if nodes.Cluster != "example" {
+		t.Errorf("cluster = %q", nodes.Cluster)
 	}
-	if nodes.Nodes[0].URL != "https://east.example.com/api" {
-		t.Errorf("node URL = %q", nodes.Nodes[0].URL)
+	if want := []wire.Node{ownNode(t, session.fix)}; !slices.Equal(nodes.Nodes, want) {
+		t.Errorf("nodes = %+v, want %+v", nodes.Nodes, want)
 	}
 }
 

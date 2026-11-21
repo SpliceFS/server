@@ -147,14 +147,18 @@ func newHandler(
 		return nil, err
 	}
 	// Made or read together with the node id, so that a bad file stops the start.
-	if _, err = data.nodeKeys(rand.Reader); err != nil {
+	keys, err := data.nodeKeys(rand.Reader)
+	if err != nil {
 		return nil, err
 	}
 	tokens := auth.NewTokens(data.keysDir, nodeID, cfg.Auth.TokenTTL.Std(), time.Now, logger)
 	if err := tokens.EnsureOwnKey(); err != nil {
 		return nil, fmt.Errorf("make or read own key: %w", err)
 	}
-	self := wire.Node{Name: cfg.Cluster.Node, URL: cfg.Cluster.URL}
+	public := keys.public()
+	self := wire.Node{
+		Name: cfg.Cluster.Node, URL: cfg.Cluster.URL, SignKey: public.sign, EncryptKey: public.encrypt,
+	}
 	if err := cluster.Announce(data.nodesDir, nodeID, self); err != nil {
 		return nil, fmt.Errorf("announce node: %w", err)
 	}

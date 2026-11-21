@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"os"
@@ -26,6 +27,47 @@ func nodeFile(n int) string { return nodeID(n) + ".yaml" }
 
 // nodeContent is the content of a node file.
 func nodeContent(name, url string) string { return "name: " + name + "\nurl: " + url + "\n" }
+
+// key is a public key: the base64 of 32 bytes that all equal b.
+func key(b byte) string { return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{b}, 32)) }
+
+// The two public keys that the tests announce: key(0x51) and key(0xe1).
+const (
+	signKey    = "UVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVE="
+	encryptKey = "4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eE="
+)
+
+// keyed is a node as the server hands it to Announce: with its keys, and without its id, which
+// Announce takes from the node id.
+func keyed(name, url string) wire.Node {
+	return wire.Node{Name: name, URL: url, SignKey: signKey, EncryptKey: encryptKey}
+}
+
+// listed is the node as the loader returns it from the file that Announce wrote for node
+// number n.
+func listed(n int, name, url string) wire.Node {
+	node := keyed(name, url)
+	node.ID = nodeID(n)
+	return node
+}
+
+// keyLines is the id and key lines of a node file; a field that is empty is left out.
+func keyLines(id, sign, encrypt string) string {
+	var lines strings.Builder
+	for _, field := range []struct{ name, value string }{{"id", id}, {"sign_key", sign}, {"encrypt_key", encrypt}} {
+		if field.value != "" {
+			lines.WriteString(field.name + ": " + field.value + "\n")
+		}
+	}
+	return lines.String()
+}
+
+// announcedContent is the content of the node file that Announce writes for node number n
+// and the node self.
+func announcedContent(n int, self wire.Node) string {
+	return nodeContent(self.Name, self.URL) + "id: " + nodeID(n) + "\nsign_key: " + self.SignKey +
+		"\nencrypt_key: " + self.EncryptKey + "\n"
+}
 
 // put writes a node file with a modification time of epoch plus offset. The follower of the
 // directory tells a changed file by size, time and identity, and two writes in place in one
@@ -98,7 +140,7 @@ func checkNodes(t *testing.T, got, want []wire.Node) {
 func TestAnnounceWritesFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	self := wire.Node{Name: "east", URL: "https://east.example.com/api"}
+	self := keyed("east", "https://east.example.com/api")
 	if err := Announce(dir, nodeID(0xe1), self); err != nil {
 		t.Fatalf("Announce: %v", err)
 	}
@@ -107,7 +149,7 @@ func TestAnnounceWritesFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := nodeContent("east", "https://east.example.com/api"); string(got) != want {
+	if want := announcedContent(0xe1, self); string(got) != want {
 		t.Errorf("content = %q, want %q", got, want)
 	}
 	info, err := os.Stat(path)
@@ -125,30 +167,30 @@ func TestAnnounceWritesFile(t *testing.T) {
 
 func TestAnnounceRewritesOnlyWhenContentDiffers(t *testing.T) {
 	t.Parallel()
-	east := wire.Node{Name: "east", URL: "https://east.example.com"}
+	east := keyed("east", "https://east.example.com")
+	moved := keyed("east", "https://east.example.org")
+	renamed := keyed("west", "https://east.example.org")
+	newSign := renamed
+	newSign.SignKey = key(0x52)
+	newEncrypt := newSign
+	newEncrypt.EncryptKey = key(0xe2)
+	// The id comes from the node id, so what self says about it changes nothing.
+	otherID := newEncrypt
+	otherID.ID = nodeID(77)
 	tests := []struct {
 		name      string
 		self      wire.Node
 		want      string
 		rewritten bool
 	}{
-		{"first announcement", east, nodeContent("east", "https://east.example.com"), true},
-		{"same node again", east, nodeContent("east", "https://east.example.com"), false},
-		{
-			"new url",
-			wire.Node{Name: "east", URL: "https://east.example.org"},
-			nodeContent("east", "https://east.example.org"), true,
-		},
-		{
-			"new name",
-			wire.Node{Name: "west", URL: "https://east.example.org"},
-			nodeContent("west", "https://east.example.org"), true,
-		},
-		{
-			"same again after a change",
-			wire.Node{Name: "west", URL: "https://east.example.org"},
-			nodeContent("west", "https://east.example.org"), false,
-		},
+		{"first announcement", east, announcedContent(1, east), true},
+		{"same node again", east, announcedContent(1, east), false},
+		{"new url", moved, announcedContent(1, moved), true},
+		{"new name", renamed, announcedContent(1, renamed), true},
+		{"same again after a change", renamed, announcedContent(1, renamed), false},
+		{"new signing key", newSign, announcedContent(1, newSign), true},
+		{"new encryption key", newEncrypt, announcedContent(1, newEncrypt), true},
+		{"id of self is not used", otherID, announcedContent(1, newEncrypt), false},
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, nodeFile(1))
@@ -296,24 +338,36 @@ func TestLoaderSortsByNodeName(t *testing.T) {
 func TestAnnounceThenLoad(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	west := wire.Node{Name: "west", URL: "http://w/api/"}
-	east := wire.Node{Name: "east", URL: "https://e"}
-	if err := Announce(dir, nodeID(1), west); err != nil {
+	if err := Announce(dir, nodeID(1), keyed("west", "http://w/api/")); err != nil {
 		t.Fatal(err)
 	}
-	if err := Announce(dir, nodeID(2), east); err != nil {
+	if err := Announce(dir, nodeID(2), keyed("east", "https://e")); err != nil {
 		t.Fatal(err)
 	}
 	log, buf := testLog()
 	loader := NewLoader(dir, log)
-	checkNodes(t, load(t, loader), []wire.Node{
-		{Name: "east", URL: "https://e"}, {Name: "west", URL: "http://w/api"},
-	})
+	checkNodes(t, load(t, loader), []wire.Node{listed(2, "east", "https://e"), listed(1, "west", "http://w/api")})
 
 	if err := Announce(dir, nodeID(1), wire.Node{Name: "west"}); err != nil {
 		t.Fatal(err)
 	}
-	checkNodes(t, load(t, loader), []wire.Node{{Name: "east", URL: "https://e"}})
+	checkNodes(t, load(t, loader), []wire.Node{listed(2, "east", "https://e")})
+	if buf.Len() != 0 {
+		t.Errorf("unexpected log output: %s", buf)
+	}
+}
+
+func TestLoaderListsTheIDAndKeysOfAFullFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// The first node runs an older version and leaves out the id and the keys.
+	put(t, dir, nodeFile(1), nodeContent("old", "https://old.example.com"), 0)
+	put(t, dir, nodeFile(2), nodeContent("new", "https://new.example.com")+keyLines(nodeID(2), signKey, encryptKey), 0)
+	log, buf := testLog()
+
+	checkNodes(t, load(t, NewLoader(dir, log)), []wire.Node{
+		listed(2, "new", "https://new.example.com"), {Name: "old", URL: "https://old.example.com"},
+	})
 	if buf.Len() != 0 {
 		t.Errorf("unexpected log output: %s", buf)
 	}
@@ -345,6 +399,17 @@ func TestLoaderIgnoresInvalidFile(t *testing.T) {
 	badFile := nodeFile(9)
 	withURL := func(u string) string { return nodeContent("a", u) }
 	withName := func(n string) string { return nodeContent(n, okURL) }
+	withKeys := func(id, sign, encrypt string) string { return withURL(okURL) + keyLines(id, sign, encrypt) }
+	const allSet, onlySome = "must be the node id in the file name", "must be all set or all left out"
+	const notKey = "must be the base64 of 32 bytes"
+	short, long := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 31)), key(1)+"AAAA"
+	urlSafe := base64.URLEncoding.EncodeToString(bytes.Repeat([]byte{0xfb}, 32))
+	// The last character of a key of 32 bytes carries 4 bits, so a last character with other
+	// bits is a second spelling of the same key.
+	strayBits := strings.TrimSuffix(signKey, "E=") + "F="
+	unpadded := strings.TrimSuffix(encryptKey, "=")
+	// The decoder skips a line break, which YAML writes in a double quoted text as \n.
+	lineBreak := `"` + signKey[:20] + `\n` + signKey[20:] + `"`
 	tests := []struct {
 		name    string
 		file    string
@@ -372,6 +437,21 @@ func TestLoaderIgnoresInvalidFile(t *testing.T) {
 		{"ftp url", badFile, withURL("ftp://a.example.com"), "absolute http or https URL"},
 		{"no host", badFile, withURL("http:///api"), "no host"},
 		{"port without host", badFile, withURL("http://:8480/api"), "no host"},
+		{"id differs from the file name", badFile, withKeys(nodeID(2), signKey, encryptKey), allSet},
+		{"id is not an id", badFile, withKeys("abc", signKey, encryptKey), allSet},
+		{"id in upper case", nodeFile(0xe9), withKeys(strings.ToUpper(nodeID(0xe9)), signKey, encryptKey), allSet},
+		{"id and no keys", badFile, withKeys(nodeID(9), "", ""), onlySome},
+		{"keys and no id", badFile, withKeys("", signKey, encryptKey), onlySome},
+		{"no signing key", badFile, withKeys(nodeID(9), "", encryptKey), onlySome},
+		{"no encryption key", badFile, withKeys(nodeID(9), signKey, ""), onlySome},
+		{"empty keys and an id", badFile, withKeys(nodeID(9), "''", "''"), onlySome},
+		{"signing key is not base64", badFile, withKeys(nodeID(9), "not base64!", encryptKey), "sign_key " + notKey},
+		{"signing key is short", badFile, withKeys(nodeID(9), short, encryptKey), "sign_key " + notKey},
+		{"encryption key is long", badFile, withKeys(nodeID(9), signKey, long), "encrypt_key " + notKey},
+		{"encryption key without padding", badFile, withKeys(nodeID(9), signKey, unpadded), "encrypt_key " + notKey},
+		{"key in the URL alphabet", badFile, withKeys(nodeID(9), urlSafe, encryptKey), "sign_key " + notKey},
+		{"key with stray bits", badFile, withKeys(nodeID(9), strayBits, encryptKey), "sign_key " + notKey},
+		{"key with a line break", badFile, withKeys(nodeID(9), lineBreak, encryptKey), "sign_key " + notKey},
 		{"query", badFile, withURL(okURL + "/api?x=1"), "query or a fragment"},
 		{"empty query", badFile, withURL(okURL + "/api?"), "query or a fragment"},
 		{"fragment", badFile, withURL(okURL + "/api#top"), "query or a fragment"},

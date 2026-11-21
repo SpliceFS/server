@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SpliceFS/common/remote"
+	"github.com/SpliceFS/common/wire"
 
 	"github.com/SpliceFS/server/config"
 )
@@ -144,6 +145,27 @@ func TestNetworkNamesTheServerHides(t *testing.T) {
 	got, err := readRange(t, node, token, "media/real.txt", meta.ETag, 0, meta.Size)
 	if err != nil || string(got) != "the file the link points to" {
 		t.Errorf("range of real.txt = %q, %v", got, err)
+	}
+}
+
+// TestNetworkListsTheNodeKeys: a client that asks for the nodes learns each node's id and public
+// keys, and they stay the same when the server reloads.
+func TestNetworkListsTheNodeKeys(t *testing.T) {
+	t.Parallel()
+	fix := networkFixture(t, testSettings, "")
+	reloader := startReloading(t, fix)
+	node := remoteNode(t, fix, reloader.running, nil)
+	token := remoteLogin(t, node)
+	want := []wire.Node{ownNode(t, fix)}
+	for _, step := range []string{"at the start", "after the reload"} {
+		listed, err := node.Nodes(t.Context(), token)
+		if err != nil {
+			t.Fatalf("nodes %s: %v", step, err)
+		}
+		if !slices.Equal(listed.Nodes, want) {
+			t.Errorf("nodes %s = %+v, want %+v", step, listed.Nodes, want)
+		}
+		reloader.apply(t, fix.cfg)
 	}
 }
 

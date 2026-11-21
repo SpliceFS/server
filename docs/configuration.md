@@ -170,6 +170,7 @@ folders it needs. It must be able to write to the state folder.
 <state>/
   local/                    this machine only
     node-id
+    node-keys.yaml
     tls/cert.pem
     tls/key.pem
     digests/<share>/<path>.splicefs_state
@@ -182,11 +183,12 @@ folders it needs. It must be able to write to the state folder.
 | File                         | Written by            | Content                                 |
 |------------------------------|-----------------------|-----------------------------------------|
 | `local/node-id`              | the server, once      | a UUIDv7 in lower case                  |
+| `local/node-keys.yaml`       | the server, once      | The node's own key pairs: an Ed25519 key that signs and an X25519 key that encrypts. Made on the first start and never replaced; a new file would make a new node. Never copy it to another node. |
 | `local/tls/cert.pem`, `key.pem` | the server, once   | the certificate the server made for itself |
 | `local/digests/`             | the server            | the digests of each file read, one small file per file |
 | `shared/users/<name>.yaml`   | you                   | one user                                |
 | `shared/keys/<node-id>.yaml` | that server only      | token signing keys                      |
-| `shared/nodes/<node-id>.yaml`| that server only      | name and address of that server         |
+| `shared/nodes/<node-id>.yaml`| that server only      | name, address, id and public keys of that server |
 
 ### local/
 
@@ -261,7 +263,12 @@ writes `nodes/<node-id>.yaml` with its `cluster.node` name and its `cluster.url`
 # <state>/shared/nodes/<node-id>.yaml
 name: east
 url: https://east.example.com:8480/api
+id: "<node-id>"
+sign_key: "<base64>"
+encrypt_key: "<base64>"
 ```
+
+id: the node id. sign_key and encrypt_key: the node's public keys, base64. A node that runs an older version leaves them out.
 
 The node list that a server gives to clients is every file in `nodes/`, so it is empty when
 no server has a `cluster.url`. The cluster name comes from `cluster.name` in the settings.
