@@ -33,24 +33,19 @@ func newServer(handler http.Handler, logger *slog.Logger) *http.Server {
 	}
 }
 
-// certificateSource returns the certificate a listener without TLS files uses.
-type certificateSource func() (tls.Certificate, error)
-
 // listenAddress is the address an entry listens on, and the name a reload knows it by.
 func listenAddress(entry config.Endpoint) string {
 	return net.JoinHostPort(entry.Address.String(), strconv.Itoa(entry.Port))
 }
 
 // tlsConfigFor returns the TLS settings of a listener that is not plain: the configured
-// certificate when the entry names files, and the server's own certificate otherwise.
-func tlsConfigFor(entry config.Endpoint, own certificateSource) (*tls.Config, error) {
-	var cert tls.Certificate
-	var err error
-	if entry.TLS != nil {
-		cert, err = tls.LoadX509KeyPair(entry.TLS.CertFile, entry.TLS.KeyFile)
-	} else {
-		cert, err = own()
+// certificate when the entry names files, and the certificate of the node otherwise. The node
+// certificate is read for each connection, because it is made again while the server runs.
+func tlsConfigFor(entry config.Endpoint, own *nodeCert) (*tls.Config, error) {
+	if entry.TLS == nil {
+		return &tls.Config{GetCertificate: own.get, MinVersion: tls.VersionTLS12}, nil
 	}
+	cert, err := tls.LoadX509KeyPair(entry.TLS.CertFile, entry.TLS.KeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("load certificate: %w", err)
 	}

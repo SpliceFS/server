@@ -615,7 +615,10 @@ func TestReloadLogsARemovedListenerThatDoesNotCloseCleanly(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	reloader.build = builder{data: data, digests: digests, version: "test", logger: logger}
+	reloader.build = builder{
+		data: data, digests: digests, version: "test", logger: logger,
+		ownCert: newNodeCert(data.tlsDir, testCertSource(), (&keyHolder{}).current, logger),
+	}
 	reloader.handlers = newLive(&generation{handler: http.NotFoundHandler(), closer: failingCloser{}}, logger)
 	reloader.srv = newServer(reloader.handlers, logger)
 	const removedAddress = "127.0.0.1:1"

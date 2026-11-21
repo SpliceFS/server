@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -174,7 +175,8 @@ func TestLocalCertificateIsNeverRegenerated(t *testing.T) {
 func TestLocalCertificateUsesTheStateDirectory(t *testing.T) {
 	t.Parallel()
 	state := t.TempDir()
-	if _, err := localCertificate(state); err != nil {
+	loadOrCreate := func() (tls.Certificate, error) { return loadOrCreateCert(layout(state).tlsDir, fixedSource()) }
+	if _, err := loadOrCreate(); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{certFileName, keyFileName} {

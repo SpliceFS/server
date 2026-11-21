@@ -28,6 +28,9 @@ type runner struct {
 	wg        sync.WaitGroup
 	logger    *slog.Logger
 	opts      Options
+	// renewals receives once a day, when the node certificate is checked. Nil when there is
+	// nothing to check.
+	renewals <-chan time.Time
 }
 
 // listenPlan is what a configuration changes about the listeners.
@@ -57,7 +60,17 @@ func (r *runner) serve(ctx context.Context, listeners []*endpoint, grace time.Du
 			return errors.Join(err, r.srv.Close())
 		case <-r.opts.Reload:
 			r.reload(ctx)
+		case <-r.renewals:
+			r.renewCertificate(ctx)
 		}
+	}
+}
+
+// renewCertificate is the daily check of the node certificate. A check that fails leaves the
+// certificate that is served, which is valid for some time yet, and the next check tries again.
+func (r *runner) renewCertificate(ctx context.Context) {
+	if err := r.build.ownCert.renew(); err != nil {
+		r.logger.WarnContext(ctx, "cannot renew the node certificate", slog.Any("error", err))
 	}
 }
 
@@ -111,7 +124,7 @@ func (r *runner) reload(ctx context.Context) {
 		r.logger.ErrorContext(ctx, "configuration not applied", slog.Any("error", err))
 		return
 	}
-	err = r.build.heal()
+	err = r.build.prepare(cfg)
 	if err != nil {
 		r.logger.ErrorContext(ctx, "configuration not applied", slog.Any("error", err))
 		return

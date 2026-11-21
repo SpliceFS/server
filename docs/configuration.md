@@ -201,7 +201,12 @@ Never copy or sync `local/`. It belongs to this machine.
   the file; it never replaces an id it cannot read.
 - `tls/` holds a self-signed certificate (ECDSA P-256, valid for 10 years) made on the first
   start for the host name, `localhost`, `127.0.0.1` and `::1`. Files that exist are never
-  replaced. To use your own certificate, set `tls` on the listener instead.
+  replaced. To use your own certificate, set `tls` on the listener instead. When the cluster
+  has a key (see [Cluster key](#cluster-key)), the server instead signs a certificate for the
+  node key in `tls/key.pem` with it, valid for 90 days, for the host of `cluster.url`,
+  `cluster.node`, the host name and the listen addresses, and replaces `tls/cert.pem` when 30
+  days are left or the cluster key or those names change. It checks this at start, at reload
+  and once a day.
 - `digests/` keeps the head and tail digests of every file a client has asked about, so a
   restart or a reload does not read the files again. Each entry is one small file: about one
   inode and one 4 KiB block per data file read, which is about 4 GB and a million inodes per

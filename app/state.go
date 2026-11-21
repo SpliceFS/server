@@ -21,7 +21,7 @@ import (
 // "local" is for this machine only; "shared" may be copied between servers by any sync tool,
 // which is why every file in it has exactly one writer.
 type dataPaths struct {
-	nodeIDFile, nodeKeysFile, digestsDir, usersDir, nodesDir, clusterDir string
+	nodeIDFile, nodeKeysFile, digestsDir, usersDir, nodesDir, clusterDir, tlsDir string
 	// oldKeysDir held the token keys of earlier versions. It is not one of the folders: nothing
 	// makes it any more, and removeOldKeys cleans it up.
 	oldKeysDir string
@@ -55,6 +55,7 @@ func layout(stateDir string) dataPaths {
 		nodeIDFile:   filepath.Join(local, "node-id"),
 		nodeKeysFile: filepath.Join(local, "node-keys.yaml"),
 		digestsDir:   filepath.Join(local, "digests"),
+		tlsDir:       filepath.Join(local, tlsDirName),
 		usersDir:     filepath.Join(shared, "users"),
 		nodesDir:     filepath.Join(shared, "nodes"),
 		clusterDir:   filepath.Join(shared, "cluster"),

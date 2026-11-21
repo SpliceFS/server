@@ -7,13 +7,11 @@ package app
 import (
 	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/SpliceFS/common/api"
@@ -43,6 +41,29 @@ type Options struct {
 	Load func() (*config.Config, error)
 	// Applied, if set, is called with the new configuration after a reload took effect.
 	Applied func(*config.Config)
+
+	// clock is the time the server reads and the daily check of the node certificate. Only
+	// tests set it; the zero value is the system's.
+	clock clock
+}
+
+// clock is what a run reads from the time. A test gives its own, so that nothing waits for time
+// to pass.
+type clock struct {
+	now func() time.Time
+	// daily returns a channel that receives once a day, and the function that stops it.
+	daily func() (ticks <-chan time.Time, stop func())
+}
+
+// checkInterval is how often a running server checks its node certificate.
+const checkInterval = 24 * time.Hour
+
+// systemClock is the clock of the machine.
+func systemClock() clock {
+	return clock{now: time.Now, daily: func() (<-chan time.Time, func()) {
+		ticker := time.NewTicker(checkInterval)
+		return ticker.C, ticker.Stop
+	}}
 }
 
 // Run serves the API described by cfg, keeping its data in stateDir, until ctx is
@@ -61,6 +82,10 @@ func Run(ctx context.Context, cfg *config.Config, stateDir string, opts Options)
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
+	clk := opts.clock
+	if clk.now == nil {
+		clk = systemClock()
+	}
 	data := layout(stateDir)
 	err = data.makeFolders()
 	if err != nil {
@@ -73,21 +98,29 @@ func Run(ctx context.Context, cfg *config.Config, stateDir string, opts Options)
 		return err //nolint:wrapcheck // the error says it was opening the digest folder
 	}
 	defer func() { err = errors.Join(err, wrap(digests.Close(), "close the digest folder")) }()
+	keys := cluster.NewKeyReader(data.clusterDir, logger)
+	renewals, stopRenewals := clk.daily()
+	defer stopRenewals()
 	r := &runner{
+		renewals: renewals,
 		build: builder{
 			data:    data,
 			digests: digests,
 			version: opts.Version,
 			logger:  logger,
-			ownCert: sync.OnceValues(func() (tls.Certificate, error) {
-				return localCertificate(stateDir)
-			}),
-			clusterKey: cluster.NewKeyReader(data.clusterDir, logger),
+			ownCert: newNodeCert(
+				data.tlsDir, certSource{now: clk.now, hostname: os.Hostname, random: rand.Reader}, keys.Current, logger),
+			clusterKey: keys,
 		},
 		endpoints: make(map[string]*endpoint),
 		failures:  make(chan error, 1),
 		logger:    logger,
 		opts:      opts,
+	}
+	// Before any port opens, so that a node that cannot make its certificate does not start.
+	err = r.build.ownCert.refresh(cfg)
+	if err != nil {
+		return err
 	}
 	first, err := r.build.generation(cfg)
 	if err != nil {
@@ -112,12 +145,21 @@ type builder struct {
 	digests *digestcache.Store
 	version string
 	logger  *slog.Logger
-	// ownCert is the certificate the server made for itself, created on first use.
-	ownCert certificateSource
+	// ownCert is the certificate of the listeners without certificate files.
+	ownCert *nodeCert
 	// clusterKey reads the cluster key of the shared state as the file changes, one reader for
 	// the whole run so that a key that stops being readable is still the last good one after a
 	// reload.
 	clusterKey *cluster.KeyReader
+}
+
+// prepare makes what a configuration needs before anything is changed for it: the folders of
+// the state, and the certificate of the listeners that have none of their own.
+func (b *builder) prepare(cfg *config.Config) error {
+	if err := b.heal(); err != nil {
+		return err
+	}
+	return b.ownCert.refresh(cfg)
 }
 
 // heal makes the state folders that were removed while the server ran, as the start made
