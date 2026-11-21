@@ -454,7 +454,7 @@ func TestServerFailures(t *testing.T) {
 		}, "must hold a UUIDv7"},
 		{"data folder is a file", func(t *testing.T, _, stateDir string) {
 			t.Helper()
-			writeFiles(t, stateDir, map[string]string{"shared/keys": "a file where a folder belongs"})
+			writeFiles(t, stateDir, map[string]string{"shared/nodes": "a file where a folder belongs"})
 		}, "is not a folder"},
 	}
 	for _, tt := range tests {

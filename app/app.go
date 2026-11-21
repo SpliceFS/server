@@ -146,6 +146,11 @@ func newHandler(
 	if err != nil {
 		return nil, err
 	}
+	// A start and every reload pass here, so the old keys file of this node is gone after both.
+	err = data.removeOldKeys(nodeID)
+	if err != nil {
+		return nil, err
+	}
 	// Made or read together with the node id, so that a bad file stops the start.
 	keys, err := data.nodeKeys(rand.Reader)
 	if err != nil {

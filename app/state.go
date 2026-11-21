@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/SpliceFS/common/api"
 	"github.com/SpliceFS/common/wire"
+	"github.com/SpliceFS/server/internal/datadir"
 	"github.com/SpliceFS/server/internal/uuid7"
 )
 
@@ -19,7 +21,10 @@ import (
 // "local" is for this machine only; "shared" may be copied between servers by any sync tool,
 // which is why every file in it has exactly one writer.
 type dataPaths struct {
-	nodeIDFile, nodeKeysFile, digestsDir, usersDir, keysDir, nodesDir string
+	nodeIDFile, nodeKeysFile, digestsDir, usersDir, nodesDir string
+	// oldKeysDir held the token keys of earlier versions. It is not one of the folders: nothing
+	// makes it any more, and removeOldKeys cleans it up.
+	oldKeysDir string
 	// folders lists every folder the server makes, parents first, with its mode. The digest
 	// folder is not one of them: the digest store makes it.
 	folders []folder
@@ -51,15 +56,14 @@ func layout(stateDir string) dataPaths {
 		nodeKeysFile: filepath.Join(local, "node-keys.yaml"),
 		digestsDir:   filepath.Join(local, "digests"),
 		usersDir:     filepath.Join(shared, "users"),
-		keysDir:      filepath.Join(shared, "keys"),
 		nodesDir:     filepath.Join(shared, "nodes"),
+		oldKeysDir:   filepath.Join(shared, "keys"),
 	}
 	paths.folders = []folder{
 		{stateDir, 0o750},
 		{local, 0o700},
 		{shared, 0o750},
 		{paths.usersDir, 0o750},
-		{paths.keysDir, 0o700},
 		{paths.nodesDir, 0o755},
 	}
 	return paths
@@ -116,6 +120,35 @@ func (d *dataPaths) nodeID(now func() time.Time, random io.Reader) (string, erro
 			return []byte(id + "\n"), err
 		},
 	}.load()
+}
+
+// removeOldKeys removes the token keys file that earlier versions made for this node, and the
+// folder of those files once it is empty. This server is the only writer of its own file; the
+// file of another node is left to that node, which removes it when it runs this version.
+func (d *dataPaths) removeOldKeys(nodeID string) error {
+	err := wrap(removeFile(filepath.Join(d.oldKeysDir, datadir.NodeFile(nodeID))), "remove old token keys")
+	if err != nil {
+		return err
+	}
+	return wrap(removeEmptyFolder(d.oldKeysDir), "remove old token keys folder")
+}
+
+// removeFile removes the file at path. A file that is not there is what was wanted.
+func removeFile(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove file: %w", err)
+	}
+	return nil
+}
+
+// removeEmptyFolder removes the folder at path if it is empty. A folder that is not there is
+// what was wanted, and a folder that holds files stays: the files are not this server's.
+func removeEmptyFolder(path string) error {
+	err := os.Remove(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTEMPTY) {
+		return fmt.Errorf("remove folder: %w", err)
+	}
+	return nil
 }
 
 // parseNodeID returns the id that the content of a node id file holds.
