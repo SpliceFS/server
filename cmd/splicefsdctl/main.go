@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/SpliceFS/server/internal/cli"
@@ -41,6 +42,7 @@ type call struct {
 
 // command is one thing the tool does.
 type command struct {
+	// name is the words that start the command line, such as "hash-password" or "user add".
 	name string
 	// args is what the usage line shows after the name, empty when there is none.
 	args string
@@ -51,6 +53,7 @@ type command struct {
 func commands() []command {
 	return []command{
 		{name: "hash-password", run: runHashPassword},
+		systemUserAdd().command(),
 	}
 }
 
@@ -77,11 +80,11 @@ func runCommands(cmds []command, args []string, stdin io.Reader, stdout, stderr 
 	if len(rest) == 0 {
 		return self.UsageError(stderr, fmt.Errorf("%w: %s", errNoCommand, strings.Join(names(cmds), ", ")))
 	}
-	cmd, found := find(cmds, rest[0])
+	cmd, cmdArgs, found := find(cmds, rest)
 	if !found {
 		return self.UsageError(stderr, fmt.Errorf("%w %q", errUnknownCommand, rest[0]))
 	}
-	return cmd.run(call{self: self, args: rest[1:], stdin: stdin, stdout: stdout, stderr: stderr})
+	return cmd.run(call{self: self, args: cmdArgs, stdin: stdin, stdout: stdout, stderr: stderr})
 }
 
 // usageText is the usage of the tool: one line per command, then the version flag.
@@ -102,11 +105,14 @@ func names(cmds []command) []string {
 	return list
 }
 
-func find(cmds []command, name string) (command, bool) {
+// find returns the command whose words start the command line after the flags, and what
+// follows those words.
+func find(cmds []command, words []string) (command, []string, bool) {
 	for _, cmd := range cmds {
-		if cmd.name == name {
-			return cmd, true
+		own := strings.Fields(cmd.name)
+		if len(words) >= len(own) && slices.Equal(words[:len(own)], own) {
+			return cmd, words[len(own):], true
 		}
 	}
-	return command{}, false
+	return command{}, nil, false
 }

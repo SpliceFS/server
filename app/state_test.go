@@ -513,7 +513,7 @@ func TestUsersDirIsWhereTheServerReadsUsers(t *testing.T) {
 	if got, want := UsersDir(state), layout(state).usersDir; got != want {
 		t.Errorf("UsersDir = %q, want %q", got, want)
 	}
-	if got, want := UsersDir("/state"), filepath.Join("/state", "shared", "users"); got != want {
+	if got, want := UsersDir("/state"), "/state/shared/users"; got != want {
 		t.Errorf("UsersDir = %q, want %q", got, want)
 	}
 }

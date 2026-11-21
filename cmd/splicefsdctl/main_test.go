@@ -56,11 +56,16 @@ func TestVersion(t *testing.T) {
 	}
 }
 
+// fullUsage is the usage of the tool with its commands, which every help and every bad command
+// line prints.
+const fullUsage = "usage: splicefsdctl hash-password\n" +
+	"       splicefsdctl user add [--state <folder>] [--share <share>]... <name>\n" +
+	"       splicefsdctl --version\n"
+
 func TestHelp(t *testing.T) {
 	t.Parallel()
-	const usage = "usage: splicefsdctl hash-password\n       splicefsdctl --version\n"
 	for _, arg := range []string{"-h", "--help"} {
-		if got, want := execute(t, arg), (outcome{status: cli.ExitOK, stdout: usage}); got != want {
+		if got, want := execute(t, arg), (outcome{status: cli.ExitOK, stdout: fullUsage}); got != want {
 			t.Errorf("%s: got %+v, want %+v", arg, got, want)
 		}
 	}
@@ -74,9 +79,11 @@ func TestBadUsage(t *testing.T) {
 		want string
 	}{
 		{"unknown flag", []string{"--bogus"}, "flag provided but not defined: -bogus"},
-		{"no command", nil, "a command is needed, one of: hash-password"},
-		{"flags only", []string{"--version=false"}, "a command is needed, one of: hash-password"},
+		{"no command", nil, "a command is needed, one of: hash-password, user add"},
+		{"flags only", []string{"--version=false"}, "a command is needed, one of: hash-password, user add"},
 		{"unknown command", []string{"serve"}, `unknown command "serve"`},
+		{"a command that is only the start of one", []string{"user"}, `unknown command "user"`},
+		{"a command that is not the end of one", []string{"user", "remove"}, `unknown command "user"`},
 		{"command after a flag", []string{"--version=false", "serve"}, `unknown command "serve"`},
 		{"command arguments", []string{"hash-password", "secret"}, "hash-password takes no arguments"},
 	}
@@ -88,7 +95,7 @@ func TestBadUsage(t *testing.T) {
 				t.Errorf("status %d stdout %q", got.status, got.stdout)
 			}
 			if !strings.HasPrefix(got.stderr, "splicefsdctl: ") || !strings.Contains(got.stderr, tt.want) ||
-				!strings.HasSuffix(got.stderr, "usage: splicefsdctl hash-password\n       splicefsdctl --version\n") {
+				!strings.HasSuffix(got.stderr, fullUsage) {
 				t.Errorf("stderr = %q", got.stderr)
 			}
 		})
@@ -137,5 +144,27 @@ func TestACommandIsOneEntry(t *testing.T) {
 	got = executeWith(t, cmds, "")
 	if !strings.Contains(got.stderr, "a command is needed, one of: first, echo") || got.status != cli.ExitUsage {
 		t.Errorf("no command: got %+v", got)
+	}
+}
+
+func TestAMultiWordCommandIsFoundByAllItsWords(t *testing.T) {
+	t.Parallel()
+	cmds := []command{
+		{name: "group item", args: "NAME", run: func(job call) int {
+			_, err := io.WriteString(job.stdout, strings.Join(job.args, ","))
+			if err != nil {
+				return job.self.Fail(job.stderr, err)
+			}
+			return 0
+		}},
+	}
+	if got, want := executeWith(t, cmds, "", "group", "item", "x", "y"), (outcome{stdout: "x,y"}); got != want {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+	for _, args := range [][]string{{"group"}, {"group", "other"}, {"item"}} {
+		got := executeWith(t, cmds, "", args...)
+		if got.status != cli.ExitUsage || !strings.Contains(got.stderr, "unknown command "+`"`+args[0]+`"`) {
+			t.Errorf("%q: got %+v", args, got)
+		}
 	}
 }
