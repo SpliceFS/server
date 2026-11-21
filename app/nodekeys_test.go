@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
+
+	"github.com/SpliceFS/common/wire"
 )
 
 // The seed of the first test vector of RFC 8032 section 7.1 and its public key, and the private
@@ -35,6 +37,33 @@ func unhex(t *testing.T, text string) []byte {
 
 // b64 is the form of a key in a file and in a node's announcement.
 func b64(data []byte) string { return base64.StdEncoding.EncodeToString(data) }
+
+// ownNode returns what the node list must say about the node that serves fix: its name and
+// URL from the settings of the tests, and its id and public keys from the files that it saved.
+func ownNode(t *testing.T, fix *fixture) wire.Node {
+	t.Helper()
+	idText, err := os.ReadFile(fix.data.nodeIDFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := parseNodeID(idText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keysText, err := os.ReadFile(fix.data.nodeKeysFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := parseNodeKeys(keysText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public := keys.public()
+	return wire.Node{
+		Name: "east", URL: "https://east.example.com/api",
+		ID: id, SignKey: public.sign, EncryptKey: public.encrypt,
+	}
+}
 
 // vectorRandom is the random source that makes the keys of the standards' vectors.
 func vectorRandom(t *testing.T) *bytes.Reader {
