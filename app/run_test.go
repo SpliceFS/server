@@ -391,6 +391,31 @@ func TestRunWithoutShares(t *testing.T) {
 	}
 }
 
+// The first start makes the node keys, with the mode that keeps them from other users, and a
+// restart keeps them.
+func TestRunMakesNodeKeysOnceAndKeepsThem(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t)
+	path := filepath.Join(fix.state, "local", "node-keys.yaml")
+	var contents [2][]byte
+	for i := range contents {
+		if err := start(t, fix).stop(); err != nil {
+			t.Fatalf("Run = %v", err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents[i] = data
+	}
+	if !bytes.Equal(contents[0], contents[1]) {
+		t.Error("the second start replaced the node keys")
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("node keys file = %v, %v, want mode 600", info, err)
+	}
+}
+
 func TestRunWithoutLogger(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t)
@@ -416,6 +441,9 @@ func TestRunFailsAtStart(t *testing.T) {
 		{"node id file holds the earlier form of an id", func(fix *fixture) {
 			write(t, fix.state, "local/node-id", "0123456789abcdef\n")
 		}, "must hold a UUIDv7"},
+		{"node keys file is malformed", func(fix *fixture) {
+			write(t, fix.state, "local/node-keys.yaml", "sign: x\n")
+		}, "node keys file"},
 		{"signing key file is invalid", func(fix *fixture) {
 			write(t, fix.state, "local/node-id", rfcNodeID+"\n")
 			write(t, fix.state, "shared/keys/"+rfcNodeID+".yaml", "keys: []\n")

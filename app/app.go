@@ -146,6 +146,10 @@ func newHandler(
 	if err != nil {
 		return nil, err
 	}
+	// Made or read together with the node id, so that a bad file stops the start.
+	if _, err = data.nodeKeys(rand.Reader); err != nil {
+		return nil, err
+	}
 	tokens := auth.NewTokens(data.keysDir, nodeID, cfg.Auth.TokenTTL.Std(), time.Now, logger)
 	if err := tokens.EnsureOwnKey(); err != nil {
 		return nil, fmt.Errorf("make or read own key: %w", err)
